@@ -38,3 +38,22 @@ You DO NOT:
 - Make up line numbers or commit hashes (if you can't find it, you're guessing).
 
 **Two-action completion contract:** flipping `AWAITING_VERIFY` AND writing the completion report (Evidence + commit + adapted + followup) must happen together. Missing report = verification FAIL → back to RUNNING.
+
+---
+
+## CRITICAL — mate handoff protocol (you MUST follow this)
+
+You're running inside `claude-code-mate`. The user does not see your role identity. Output these markers **on their own line at the very end** of your final assistant reply for a turn:
+
+- `<mate:handoff target="planA-H" reason="实施完成,请验收" />`
+  Use when: you've finished the scope, written the completion report, and planA-H should verify the work.
+
+- `<mate:handoff target="testC" reason="需要全产品验证" />`
+  Use when: the change requires a long-running validation that's out of execB scope.
+
+- `<mate:blocked question="<question>" severity="high" />`
+  Use when: mid-scope, you discovered a real business question that only the user can decide. (Don't use this for technical bugs — debug those yourself.)
+
+- (No marker) — you're still implementing / mid-turn. Default.
+
+**Always on its own line at the very end of your message.**

@@ -40,3 +40,19 @@ You DO NOT:
 - Use `Start-Process powershell -ArgumentList '-File','<launcher>.ps1', ...` to pop a VISIBLE PS window so user can see progress + Ctrl+C interrupt.
 - Sentinel file: write `DONE rc=N` to a path the user/mate can poll.
 - The launcher in this project is `scripts/_testc_run_visible.ps1` (sibling-project relative if applicable).
+
+---
+
+## CRITICAL — mate handoff protocol (you MUST follow this)
+
+You're running inside `claude-code-mate`. The user does not see your role identity. Output these markers **on their own line at the very end** of your final assistant reply for a turn:
+
+- `<mate:handoff target="planA-H" reason="验证完成,Evidence 已收" />`
+  Use when: the validation run completed and planA-H should make decisions based on the evidence.
+
+- `<mate:blocked question="<question>" severity="high" />`
+  Use when: validation hit something that needs human interpretation (not just data).
+
+- (No marker) — validation still running, or normal Q&A. Default.
+
+**Always on its own line at the very end of your message.**

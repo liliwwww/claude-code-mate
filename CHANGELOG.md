@@ -5,8 +5,45 @@
 ## [Unreleased]
 
 ### 进行中
-- Phase 2C:实例池 acquire/release + `[slug]` 路由 + session TTL 4h
-- Phase 2D:系统监控模块 + 全局并发 cap
+- Phase 2D:系统监控模块 + 全局并发 cap + session TTL 4h
+
+## [0.3.0] — Phase 2C 完成(2026-06-10)
+
+详细需求 / 14 个细节问答见 [docs/discussions/2026-06-10-phase-2c-needs.md](./docs/discussions/2026-06-10-phase-2c-needs.md)。
+
+### 哲学升级
+- **mate 流程不引入"user 验收"节点**:H 自验通过 = 流程到头 = IDLE,业务验收 user 自己浏览器实测
+- **角色切换对 user 完全透明**:对话流统一,不画分割线,不弹通知,只有 BLOCKED 才打断 user
+- README 项目介绍重写:"one chat, a team of specialized agents"
+
+### 新增
+- **System Agent**(`server/system-agent/SystemAgent.js`):mate 内置 LLM 服务,用 `claude --model claude-haiku-4-5 --no-session-persistence --tools "" --json-schema`,短命 spawn 服务结构化输出微任务。三个 task:title-summary / reply-template / blocked-detection。
+- **环境检测按钮**(`server/system-agent/envCheck.js` + `/api/system/healthcheck`):4 项探针(claude binary / 代理 / SQLite / auth+API),手动触发,失败不阻塞。
+- **Markdown 渲染**(public/index.html + app.js):marked + highlight.js(10 语言) + KaTeX,assistant 输出走完整 markdown,代码块加 copy 按钮。
+- **亮/暗主题切换**(style.css CSS vars):默认 prefers-color-scheme,手动 override localStorage 锁定;highlight.js 主题同步。
+- **自动 slug + title 摘要**(ThreadStore + ThreadHooks):新线索无 slug 字段,自动 `t-<base36>-<rand>`;首轮 + 每 5 轮 SystemAgent 摘要 12 字标题。
+- **自动回答模板**(ThreadHooks):每轮 result 后 SystemAgent.generateReplyTemplate,有问题则 WS 推送,前端输入框空才填。
+- ⭐ **自动状态机驱动**(MarkerDetector + SpawnManager.\_handleMarkers):
+  - R/H/B/C 的 roles markdown 加 marker 教学:`<mate:handoff target="..." />`、`<mate:done />`、`<mate:blocked question="..." />`
+  - `MarkerDetector` 从 assistant 文本提取 markers
+  - 在 result event 时自动 handoff:spawn 下一角色 + bind thread + 推进 stage + 把 thread 上下文作为 first stdin 传给新角色
+  - `<mate:done />` → stage=verified(线索结束,实例 IDLE 等待 user 下一条指令)
+  - `<mate:blocked />` → metadata.blocked + WS 推送
+  - 实测:R 输出 handoff 后 19s 内,H 自动 spawn + bind + stage 翻 designing
+- **状态灯**(status light):
+  - 🟢 绿 = 任一实例 busy / spawning(后台干活)
+  - 🟡 黄(闪烁)= thread.metadata.blocked 存在(等 user 拍板)
+  - 🔴 红 = 任一实例 dead(异常)
+  - ⚪ 灰 = idle / 无活动实例
+- BLOCKED 时对话流追加高亮卡片显示问题;handoff 时显示小灰条隐式切换;done 时显示绿色"✓ 线索完成"卡片
+
+### 改进
+- 角色定义 markdown 集中在 mate(`roles/*.md`),sibling project 透明
+- result event 触发条件改成 `eventType.startsWith('result')`(原 `=== 'result'` 漏匹配 `result/success`)
+
+### Bug 修复
+- `--bare` 不能跟 Max 订阅 OAuth 共存(它要求 `ANTHROPIC_API_KEY`)→ SystemAgent 改成 `cwd=mate root` + `--no-session-persistence` 实现隔离
+- SystemAgent JSON-schema 输出在 `structured_output` 字段(不是 `result`)
 
 ## [0.2.0] — Phase 2B 完成(2026-06-10)
 

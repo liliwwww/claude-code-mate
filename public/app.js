@@ -253,6 +253,22 @@ function renderProjectPicker() {
   }
 }
 
+// [需求@2026-06-10 §3] 计算线索看板的状态灯
+function computeStateLight(thread) {
+  const meta = thread.metadata || {};
+  if (meta.blocked) return 'yellow-blink';
+
+  const roleTypes = ['requirements', 'orchestrator', 'executor', 'validator'];
+  const bound = roleTypes
+    .map((rt) => meta.current_role_instances?.[rt])
+    .filter(Boolean);
+  const instances = bound.map((id) => state.instances.get(id)).filter(Boolean);
+  if (!instances.length) return 'gray';
+  if (instances.some((i) => i.status === 'dead')) return 'red';
+  if (instances.some((i) => i.status === 'busy' || i.status === 'spawning')) return 'green';
+  return 'gray';
+}
+
 function renderThreads() {
   els.threadsList.innerHTML = '';
   const sorted = [...state.threads.values()].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -261,17 +277,21 @@ function renderThreads() {
     const li = document.createElement('li');
     li.dataset.slug = t.slug;
     if (t.slug === state.focusedSlug) li.classList.add('active');
+    if (t.metadata?.blocked) li.classList.add('blocked-thread');
 
-    const boundRId = t.metadata?.current_role_instances?.requirements;
-    const boundR = boundRId ? state.instances.get(boundRId) : null;
-    const instState = boundR ? boundR.status : 'no instance';
+    const light = computeStateLight(t);
+    const blockedText = t.metadata?.blocked?.question
+      ? ` · 等待: ${escapeHtml(String(t.metadata.blocked.question).slice(0, 60))}`
+      : '';
 
     li.innerHTML = `
-      <div class="slug">${escapeHtml(t.title || t.slug)}</div>
-      <div class="title">${escapeHtml(t.slug)}</div>
+      <div class="slug">
+        <span class="light ${light}"></span>
+        ${escapeHtml(t.title || t.slug)}
+      </div>
+      <div class="title">${escapeHtml(t.slug)}${blockedText}</div>
       <div class="stage-row">
         <span class="stage ${t.stage}">${t.stage}</span>
-        <span class="inst-state">R: ${instState}</span>
       </div>
     `;
     li.addEventListener('click', () => focusThread(t.slug));
@@ -478,9 +498,43 @@ function handleWsMsg({ type, payload }) {
     // [需求@2026-06-10 §1.6] SystemAgent 生成的回答模板,预填输入框(空才填)
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug !== state.focusedSlug) return;
-    if (els.msgInput.value.trim()) return;  // 有内容不覆盖
+    if (els.msgInput.value.trim()) return;
     els.msgInput.value = payload.template;
     els.msgInput.placeholder = '系统建议的回答模板(可改可删,Ctrl+Enter 发送)';
+  } else if (type === 'thread.handoff') {
+    // [需求@2026-06-10 §6.4] 角色切换:对话流加一条隐式分割条(small system msg)
+    if (payload.projectId !== state.activeProjectId) return;
+    if (payload.threadSlug === state.focusedSlug) {
+      const node = makeMsg('system handoff-card', `→ ${payload.target}`,
+        `${payload.reason || ''}`);
+      els.stream.appendChild(node);
+      els.stream.scrollTop = els.stream.scrollHeight;
+    }
+    // Refresh thread snapshot to get new stage
+    api(`/threads/${encodeURIComponent(payload.threadSlug)}?projectId=${state.activeProjectId}`)
+      .then((t) => { state.threads.set(t.slug, t); renderThreads(); if (t.slug === state.focusedSlug) renderConvHeader(); })
+      .catch(() => {});
+  } else if (type === 'thread.done') {
+    // [需求@2026-06-10 §6] 自验完成 = verified = IDLE,user 视角:线索后台干完了
+    if (payload.projectId !== state.activeProjectId) return;
+    if (payload.threadSlug === state.focusedSlug) {
+      const node = makeMsg('system done-card', '✓ 线索完成', payload.summary || '后台自验通过');
+      els.stream.appendChild(node);
+      els.stream.scrollTop = els.stream.scrollHeight;
+    }
+    state.threads.set(payload.threadSlug, payload.thread);
+    renderThreads();
+  } else if (type === 'thread.blocked') {
+    // [需求@2026-06-10 §6.2] BLOCKED → 线索看板黄灯闪烁 + 对话流卡片
+    if (payload.projectId !== state.activeProjectId) return;
+    if (payload.threadSlug === state.focusedSlug) {
+      const node = makeMsg('blocked-card', `⚠️ 需要你拍板 (${payload.raisedBy})`,
+        payload.question);
+      els.stream.appendChild(node);
+      els.stream.scrollTop = els.stream.scrollHeight;
+    }
+    state.threads.set(payload.threadSlug, payload.thread);
+    renderThreads();
   }
 }
 

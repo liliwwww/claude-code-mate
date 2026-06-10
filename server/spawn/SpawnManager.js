@@ -15,6 +15,7 @@ const bus = require('../messageBus');
 const { db, recordMessage, recordEvent, stmts } = require('../db');
 const ThreadStore = require('../threads/ThreadStore');
 const ThreadHooks = require('../system-agent/ThreadHooks');
+const MarkerDetector = require('../system-agent/MarkerDetector');
 
 class SpawnManager {
   constructor() {
@@ -155,6 +156,13 @@ class SpawnManager {
             instanceId: inst.id,
           }).catch((e) => console.warn(`[SpawnManager] ThreadHooks error:`, e.message));
         });
+
+        // [需求@2026-06-10 §6.1-6.4] 自动状态机:detect mate markers,自动 handoff 下一角色
+        const assistantText = raw.result || '';
+        const markers = MarkerDetector.detect(assistantText);
+        if (markers.length) {
+          setImmediate(() => this._handleMarkers(inst, markers));
+        }
       }
     });
 
@@ -214,6 +222,149 @@ class SpawnManager {
     return [...this.instances.values()].filter(
       (i) => i.projectId === projectId && i.role.name === roleName && ALIVE.has(i.status)
     ).length;
+  }
+
+  // [需求@2026-06-10 §6] 自动状态机:处理 R/H/B/C 输出的 mate marker
+  //   - handoff target=<role>: 切换到下一角色 + 推进 stage + 自动 spawn
+  //   - done: 标记线索 verified(H 自验通过 = 流程到头 = IDLE,user 体验回归)
+  //   - blocked: 标记线索为 blocked 状态,前端黄灯闪烁
+  //   marker 由 SpawnManager._wireListeners 在 result event 时通过 MarkerDetector 提取
+  async _handleMarkers(inst, markers) {
+    if (!inst.threadSlug) return;
+    for (const m of markers) {
+      try {
+        if (m.kind === 'handoff') {
+          await this._performHandoff(inst, m.target, m.reason);
+        } else if (m.kind === 'done') {
+          this._performDone(inst, m.summary);
+        } else if (m.kind === 'blocked') {
+          this._performBlocked(inst, m.question, m.severity);
+        }
+      } catch (e) {
+        console.warn(`[SpawnManager] marker ${m.kind} failed (${inst.id}):`, e.message);
+      }
+    }
+  }
+
+  async _performHandoff(fromInst, targetRoleName, reason) {
+    const targetRole = roleCatalog.get(targetRoleName);
+    if (!targetRole) {
+      console.warn(`[SpawnManager] handoff target "${targetRoleName}" not found in catalog`);
+      return;
+    }
+    const project = stmts.getProject.get(fromInst.projectId);
+    if (!project) return;
+
+    // Stage progression (data-driven from target role type)
+    const stageByTargetType = {
+      orchestrator: 'designing',
+      executor: 'executing',
+      validator: 'testing',
+      requirements: 'discussing',
+    };
+    const nextStage = stageByTargetType[targetRole.type] || null;
+    if (nextStage) {
+      try { ThreadStore.setStage(fromInst.projectId, fromInst.threadSlug, nextStage); } catch {}
+    }
+
+    // Build first message for target role: thread slug + reason + recent context summary
+    const recent = db.prepare(`
+      SELECT event_type, payload_json FROM messages
+      WHERE project_id = ? AND thread_slug = ? AND event_type IN ('user','assistant')
+      ORDER BY ts DESC LIMIT 6
+    `).all(fromInst.projectId, fromInst.threadSlug);
+    const ctx = recent.reverse().map((r) => {
+      try {
+        const p = JSON.parse(r.payload_json);
+        const content = p.message?.content;
+        const text = Array.isArray(content)
+          ? content.filter((c) => c.type === 'text').map((c) => c.text).join('')
+          : (typeof content === 'string' ? content : '');
+        return `[${r.event_type}] ${text.slice(0, 500)}`;
+      } catch { return ''; }
+    }).filter(Boolean).join('\n\n');
+
+    const handoffText = [
+      `# Thread handoff from ${fromInst.role.name}`,
+      ``,
+      `**Thread:** \`${fromInst.threadSlug}\`  (project root: \`${project.root_dir}\`)`,
+      `**Reason for handoff:** ${reason || '(unspecified)'}`,
+      ``,
+      `## Recent conversation context (last 6 messages):`,
+      ``,
+      ctx || '(no prior messages)',
+      ``,
+      `---`,
+      ``,
+      `Begin your role's work on this thread.`,
+    ].join('\n');
+
+    // Spawn or reuse target role for this thread
+    const inst = this.sendToThread({
+      projectId: fromInst.projectId,
+      projectRootDir: project.root_dir,
+      threadSlug: fromInst.threadSlug,
+      text: handoffText,
+      roleType: targetRole.type,
+    });
+
+    recordEvent('thread.handoff', {
+      from: fromInst.role.name, target: targetRoleName, reason,
+      fromInstanceId: fromInst.id, toInstanceId: inst.id,
+    }, { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
+    bus.publish('thread.handoff', {
+      projectId: fromInst.projectId,
+      threadSlug: fromInst.threadSlug,
+      from: fromInst.role.name,
+      target: targetRoleName,
+      reason,
+    });
+  }
+
+  _performDone(fromInst, summary) {
+    try {
+      ThreadStore.setStage(fromInst.projectId, fromInst.threadSlug, 'verified');
+    } catch (e) {
+      console.warn(`[SpawnManager] setStage verified failed:`, e.message);
+    }
+    recordEvent('thread.done', { summary, fromInstanceId: fromInst.id },
+      { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
+    bus.publish('thread.done', {
+      projectId: fromInst.projectId,
+      threadSlug: fromInst.threadSlug,
+      summary,
+      thread: ThreadStore.get(fromInst.projectId, fromInst.threadSlug),
+    });
+  }
+
+  _performBlocked(fromInst, question, severity) {
+    // Mark thread metadata with blocked info (the UI uses this for the yellow blink light)
+    const thread = ThreadStore.get(fromInst.projectId, fromInst.threadSlug);
+    if (!thread) return;
+    const meta = thread.metadata || {};
+    meta.blocked = {
+      question,
+      severity: severity || 'mid',
+      ts: Date.now(),
+      raisedBy: fromInst.role.name,
+    };
+    try {
+      db.prepare(`UPDATE threads SET metadata_json = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
+        .run(JSON.stringify(meta), Date.now(), fromInst.projectId, fromInst.threadSlug);
+    } catch (e) {
+      console.warn(`[SpawnManager] blocked metadata persist failed:`, e.message);
+      return;
+    }
+    recordEvent('thread.blocked', { question, severity, fromInstanceId: fromInst.id },
+      { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
+    bus.publish('thread.blocked', {
+      projectId: fromInst.projectId,
+      threadSlug: fromInst.threadSlug,
+      question,
+      severity: severity || 'mid',
+      raisedBy: fromInst.role.name,
+      thread: ThreadStore.get(fromInst.projectId, fromInst.threadSlug),
+    });
   }
 
   // [需求@2026-06-10] Phase 2B 线索为主视图:

@@ -120,6 +120,27 @@ main { flex: 1; display: flex; min-height: 0; }
 #threads li .stage { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; text-transform: uppercase; font-weight: 600; }
 #threads li .inst-state { font-size: 10px; color: var(--text-muted); }
 
+/* [需求@2026-06-10 §3] 状态灯:绿=后台运转, 黄闪=BLOCKED, 灰=idle, 红=异常 */
+#threads li .light { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+#threads li .light.green   { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
+#threads li .light.yellow-blink { background: var(--accent-yellow); animation: yellow-blink 0.9s ease-in-out infinite; }
+#threads li .light.red     { background: var(--accent-red); box-shadow: 0 0 4px var(--accent-red); }
+#threads li .light.gray    { background: var(--text-muted); opacity: 0.6; }
+#threads li.blocked-thread { background: var(--bg-msg-tooluse); }
+
+@keyframes yellow-blink {
+  0%, 100% { background: var(--accent-yellow); opacity: 1; box-shadow: 0 0 6px var(--accent-yellow); }
+  50%      { background: var(--accent-yellow); opacity: 0.3; box-shadow: 0 0 0 var(--accent-yellow); }
+}
+
+/* [需求@2026-06-10 §6] BLOCKED 系统消息卡片(高亮 + 不显示 markers 文本) */
+.msg.blocked-card { background: var(--bg-msg-tooluse); border-left-color: var(--accent-yellow); border: 1px solid var(--accent-yellow); }
+.msg.blocked-card .role { color: var(--accent-yellow); font-weight: 700; }
+.msg.handoff-card { background: var(--bg-msg-system); border-left-color: var(--accent-purple); color: var(--text-secondary); font-size: 11px; }
+.msg.handoff-card .role { color: var(--accent-purple); }
+.msg.done-card { background: var(--bg-msg-ok); border-left-color: var(--accent-green); color: var(--accent-green); }
+.msg.done-card .role { color: var(--accent-green); }
+
 .stage.discussing { background: var(--bg-active); color: var(--accent); }
 .stage.designing  { background: var(--bg-msg-tooluse); color: var(--accent-purple); }
 .stage.executing  { background: var(--bg-msg-assistant); color: var(--accent-green); }
