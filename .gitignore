@@ -35,3 +35,10 @@ Thumbs.db
 *.tsbuildinfo
 dist/
 build/
+
+# Agent work artifacts (R/H/B/C may create these inside the active project root
+# when mate is running in dev mode with default = self project).
+# Real sibling projects should not gitignore these — they own their workflow.
+doc/
+tools/
+spike-*/
