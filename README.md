@@ -2,27 +2,35 @@
 
 # Claude Code Mate
 
-> Local Web UI for managing **N concurrent Claude Code CLI sessions** across a multi-role collaboration workflow — without losing your mind switching between PowerShell terminals.
+> **One chat, a team of specialized Claude Code agents working behind the scenes.** Describe what you need — Mate orchestrates the rest (clarify → design → implement → validate) without making you switch terminals.
 
 [简体中文 README](./README.zh-CN.md) · [Architecture](./docs/architecture.md) · [Stream-JSON Protocol Findings](./docs/stream-json-protocol.md)
 
-> **Status: Experimental.** Phase 2A (multi-project foundation) shipped; Phases 2B–2D and intent routing are in progress. Designed for **personal local use on Windows** with the Claude Max subscription, not for shared/server deployment.
+> **Status: Experimental.** Phase 2A (multi-project) + 2B (thread board + lazy spawn) shipped; Phase 2C (auto state-machine + system LLM + markdown rendering + light/dark) in active development. Designed for **personal local use on Windows** with a Claude Max subscription, not for shared/server deployment.
 
 ---
 
 ## What problem does it solve?
 
-If you use Claude Code CLI for complex work — say, a **multi-role collaboration workflow** with separate terminals for *requirements clarification*, *orchestration*, *implementation*, and *validation* — you can quickly end up with **7–10 PowerShell windows** to babysit. Switching focus, copy-pasting between them, tracking which thread each terminal is working on becomes the bottleneck.
+Pushing Claude Code CLI to handle complex engineering work — requirements discussion, design decisions, multi-file code changes, long validation runs — quickly exceeds what a single session can do. You end up running 4–10 PowerShell terminals, each playing a specialized role (one to talk through requirements, one to orchestrate, one to write code, one to test long-running scripts). Most of your day goes to switching windows, copy-pasting handoffs, and tracking which terminal is working on what.
 
-Claude Code Mate collapses that experience into one browser tab:
+**Mate makes that experience feel like one conversation.**
 
-- One unified input → routed to the right role's session
-- A central board of all **threads** (your actual requirements) with their lifecycle state
-- All conversations persisted in SQLite — **restarts don't lose data**
-- Idle sessions are restored as `disconnected` and lazily re-spawned with `--resume` when you talk to them again
-- Multi-project support: manage `D:\dev\kb_backend`, `D:\dev\web_gmail`, and Mate itself from a single UI
+**What you see in the browser:**
 
-The principle is **"升维不再造" (elevate, don't replace)**: roles still exist with their own context, prompts, and tool permissions; Mate is a router + view aggregator, not a new agent.
+- One thread per requirement, one unified chat, one status light
+- **Lazy spawn** — no claude process starts until your first message (no wasted tokens)
+- Markdown-rendered responses, light/dark theme, multi-project switcher
+- Auto-summarized thread titles, suggested reply templates, persistent conversations (SQLite — survives mate restart, claude restart, and crash recovery via `--resume`)
+
+**What runs behind the scenes:**
+
+- Mate auto-spawns specialized agents — **R** for requirements clarification, **H** for orchestration, **execB** for implementation, **testC** for long validation runs — and routes between them automatically as the thread advances through its lifecycle: `discussing → designing → executing → testing → verified`.
+- **You never see the role switches.** Stage badges update silently. Conversation stream stays unified.
+- Mate **only interrupts you** when a role genuinely needs your input — a business decision, an ambiguous requirement, a blocking choice. On the relevant thread card, the **yellow light starts flashing**. Otherwise work just flows.
+- When all agents finish and self-verify, the thread goes idle. Mate does **not** ask for your business sign-off — that's yours alone (open the browser, test the change, archive when done).
+
+The principle is **"升维不再造" (elevate, don't replace)**: the roles still exist with their own contexts, system prompts, and tool permissions. Mate is not a new agent — it's the conductor that makes a multi-agent orchestra feel like a single voice.
 
 ## How it works (high level)
 
@@ -94,9 +102,9 @@ All configuration goes through `.env` (see `.env.example`):
 | 0     | ✅ Done | Stream-JSON protocol probes ([findings](./docs/stream-json-protocol.md)) |
 | 1     | ✅ Done | SpawnManager + minimal observer UI                                  |
 | 2A    | ✅ Done | Multi-project foundation                                            |
-| 2B    | ⏳ Next | **Thread board** as primary view (kill the spawn dropdown)          |
-| 2C    | 📋     | Instance pool, `[slug]` routing, session TTL anti-rot               |
-| 2D    | 📋     | System monitor module, global process cap                           |
+| 2B    | ✅ Done | Thread board + lazy spawn + stage state machine                     |
+| 2C    | 🚧 In progress | System Agent (mate's own LLM), env-check, markdown rendering, light/dark theme, auto title-summary, suggested reply templates, **auto role state-machine (R → H → B/C, invisible to user)**, status lights |
+| 2D    | 📋     | System monitor module, global process cap, session TTL anti-rot     |
 
 ## Documentation map
 

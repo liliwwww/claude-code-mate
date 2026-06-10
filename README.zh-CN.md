@@ -1,26 +1,34 @@
 # Claude Code Mate
 
-> **本地 Web UI,统一管理多个 Claude Code CLI 会话** —— 让"多角色协作 + 一堆 PowerShell 终端"不再让大脑爆炸。
+> **一个对话框,后台一群专门的 Claude Code 角色。** 你描述需求 —— Mate 自动编排"梳理 → 设计 → 实施 → 验证"全流程,无需切窗口、无需感知角色切换。
 
 [English README](./README.md) · [架构文档](./docs/architecture.md) · [Stream-JSON 协议实证](./docs/stream-json-protocol.md)
 
-> **状态:实验性。** Phase 2A(多 project 基础)已上线;Phase 2B–2D 与智能路由开发中。**仅设计给 Windows 单机本地使用 + Claude Max 订阅**,不面向公网部署。
+> **状态:实验性。** Phase 2A(多 project)+ 2B(线索看板 + 懒 spawn)已上线;Phase 2C(自动状态机 + 系统 LLM + Markdown 渲染 + 主题切换)积极开发中。**仅设计给 Windows 单机本地使用 + Claude Max 订阅**,不面向公网部署。
 
 ---
 
 ## 它解决什么问题
 
-如果你用 Claude Code CLI 跑复杂工作流 —— 比如开了好几类终端:**R(需求挖掘)/ H(编排)/ execB(实施)/ testC(验证)** —— 实际可能要并行 7-10 个 PowerShell 窗口。**人肉切窗口、复制粘贴、记哪个终端在跑哪条线索**,会成为真正的瓶颈。
+把 Claude Code CLI 用到极限时,单一会话很快不够用 —— 复杂工程任务往往需要"**梳理需求 → 技术设计 → 编码改动 → 跑批验证**"四件事配合。手动跑下来,你要开 4-10 个 PowerShell 窗口,每个跑一个专门角色,自己在窗口之间复制粘贴 handoff、记每个终端做到哪儿、追问验收。**思考的时间反而被切窗口和复制粘贴吃光了。**
 
-Claude Code Mate 把这套体验压扁到一个浏览器 tab:
+**Mate 把这个体验压扁成一个对话框。**
 
-- **单一输入框** → 系统识别意图路由到对应角色
-- **线索看板**展示所有需求(slug)的全生命周期(讨论 → 设计 → 实施 → 测试 → 验收)
-- 所有对话持久化在 SQLite — **重启不丢数据**
-- 闲置会话被恢复为 `disconnected`,user 跟它讲话时**懒激活**(`--resume` 续上对话)
-- **多项目**支持:同时管 `D:\dev\kb_backend`、`D:\dev\web_gmail`、Mate 自己
+**你在浏览器看到的:**
 
-核心原则:**「升维不再造」** —— 角色(R/H/B/C)依然存在、依然有自己的 system prompt 和工具权限。Mate 不替代任何角色,它是**路由器 + 视图聚合层**。
+- 每条需求一条"线索",一个统一对话框,一个状态灯
+- **懒激活** —— 没发首条消息前,后端不会起 claude 进程,**零 cost 浪费**
+- Markdown 渲染输出、亮/暗主题切换、多 project 切换
+- 系统自动摘要标题、自动生成回答模板、对话持久化(SQLite,mate 重启 / claude 崩溃 / 系统重启都不丢,通过 `--resume` 接续 session)
+
+**后台跑的:**
+
+- Mate 自动 spawn 各类专门角色 —— **R** 跟你聊需求 / **H** 编排派工 / **execB** 改代码 / **testC** 跑长验证 —— 根据线索阶段(`discussing → designing → executing → testing → verified`)**自动路由**
+- **你看不到角色切换。** 状态徽章静默推进,对话流是统一的一条
+- Mate **只在真的需要你拍板时**才打断你 —— 业务岔口、需求歧义、阻塞性选择。这时对应线索卡片上**黄灯闪烁**。其它时间工作自动往前推
+- 后台所有 agent 跑完 + 自验通过后,线索翻 IDLE。Mate **不**问你"业务验收通过吗" —— 那是你自己的事(开浏览器实测、看效果、确认了点归档)
+
+核心原则:**「升维不再造」**。角色(R/H/execB/testC)依然存在,各有自己的 system prompt 和工具权限。Mate 不替代任何角色 —— 它是把多 agent 协奏成"一个声音"的指挥。
 
 ## 它怎么跑(高层架构)
 
@@ -109,9 +117,9 @@ Mate 内置 4 个默认角色,定义在根目录 `roles/*.md`(每个文件含 YA
 | 0     | ✅    | Stream-JSON 协议探针(见 [findings](./docs/stream-json-protocol.md))|
 | 1     | ✅    | SpawnManager + 最小观察台 UI + lazy resurrection               |
 | 2A    | ✅    | 多 project 基础(项目切换器 + 添加 / 导入项目)                  |
-| 2B    | ⏳    | **线索看板**作为主视图,砍掉 spawn dropdown,"+ 新线索"入口      |
-| 2C    | 📋    | 实例池 + `[slug]` 路由 + session TTL 4h 防生锈                  |
-| 2D    | 📋    | 系统监控模块 + 全局并发 cap                                     |
+| 2B    | ✅    | 线索看板 + 懒 spawn + 6 阶段状态机                              |
+| 2C    | 🚧    | **System Agent**(mate 内置 LLM)+ 环境检测 + Markdown 渲染 + 亮/暗主题 + 自动 title 摘要 + 自动回答模板 + **角色状态机自动驱动(R→H→B/C,user 不感知)** + 状态灯 |
+| 2D    | 📋    | 系统监控模块 + 全局并发 cap + session TTL 防生锈                |
 
 ## 项目目录
 
