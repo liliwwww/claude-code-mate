@@ -13,6 +13,7 @@ const { RoleInstance } = require('./RoleInstance');
 const roleCatalog = require('../roles/RoleCatalog');
 const bus = require('../messageBus');
 const { db, recordMessage, recordEvent, stmts } = require('../db');
+const ThreadStore = require('../threads/ThreadStore');
 
 class SpawnManager {
   constructor() {
@@ -74,16 +75,16 @@ class SpawnManager {
   }
 
   // [需求@2026-06-10] spawn per-project — parallelism limit is per (project, role) tuple.
+  // [bug@2026-06-10] parallelism 只算"真正活着的"实例(spawning/idle/busy),
+  //   不算 disconnected(它们没 child process,只是历史占位,激活时才占用槽位)。
   spawnInstance({ projectId, projectRootDir, roleName, threadSlug = null, customGreeting = null }) {
     if (!projectId) throw new Error('spawnInstance requires projectId');
     if (!projectRootDir) throw new Error('spawnInstance requires projectRootDir');
     const role = roleCatalog.get(roleName);
     if (!role) throw new Error(`Unknown role: ${roleName}`);
 
-    const inFlight = [...this.instances.values()].filter(
-      (i) => i.projectId === projectId && i.role.name === roleName && i.status !== 'dead'
-    );
-    if (inFlight.length >= role.parallelismLimit) {
+    const alive = this._countAliveInstances(projectId, roleName);
+    if (alive >= role.parallelismLimit) {
       throw new Error(`Role ${roleName} in this project at parallelism limit (${role.parallelismLimit})`);
     }
 
@@ -190,6 +191,78 @@ class SpawnManager {
     const all = [...this.instances.values()].filter((i) => i.status !== 'dead');
     const scoped = projectId ? all.filter((i) => i.projectId === projectId) : all;
     return scoped.map((i) => i.snapshot());
+  }
+
+  // [bug@2026-06-10] parallelism 计算 helper:只算 spawning/idle/busy,不算 disconnected/dead
+  _countAliveInstances(projectId, roleName) {
+    const ALIVE = new Set(['spawning', 'idle', 'busy', 'awaiting_verify', 'blocked']);
+    return [...this.instances.values()].filter(
+      (i) => i.projectId === projectId && i.role.name === roleName && ALIVE.has(i.status)
+    ).length;
+  }
+
+  // [需求@2026-06-10] Phase 2B 线索为主视图:
+  //   sendToThread 是 user 跟系统打交道的主入口。它做 3 件事:
+  //   1) 找到线索当前绑定的角色实例(默认 requirements / R 类型)
+  //   2) 如果没绑定或绑定已死,**懒 spawn** 一个新实例,把 user 消息作为首条 stdin(无 greeting 浪费)
+  //   3) 否则直接 sendUserText
+  //
+  // roleType 默认 'requirements'(R);Phase 2C+ 智能路由会决定真实 target。
+  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements' }) {
+    if (!projectId) throw new Error('sendToThread requires projectId');
+    if (!projectRootDir) throw new Error('sendToThread requires projectRootDir');
+    if (!threadSlug) throw new Error('sendToThread requires threadSlug');
+    if (!text) throw new Error('sendToThread requires text');
+
+    const thread = ThreadStore.get(projectId, threadSlug);
+    if (!thread) throw new Error(`thread "${threadSlug}" not found in project ${projectId}`);
+
+    // Find role definition for this type (roleCatalog.list() returns an Array of RoleDefinition)
+    const role = roleCatalog.list().find((r) => r.type === roleType);
+    if (!role) throw new Error(`no role found of type ${roleType}`);
+
+    // Look up bound instance
+    const boundId = thread.metadata?.current_role_instances?.[roleType];
+    let inst = boundId ? this.instances.get(boundId) : null;
+
+    // [需求@2026-06-10] 懒 spawn — 没绑定或已死 = 起新的;用 user 文本作首条 stdin
+    if (!inst || inst.status === 'dead') {
+      // [bug@2026-06-10] parallelism 只算活实例,disconnected 不算
+      const alive = this._countAliveInstances(projectId, role.name);
+      if (alive >= role.parallelismLimit) {
+        throw new Error(`role ${role.name} in this project at parallelism limit (${role.parallelismLimit})`);
+      }
+      inst = new RoleInstance({
+        role,
+        projectId,
+        projectRootDir,
+        threadSlug,
+      });
+      // Stash the user text as pending — spawn() will flush it as first stdin (probe 02)
+      inst._pendingUserText = text;
+      this.instances.set(inst.id, inst);
+      this._wireListeners(inst);
+      inst.spawn({ suppressGreeting: true });
+      this._persistInstanceUpsert(inst);
+      ThreadStore.bindInstance(projectId, threadSlug, roleType, inst.id);
+      bus.publish('instance.spawned', inst.snapshot());
+      recordEvent('thread.bind', { threadSlug, roleType, instanceId: inst.id },
+                  { projectId, threadSlug, instanceId: inst.id });
+      return inst;
+    }
+
+    // Disconnected → sendUserText triggers lazy resurrection (Phase 1 mechanism)
+    if (inst.status === 'disconnected') {
+      inst.threadSlug = threadSlug; // ensure binding sticks
+      inst.sendUserText(text);
+      ThreadStore.touch(projectId, threadSlug, roleType);
+      return inst;
+    }
+
+    // Alive — just send
+    inst.sendUserText(text);
+    ThreadStore.touch(projectId, threadSlug, roleType);
+    return inst;
   }
 
   async shutdown() {

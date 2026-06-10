@@ -7,6 +7,7 @@ const express = require('express');
 const roleCatalog = require('../roles/RoleCatalog');
 const spawnManager = require('../spawn/SpawnManager');
 const ProjectStore = require('../projects/ProjectStore');
+const ThreadStore = require('../threads/ThreadStore');
 const { db } = require('../db');
 
 function requireProjectId(req, res, next) {
@@ -129,6 +130,79 @@ function buildRouter() {
       eventType: m.event_type,
       payload: JSON.parse(m.payload_json),
     })));
+  });
+
+  // ---------------- Threads (Phase 2B 主视图) ----------------
+  // [需求@2026-06-10] 线索是 user 需求(一等公民);所有路径以 thread_slug 为主
+  r.get('/threads', requireProjectId, (req, res) => {
+    const includeClosed = req.query.includeClosed === '1' || req.query.includeClosed === 'true';
+    res.json(ThreadStore.list(req.project.id, { includeClosed }));
+  });
+
+  r.post('/threads', requireProjectId, (req, res) => {
+    const { slug, title } = req.body || {};
+    try {
+      const t = ThreadStore.create(req.project.id, { slug, title });
+      res.status(201).json(t);
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  r.get('/threads/:slug', requireProjectId, (req, res) => {
+    const t = ThreadStore.get(req.project.id, req.params.slug);
+    if (!t) return res.status(404).json({ error: 'thread not found' });
+    res.json(t);
+  });
+
+  r.patch('/threads/:slug', requireProjectId, (req, res) => {
+    const { stage, title } = req.body || {};
+    try {
+      let t = ThreadStore.get(req.project.id, req.params.slug);
+      if (!t) return res.status(404).json({ error: 'thread not found' });
+      if (stage) t = ThreadStore.setStage(req.project.id, req.params.slug, stage);
+      if (title) t = ThreadStore.setTitle(req.project.id, req.params.slug, title);
+      res.json(t);
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  r.get('/threads/:slug/history', requireProjectId, (req, res) => {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 2000);
+    const rows = db.prepare(`
+      SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json
+      FROM messages
+      WHERE project_id = ? AND thread_slug = ?
+      ORDER BY ts ASC
+      LIMIT ?
+    `).all(req.project.id, req.params.slug, limit);
+    res.json(rows.map((m) => ({
+      id: m.id,
+      instanceId: m.instance_id,
+      roleName: m.role_name,
+      direction: m.direction,
+      claudeSessionId: m.claude_session_id,
+      ts: m.ts,
+      eventType: m.event_type,
+      payload: JSON.parse(m.payload_json),
+    })));
+  });
+
+  r.post('/threads/:slug/message', requireProjectId, (req, res) => {
+    const { text } = req.body || {};
+    if (typeof text !== 'string' || !text.length) return res.status(400).json({ error: 'text required' });
+    try {
+      const inst = spawnManager.sendToThread({
+        projectId: req.project.id,
+        projectRootDir: req.project.root_dir,
+        threadSlug: req.params.slug,
+        text,
+      });
+      res.json({ ok: true, instance: inst.snapshot() });
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
   });
 
   return r;

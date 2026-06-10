@@ -3,13 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Claude Code Mate — Phase 1 Observer</title>
+  <title>Claude Code Mate</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <!-- [需求@2026-06-10] 顶栏加 project 切换器 + 添加项目按钮(user Q1/Q4) -->
+  <!-- [需求@2026-06-10] Phase 2B 主视图 = 线索看板。
+       顶栏移除"实例 spawn dropdown",改成"+ 新线索"按钮。
+       user 心智:管"需求(线索)",不管"终端(实例)" —— 实例由系统懒 spawn 自动绑定。 -->
   <header id="topbar">
-    <div class="brand">Claude Code Mate <span class="phase">Phase 2A</span></div>
+    <div class="brand">Claude Code Mate <span class="phase">Phase 2B</span></div>
     <div class="project-switcher">
       <label>Project:</label>
       <select id="project-picker"></select>
@@ -17,41 +19,65 @@
     </div>
     <div class="banners" id="banners"></div>
     <div class="actions">
-      <select id="role-picker"></select>
-      <button id="spawn-btn">Spawn</button>
+      <button id="new-thread-btn">+ 新线索</button>
     </div>
   </header>
 
-  <!-- [需求@2026-06-10] 添加项目对话框 -->
   <dialog id="add-project-dialog">
     <form id="add-project-form" method="dialog">
-      <h3>Add or import a project</h3>
-      <label>Name <input id="ap-name" required placeholder="kb_backend" /></label>
-      <label>Root directory <input id="ap-root" required placeholder="D:\dev\kb_backend" /></label>
+      <h3>添加 / 导入项目</h3>
+      <label>名字 <input id="ap-name" required placeholder="kb_backend" /></label>
+      <label>根目录 <input id="ap-root" required placeholder="D:\dev\kb_backend" /></label>
       <div id="ap-inspect" class="muted"></div>
       <div class="dialog-actions">
-        <button type="button" id="ap-cancel">Cancel</button>
-        <button type="submit" id="ap-submit">Add</button>
+        <button type="button" id="ap-cancel">取消</button>
+        <button type="submit" id="ap-submit">添加</button>
       </div>
       <div id="ap-error" class="error"></div>
     </form>
   </dialog>
 
+  <!-- [需求@2026-06-10] 新线索对话框 -->
+  <dialog id="new-thread-dialog">
+    <form id="new-thread-form" method="dialog">
+      <h3>新建线索</h3>
+      <label>Slug(唯一标识,小写字母/数字/-/_)<input id="nt-slug" required placeholder="spike-foo" pattern="[a-z0-9][a-z0-9_-]{0,63}" /></label>
+      <label>标题(可选,默认用 slug)<input id="nt-title" placeholder="如:Tetris 游戏的需求探讨" /></label>
+      <div class="muted">建议格式:<code>spike-xxx</code>(探索)/<code>feat-xxx</code>(新功能)/<code>fix-xxx</code>(修复)</div>
+      <div class="dialog-actions">
+        <button type="button" id="nt-cancel">取消</button>
+        <button type="submit" id="nt-submit">创建</button>
+      </div>
+      <div id="nt-error" class="error"></div>
+    </form>
+  </dialog>
+
   <main>
-    <aside id="instance-list">
-      <h2>Instances</h2>
-      <ul id="instances"></ul>
+    <!-- [需求@2026-06-10] 左侧:线索看板(替代 Phase 1 的实例列表) -->
+    <aside id="thread-board">
+      <h2>线索 (Threads)</h2>
+      <ul id="threads"></ul>
+      <div id="thread-empty" class="empty-state" hidden>
+        还没有线索。点击 <strong>+ 新线索</strong> 开始第一条。
+      </div>
     </aside>
 
     <section id="conversation">
       <header id="conv-header">
-        <span id="conv-title">Select an instance</span>
-        <button id="kill-btn" hidden>Kill</button>
+        <span id="conv-title">选一条线索开始</span>
+        <select id="stage-picker" hidden>
+          <option value="discussing">discussing</option>
+          <option value="designing">designing</option>
+          <option value="executing">executing</option>
+          <option value="testing">testing</option>
+          <option value="verified">verified</option>
+          <option value="closed">closed</option>
+        </select>
       </header>
       <div id="stream"></div>
       <form id="send-form">
-        <textarea id="msg-input" placeholder="Type a message... (Ctrl+Enter to send)" rows="3"></textarea>
-        <button type="submit">Send</button>
+        <textarea id="msg-input" placeholder="输入消息发送给当前线索的 R 角色...(Ctrl+Enter 发送)" rows="3"></textarea>
+        <button type="submit" id="send-btn">发送</button>
       </form>
     </section>
   </main>
