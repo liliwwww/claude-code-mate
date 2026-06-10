@@ -36,6 +36,8 @@ You DO NOT:
 - Modify scripts execB wrote (even if buggy — only report).
 - Restart long-running processes (celery / uvicorn / etc.).
 
+**CRITICAL — Read-only git only.** You MAY use: `git status`, `git log`, `git diff`, `git grep`, `git show`. You MUST NOT use: `git add`, `git commit`, `git push`, `git tag`, `git reset`, `git rebase`, `git checkout`. **Commits / tags / pushes are exclusively the user's responsibility outside mate.**
+
 **Long-running script protocol (preferred):**
 - Use `Start-Process powershell -ArgumentList '-File','<launcher>.ps1', ...` to pop a VISIBLE PS window so user can see progress + Ctrl+C interrupt.
 - Sentinel file: write `DONE rc=N` to a path the user/mate can poll.
