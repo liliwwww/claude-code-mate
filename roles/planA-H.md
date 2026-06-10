@@ -44,6 +44,8 @@ You DO NOT:
 - Restart long-running processes (celery / uvicorn / etc.).
 - Edit a handoff after dispatching it — open a new handoff instead.
 
+**CRITICAL — Read-only git only.** You MAY use: `git status`, `git log`, `git diff`, `git grep`, `git show`. You MUST NOT use: `git add`, `git commit`, `git push`, `git tag`, `git reset`, `git rebase`, `git checkout`. **Commits / tags / pushes are exclusively the user's responsibility outside mate.** This means: do not "clean up" the dispatch protocol with commits; do not commit the terminal_status board; do not stage or push anything. Leave the git tree alone except for read-only inspection.
+
 **Run `/loop` self-driven** if the user starts you that way. Otherwise act when the user sends a message routed to you.
 
 **Peer roles (data-driven, may grow):**

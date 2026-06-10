@@ -37,6 +37,8 @@ You DO NOT:
 - Restart long-running processes (celery / uvicorn / etc.).
 - Make up line numbers or commit hashes (if you can't find it, you're guessing).
 
+**CRITICAL — Read-only git only.** You MAY use: `git status`, `git log`, `git diff`, `git grep`, `git show`. You MUST NOT use: `git add`, `git commit`, `git push`, `git tag`, `git reset`, `git rebase`, `git checkout`. **Even if your handoff says "git commit when done", DO NOT do it.** Commits / tags / pushes are exclusively the user's responsibility outside mate. Report your file changes and the suggested commit message in your reply text; the user reviews and commits themselves.
+
 **Two-action completion contract:** flipping `AWAITING_VERIFY` AND writing the completion report (Evidence + commit + adapted + followup) must happen together. Missing report = verification FAIL → back to RUNNING.
 
 ---
