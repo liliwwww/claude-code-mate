@@ -8,6 +8,7 @@ const roleCatalog = require('../roles/RoleCatalog');
 const spawnManager = require('../spawn/SpawnManager');
 const ProjectStore = require('../projects/ProjectStore');
 const ThreadStore = require('../threads/ThreadStore');
+const envCheck = require('../system-agent/envCheck');
 const { db } = require('../db');
 
 function requireProjectId(req, res, next) {
@@ -23,6 +24,17 @@ function requireProjectId(req, res, next) {
 
 function buildRouter() {
   const r = express.Router();
+
+  // ---------------- Environment check (Phase 2C.2) ----------------
+  // [需求@2026-06-10 §2.1] 手动触发,失败不阻塞
+  r.post('/system/healthcheck', async (req, res) => {
+    try {
+      const result = await envCheck.runAllChecks();
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
 
   // ---------------- Projects ----------------
   r.get('/projects', (req, res) => {

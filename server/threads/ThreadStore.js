@@ -71,9 +71,14 @@ const ThreadStore = {
     return hydrate(stmts.get.get(projectId, slug));
   },
 
+  // [需求@2026-06-10 §1.4] slug 默认自动生成(t-<base36>),user 不感知
+  //   如果调用方没传 slug,自动生成一个 collision-free 的
   create(projectId, { slug, title }) {
     if (!projectId) throw new Error('projectId required');
-    if (!slug || typeof slug !== 'string') throw new Error('slug required');
+    if (!slug) {
+      slug = 't-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+    }
+    if (typeof slug !== 'string') throw new Error('slug must be a string');
     if (!SLUG_RE.test(slug)) {
       throw new Error('slug must match [a-z0-9][a-z0-9_-]{0,63} (case-insensitive)');
     }

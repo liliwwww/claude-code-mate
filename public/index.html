@@ -5,13 +5,27 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Claude Code Mate</title>
   <link rel="stylesheet" href="/style.css" />
+  <!-- [需求@2026-06-10 §1.5] Markdown 渲染依赖 (CDN, no build chain) -->
+  <link rel="stylesheet" id="hljs-theme-link" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/github-dark.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/marked@14.1.3/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/javascript.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/typescript.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/bash.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/json.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/yaml.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/sql.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/markdown.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/css.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/xml.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/powershell.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 </head>
 <body>
-  <!-- [需求@2026-06-10] Phase 2B 主视图 = 线索看板。
-       顶栏移除"实例 spawn dropdown",改成"+ 新线索"按钮。
-       user 心智:管"需求(线索)",不管"终端(实例)" —— 实例由系统懒 spawn 自动绑定。 -->
   <header id="topbar">
-    <div class="brand">Claude Code Mate <span class="phase">Phase 2B</span></div>
+    <div class="brand">Claude Code Mate <span class="phase">Phase 2C</span></div>
     <div class="project-switcher">
       <label>Project:</label>
       <select id="project-picker"></select>
@@ -19,6 +33,10 @@
     </div>
     <div class="banners" id="banners"></div>
     <div class="actions">
+      <!-- [需求@2026-06-10 §1.1] 环境检测 -->
+      <button id="healthcheck-btn" title="环境检测(手动触发,失败不阻塞)">环境检测</button>
+      <!-- [需求@2026-06-10 §1.3] 亮/暗主题切换 -->
+      <button id="theme-btn" title="切换亮/暗主题">🌙</button>
       <button id="new-thread-btn">+ 新线索</button>
     </div>
   </header>
@@ -37,13 +55,14 @@
     </form>
   </dialog>
 
-  <!-- [需求@2026-06-10] 新线索对话框 -->
+  <!-- [需求@2026-06-10 §1.4] 新线索 dialog:slug 砍掉,只剩可选 title -->
   <dialog id="new-thread-dialog">
     <form id="new-thread-form" method="dialog">
       <h3>新建线索</h3>
-      <label>Slug(唯一标识,小写字母/数字/-/_)<input id="nt-slug" required placeholder="spike-foo" pattern="[a-z0-9][a-z0-9_-]{0,63}" /></label>
-      <label>标题(可选,默认用 slug)<input id="nt-title" placeholder="如:Tetris 游戏的需求探讨" /></label>
-      <div class="muted">建议格式:<code>spike-xxx</code>(探索)/<code>feat-xxx</code>(新功能)/<code>fix-xxx</code>(修复)</div>
+      <label>标题(可选)
+        <input id="nt-title" placeholder="留空 → 首轮对话后系统自动摘要" />
+      </label>
+      <div class="muted">系统自动生成内部 ID,你只看 title。</div>
       <div class="dialog-actions">
         <button type="button" id="nt-cancel">取消</button>
         <button type="submit" id="nt-submit">创建</button>
@@ -52,8 +71,19 @@
     </form>
   </dialog>
 
+  <!-- [需求@2026-06-10 §1.1] 环境检测结果 dialog -->
+  <dialog id="healthcheck-dialog">
+    <form method="dialog">
+      <h3>环境检测</h3>
+      <div id="hc-results">点击下方"开始检测"...</div>
+      <div class="dialog-actions">
+        <button type="button" id="hc-run">开始检测</button>
+        <button type="submit">关闭</button>
+      </div>
+    </form>
+  </dialog>
+
   <main>
-    <!-- [需求@2026-06-10] 左侧:线索看板(替代 Phase 1 的实例列表) -->
     <aside id="thread-board">
       <h2>线索 (Threads)</h2>
       <ul id="threads"></ul>
@@ -76,7 +106,7 @@
       </header>
       <div id="stream"></div>
       <form id="send-form">
-        <textarea id="msg-input" placeholder="输入消息发送给当前线索的 R 角色...(Ctrl+Enter 发送)" rows="3"></textarea>
+        <textarea id="msg-input" placeholder="输入消息发送...(Ctrl+Enter 发送)" rows="3"></textarea>
         <button type="submit" id="send-btn">发送</button>
       </form>
     </section>
