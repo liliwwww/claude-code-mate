@@ -36,7 +36,9 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "probe": "echo \"run probes individually: node probe/<id>.js\"",
-    "syntax-check": "node -e \"const fs=require('fs'); const path=require('path'); function walk(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){const p=path.join(d,e.name); if(e.isDirectory()) walk(p); else if(p.endsWith('.js')) require('child_process').execSync('node --check \\\"'+p+'\\\"');}} walk('server'); walk('probe'); console.log('all .js files parse OK');\""
+    "test": "node tests/runner.js",
+    "test:integration": "node tests/runner.js --integration",
+    "syntax-check": "node -e \"const fs=require('fs'); const path=require('path'); function walk(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){const p=path.join(d,e.name); if(e.isDirectory()) walk(p); else if(p.endsWith('.js')) require('child_process').execSync('node --check \\\"'+p+'\\\"');}} walk('server'); walk('probe'); walk('tests'); console.log('all .js files parse OK');\""
   },
   "engines": {
     "node": ">=18"
