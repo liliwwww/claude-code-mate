@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  syntax-check:
+    name: Syntax check (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Syntax-check all server JS
+        run: |
+          for f in $(find server -name '*.js'); do
+            echo "checking $f"
+            node --check "$f"
+          done
+
+      - name: Syntax-check all probe JS
+        run: |
+          for f in $(find probe -name '*.js' -maxdepth 1); do
+            echo "checking $f"
+            node --check "$f"
+          done
+
+      - name: Modules load
+        run: |
+          node -e "
+          // [需求@2026-06-10] CI 只跑 sqlite 初始化 + 模块 load,不跑 spawn(无 claude CLI/无代理)
+          process.env.HTTP_PROXY = process.env.HTTP_PROXY || '';
+          require('./server/db');
+          require('./server/spawn/streamParser');
+          require('./server/spawn/RoleInstance');
+          require('./server/spawn/SpawnManager');
+          require('./server/roles/RoleCatalog').load();
+          require('./server/projects/ProjectStore');
+          require('./server/api/http');
+          require('./server/api/ws');
+          console.log('all modules load OK');
+          "
+
+  markdown-link-check:
+    name: Markdown link sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify referenced docs exist
+        run: |
+          # Verify the key cross-doc references resolve to actual files
+          set -e
+          for f in README.md README.zh-CN.md CONTRIBUTING.md CHANGELOG.md \
+                   docs/architecture.md docs/role-authoring.md docs/development.md \
+                   docs/stream-json-protocol.md docs/spec.md docs/collaboration-mode.zh-CN.md; do
+            if [ ! -f "$f" ]; then
+              echo "MISSING: $f"
+              exit 1
+            fi
+            echo "OK: $f"
+          done

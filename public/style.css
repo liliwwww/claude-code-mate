@@ -1,0 +1,78 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: #1a1c20; color: #d8dadf; font-size: 14px; }
+body { display: flex; flex-direction: column; }
+
+#topbar { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: #24272d; border-bottom: 1px solid #333; }
+.brand { font-weight: 600; }
+.brand .phase { font-size: 11px; color: #88ccff; margin-left: 6px; }
+
+/* [需求@2026-06-10] project switcher 样式 */
+.project-switcher { display: flex; align-items: center; gap: 6px; }
+.project-switcher label { font-size: 11px; color: #888; text-transform: uppercase; }
+.project-switcher select { background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; min-width: 140px; }
+.project-switcher button { background: #2c5a2c; color: #fff; border: 1px solid #3c7a3c; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-weight: bold; }
+.project-switcher button:hover { background: #3c7a3c; }
+
+dialog { border: 1px solid #555; background: #1f2126; color: #fff; border-radius: 8px; padding: 0; box-shadow: 0 8px 32px rgba(0,0,0,0.6); min-width: 380px; }
+dialog::backdrop { background: rgba(0,0,0,0.5); }
+dialog form { padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+dialog h3 { margin: 0 0 6px; font-size: 14px; }
+dialog label { display: flex; flex-direction: column; font-size: 11px; color: #888; gap: 3px; }
+dialog input { background: #1a1c20; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 6px 8px; font-size: 13px; font-family: inherit; }
+dialog .muted { font-size: 11px; color: #888; }
+dialog .error { font-size: 12px; color: #ff8888; }
+dialog .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+dialog button { padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+dialog #ap-cancel { background: #333; color: #fff; border: 1px solid #555; }
+dialog #ap-submit { background: #2c5a2c; color: #fff; border: 1px solid #3c7a3c; }
+
+.banners { flex: 1; }
+.banner { background: #5a3030; color: #ffaaaa; padding: 4px 8px; border-radius: 4px; margin: 0 8px; font-size: 12px; display: inline-block; }
+.banner.warn { background: #5a4a30; color: #ffd680; }
+.actions { display: flex; gap: 8px; align-items: center; }
+.actions select, .actions button { padding: 4px 10px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; cursor: pointer; }
+.actions button:hover { background: #444; }
+
+main { flex: 1; display: flex; min-height: 0; }
+
+#instance-list { width: 260px; background: #1f2126; border-right: 1px solid #333; overflow-y: auto; padding: 8px; }
+#instance-list h2 { font-size: 12px; text-transform: uppercase; color: #888; margin: 4px 0 8px; }
+#instances { list-style: none; padding: 0; margin: 0; }
+#instances li { padding: 8px; margin-bottom: 4px; border-radius: 4px; cursor: pointer; border-left: 3px solid transparent; background: #292c32; }
+#instances li:hover { background: #30343b; }
+#instances li.active { background: #2c3e50; border-left-color: #88ccff; }
+#instances li .iid { font-weight: 600; }
+#instances li .meta { font-size: 11px; color: #888; margin-top: 2px; }
+#instances li .status { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; text-transform: uppercase; }
+.status.spawning { background: #5a4030; color: #ffcc66; }
+.status.idle { background: #2d4030; color: #88dd88; }
+.status.busy { background: #2d3e5a; color: #88ccff; }
+.status.dead { background: #4a2222; color: #ff8888; }
+.status.disconnected { background: #333; color: #888; }
+#instances li.disconnected { opacity: 0.7; border-left-color: #555; }
+#instances li.disconnected .iid::before { content: "💤 "; opacity: 0.7; }
+
+#conversation { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#conv-header { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: #24272d; border-bottom: 1px solid #333; }
+#conv-title { flex: 1; font-weight: 600; }
+#kill-btn { background: #5a2929; color: #fff; border: 1px solid #843535; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+#kill-btn:hover { background: #843535; }
+
+#stream { flex: 1; overflow-y: auto; padding: 12px 16px; font-family: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace; font-size: 12.5px; line-height: 1.6; }
+.msg { margin: 6px 0; padding: 8px 10px; border-radius: 5px; border-left: 3px solid #333; white-space: pre-wrap; word-wrap: break-word; }
+.msg .role { font-size: 10px; color: #888; text-transform: uppercase; margin-bottom: 3px; }
+.msg.user { background: #2a3540; border-left-color: #88ccff; }
+.msg.assistant { background: #2a3a2c; border-left-color: #88dd88; }
+.msg.assistant.streaming { background: #1f2d22; border-left-color: #88dd88; }
+.msg.tool_use { background: #3a3225; border-left-color: #ffcc66; font-style: italic; }
+.msg.tool_result { background: #2a2d35; border-left-color: #888; }
+.msg.tool_result.is_error { border-left-color: #ff8888; }
+.msg.system { background: #25272d; border-left-color: #555; color: #888; font-size: 11px; }
+.msg.error { background: #4a2828; border-left-color: #ff5555; color: #ffaaaa; }
+.msg.result_ok { background: #1f2a1f; border-left-color: #555; color: #88aa88; font-size: 11px; }
+
+#send-form { display: flex; gap: 8px; padding: 8px 16px; border-top: 1px solid #333; background: #24272d; }
+#msg-input { flex: 1; background: #1f2126; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 6px 8px; font-family: inherit; font-size: 13px; resize: vertical; }
+#send-form button { padding: 6px 16px; background: #2c5a2c; color: #fff; border: 1px solid #3c7a3c; border-radius: 4px; cursor: pointer; }
+#send-form button:hover { background: #3c7a3c; }
+#send-form button[disabled] { background: #333; cursor: not-allowed; }

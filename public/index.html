@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claude Code Mate — Phase 1 Observer</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- [需求@2026-06-10] 顶栏加 project 切换器 + 添加项目按钮(user Q1/Q4) -->
+  <header id="topbar">
+    <div class="brand">Claude Code Mate <span class="phase">Phase 2A</span></div>
+    <div class="project-switcher">
+      <label>Project:</label>
+      <select id="project-picker"></select>
+      <button id="add-project-btn" title="Add or import a project">+</button>
+    </div>
+    <div class="banners" id="banners"></div>
+    <div class="actions">
+      <select id="role-picker"></select>
+      <button id="spawn-btn">Spawn</button>
+    </div>
+  </header>
+
+  <!-- [需求@2026-06-10] 添加项目对话框 -->
+  <dialog id="add-project-dialog">
+    <form id="add-project-form" method="dialog">
+      <h3>Add or import a project</h3>
+      <label>Name <input id="ap-name" required placeholder="kb_backend" /></label>
+      <label>Root directory <input id="ap-root" required placeholder="D:\dev\kb_backend" /></label>
+      <div id="ap-inspect" class="muted"></div>
+      <div class="dialog-actions">
+        <button type="button" id="ap-cancel">Cancel</button>
+        <button type="submit" id="ap-submit">Add</button>
+      </div>
+      <div id="ap-error" class="error"></div>
+    </form>
+  </dialog>
+
+  <main>
+    <aside id="instance-list">
+      <h2>Instances</h2>
+      <ul id="instances"></ul>
+    </aside>
+
+    <section id="conversation">
+      <header id="conv-header">
+        <span id="conv-title">Select an instance</span>
+        <button id="kill-btn" hidden>Kill</button>
+      </header>
+      <div id="stream"></div>
+      <form id="send-form">
+        <textarea id="msg-input" placeholder="Type a message... (Ctrl+Enter to send)" rows="3"></textarea>
+        <button type="submit">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Default to LF line endings on checkout (matches .editorconfig)
+* text=auto eol=lf
+
+# Always CRLF for Windows-specific files
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.sqlite binary
+*.sqlite-wal binary
+*.sqlite-shm binary
+
+# linguist hints — hide auto-generated artifacts from language stats
+probe/log/** linguist-generated
+data/** linguist-generated

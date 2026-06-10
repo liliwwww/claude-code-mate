@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+
+# Runtime data
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/snapshots/
+data/runlog/
+data/sandbox_proj_test/
+
+# Probe artifacts (scripts themselves are committed, only logs ignored)
+probe/log/
+probe/runlog/
+
+# Local Claude Code settings (per-user, not portable)
+.claude/settings.local.json
+
+# Logs
+*.log
+data/*.log
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# OS / build
+*.tsbuildinfo
+dist/
+build/
