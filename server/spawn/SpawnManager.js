@@ -14,6 +14,7 @@ const roleCatalog = require('../roles/RoleCatalog');
 const bus = require('../messageBus');
 const { db, recordMessage, recordEvent, stmts } = require('../db');
 const ThreadStore = require('../threads/ThreadStore');
+const ThreadHooks = require('../system-agent/ThreadHooks');
 
 class SpawnManager {
   constructor() {
@@ -141,6 +142,20 @@ class SpawnManager {
         raw,
         ts: Date.now(),
       });
+
+      // [需求@2026-06-10 §1.4, §1.6] result 事件 = 一轮结束,触发 ThreadHooks
+      //   异步 fire-and-forget,不阻塞 event 派发
+      // [bug@2026-06-10] streamParser 把 result/success 拼成 eventType='result/success'(含 subtype),
+      //   不是 'result'。判断要 startsWith,不是 ===。
+      if (eventType.startsWith('result') && inst.threadSlug && raw.is_error !== true) {
+        setImmediate(() => {
+          ThreadHooks.onResultEvent({
+            projectId: inst.projectId,
+            threadSlug: inst.threadSlug,
+            instanceId: inst.id,
+          }).catch((e) => console.warn(`[SpawnManager] ThreadHooks error:`, e.message));
+        });
+      }
     });
 
     inst.on('stderr', (s) => {

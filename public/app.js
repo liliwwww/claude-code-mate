@@ -468,6 +468,19 @@ function handleWsMsg({ type, payload }) {
     if (payload.threadSlug === state.focusedSlug) {
       renderEventInStream(payload.eventType, payload.raw, true);
     }
+  } else if (type === 'thread.title_updated') {
+    // [需求@2026-06-10 §1.4] SystemAgent 自动摘要的标题回灌
+    if (payload.projectId !== state.activeProjectId) return;
+    state.threads.set(payload.threadSlug, payload.thread);
+    renderThreads();
+    if (payload.threadSlug === state.focusedSlug) renderConvHeader();
+  } else if (type === 'thread.suggested_reply') {
+    // [需求@2026-06-10 §1.6] SystemAgent 生成的回答模板,预填输入框(空才填)
+    if (payload.projectId !== state.activeProjectId) return;
+    if (payload.threadSlug !== state.focusedSlug) return;
+    if (els.msgInput.value.trim()) return;  // 有内容不覆盖
+    els.msgInput.value = payload.template;
+    els.msgInput.placeholder = '系统建议的回答模板(可改可删,Ctrl+Enter 发送)';
   }
 }
 
