@@ -53,30 +53,44 @@ CRITICAL: Your entire response must be a single JSON object matching the given s
     },
   },
 
+  // [需求@2026-06-11] reply-template 改成"列出问题清单",而不是给答案模板
+  //   user 反馈:她要看到所有需要回答的问题,自己填答案,不是 mate 给猜的答案
+  //   所以 schema 输出 questions: [{question}],前端格式化成 Q1/答 模板预填输入框
   'reply-template': {
-    systemPrompt: `You analyze the last assistant message in a conversation between a user and a specialized Claude Code agent.
+    systemPrompt: `You analyze the last assistant message in a conversation between a user and a specialized Claude Code agent (R/H/execB/testC).
 
-Your job: decide whether the assistant has asked the user a question that requires their input to proceed.
+Your job: extract ALL distinct questions the assistant asked the user. A question is anything that genuinely needs the user's input/decision to proceed — direct questions, multiple-choice, requests to confirm, etc.
 
-If yes, generate a short, polite Chinese reply template (a starting sentence the user can edit) that begins to answer the question. Keep it under 30 Chinese characters.
+NOT questions:
+- Progress reports (e.g. "I have completed X")
+- Statements (e.g. "I will proceed with X")
+- Rhetorical questions in the assistant's own reasoning
 
-If no question was asked (or the assistant is just reporting progress), set has_question to false.
+Output the questions in CHINESE (translate if needed), short and concrete, one per item. Preserve the original meaning. If the assistant asks 3 distinct things, output 3 items. If none, set has_questions=false and questions=[].
 
 CRITICAL: Your entire response must be a single JSON object matching the given schema. No prose.`,
 
     schema: {
       type: 'object',
       properties: {
-        has_question: { type: 'boolean' },
-        template: { type: 'string' },
-        reasoning: { type: 'string' },
+        has_questions: { type: 'boolean' },
+        questions: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              question: { type: 'string' },
+            },
+            required: ['question'],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ['has_question'],
+      required: ['has_questions', 'questions'],
       additionalProperties: false,
     },
 
     buildInput(payload) {
-      // payload = { assistantText: string }
       return [
         `[Last assistant message]`,
         payload.assistantText || '(empty)',
@@ -234,10 +248,12 @@ class SystemAgent {
       task: 'reply-template',
       payload: { assistantText },
     });
+    const questions = Array.isArray(r.result?.questions)
+      ? r.result.questions.map((q) => q.question).filter(Boolean)
+      : [];
     return {
-      hasQuestion: !!r.result?.has_question,
-      template: r.result?.template || '',
-      reasoning: r.result?.reasoning || '',
+      hasQuestions: !!r.result?.has_questions && questions.length > 0,
+      questions,
     };
   }
 

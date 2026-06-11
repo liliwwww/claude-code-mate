@@ -210,8 +210,10 @@ class SpawnManager {
   }
 
   // [需求@2026-06-10] listInstances 按 project 过滤;不传 projectId 返回全部(供监控视图用)
-  listInstances(projectId = null) {
-    const all = [...this.instances.values()].filter((i) => i.status !== 'dead');
+  // [需求@2026-06-11 §2] 加 includeDead 选项 — 终端管理 modal 想看 dead 实例
+  listInstances(projectId = null, { includeDead = false } = {}) {
+    let all = [...this.instances.values()];
+    if (!includeDead) all = all.filter((i) => i.status !== 'dead');
     const scoped = projectId ? all.filter((i) => i.projectId === projectId) : all;
     return scoped.map((i) => i.snapshot());
   }
@@ -428,7 +430,28 @@ class SpawnManager {
     // Alive — just send
     inst.sendUserText(text);
     ThreadStore.touch(projectId, threadSlug, roleType);
+    // [需求@2026-06-11 §4] user 一发新消息就清除黄灯(她回答了 pending question)
+    this._clearPendingQuestion(projectId, threadSlug);
     return inst;
+  }
+
+  // [需求@2026-06-11 §4] 清除 thread.metadata.has_pending_question(user 已回答 → 黄灯熄)
+  _clearPendingQuestion(projectId, threadSlug) {
+    try {
+      const thread = ThreadStore.get(projectId, threadSlug);
+      if (!thread || !thread.metadata?.has_pending_question) return;
+      const meta = { ...thread.metadata };
+      delete meta.has_pending_question;
+      delete meta.pending_questions;
+      delete meta.pending_questions_at;
+      db.prepare(`UPDATE threads SET metadata_json = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
+        .run(JSON.stringify(meta), Date.now(), projectId, threadSlug);
+      bus.publish('thread.metadata_updated', {
+        projectId, threadSlug, thread: ThreadStore.get(projectId, threadSlug),
+      });
+    } catch (e) {
+      console.warn(`[SpawnManager] _clearPendingQuestion failed: ${e.message}`);
+    }
   }
 
   async shutdown() {

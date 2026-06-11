@@ -68,6 +68,77 @@ body { display: flex; flex-direction: column; }
 .brand { font-weight: 600; }
 .brand .phase { font-size: 11px; color: var(--accent); margin-left: 6px; }
 
+/* [需求@2026-06-11 §3] 顶栏下方动态事件流 — 高科技感 marquee */
+#event-ticker {
+  display: flex; align-items: center; gap: 10px;
+  background: linear-gradient(90deg, var(--bg-elevated) 0%, var(--bg-card) 50%, var(--bg-elevated) 100%);
+  border-bottom: 1px solid var(--border);
+  padding: 5px 16px; min-height: 30px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
+  font-size: 11px; overflow: hidden;
+  position: relative;
+}
+#event-ticker::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse at left, var(--accent) 0%, transparent 30%);
+  opacity: 0.08; pointer-events: none;
+}
+#event-ticker .ticker-label {
+  color: var(--accent); font-weight: 700; letter-spacing: 1px;
+  font-size: 10px; flex-shrink: 0;
+  padding: 1px 6px; border: 1px solid var(--accent); border-radius: 3px;
+  box-shadow: 0 0 4px var(--accent);
+}
+#ticker-events {
+  display: flex; gap: 14px; align-items: center; flex: 1; overflow: hidden;
+}
+.ticker-event {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 1px 8px; border-radius: 3px;
+  color: var(--text-secondary); white-space: nowrap;
+  animation: ticker-slide-in 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+.ticker-event.fresh {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  box-shadow: 0 0 6px rgba(136, 204, 255, 0.4);
+}
+.ticker-event.kind-spawn   { border-left: 3px solid var(--accent-green); }
+.ticker-event.kind-kill    { border-left: 3px solid var(--accent-red); }
+.ticker-event.kind-handoff { border-left: 3px solid var(--accent-purple); }
+.ticker-event.kind-done    { border-left: 3px solid var(--accent-green); background: var(--bg-msg-ok); }
+.ticker-event.kind-blocked { border-left: 3px solid var(--accent-yellow); animation: ticker-slide-in 0.4s, yellow-blink 1.2s infinite 0.4s; }
+.ticker-event .ts { color: var(--text-muted); font-size: 10px; }
+.ticker-event .arrow { color: var(--text-muted); }
+
+@keyframes ticker-slide-in {
+  from { transform: translateX(40px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+
+/* Terminals modal — wider than other dialogs */
+#terminals-dialog { min-width: 720px; max-width: 92vw; }
+#terminals-dialog form { gap: 8px; }
+#terminals-dialog .terminals-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 11px; color: var(--text-secondary); }
+#terminals-dialog .terminals-toolbar input[type=checkbox] { vertical-align: middle; margin-right: 4px; }
+#terminals-dialog .terminals-toolbar button { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-light); padding: 3px 10px; border-radius: 3px; font-size: 11px; cursor: pointer; }
+#terminals-list { max-height: 60vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
+.term-row { display: grid; grid-template-columns: 38px minmax(140px, 1.2fr) 0.7fr 0.7fr 70px minmax(120px, 1fr) 60px 60px; gap: 8px; padding: 6px 8px; border-top: 1px solid var(--border); align-items: center; font-size: 11px; font-family: ui-monospace, Consolas, monospace; }
+.term-row:first-child { border-top: none; }
+.term-row.head { background: var(--bg-card); color: var(--text-secondary); text-transform: uppercase; font-size: 10px; font-weight: 600; }
+.term-row .term-status { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; text-transform: uppercase; }
+.term-status.spawning, .term-status.busy { background: var(--bg-msg-stream); color: var(--accent-green); }
+.term-status.idle { background: var(--bg-msg-ok); color: var(--accent-green); }
+.term-status.disconnected { background: var(--bg-card); color: var(--text-muted); }
+.term-status.dead { background: var(--bg-msg-error); color: var(--accent-red); }
+.term-row .term-kill { background: var(--accent-red); color: #fff; border: none; border-radius: 3px; padding: 2px 8px; font-size: 10px; cursor: pointer; }
+.term-row .term-kill:disabled { background: var(--bg-card); color: var(--text-muted); cursor: not-allowed; }
+.term-empty { padding: 12px; text-align: center; color: var(--text-muted); font-size: 11px; }
+#terminals-btn { position: relative; }
+#terminals-count { display: inline-block; background: var(--accent); color: #fff; border-radius: 10px; padding: 0 6px; font-size: 10px; min-width: 16px; text-align: center; margin-left: 3px; font-weight: 700; }
+
 .project-switcher { display: flex; align-items: center; gap: 6px; }
 .project-switcher label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; }
 .project-switcher select { background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border-light); border-radius: 4px; padding: 4px 8px; min-width: 140px; }

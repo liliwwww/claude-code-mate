@@ -106,17 +106,53 @@ const ThreadHooks = {
     });
   },
 
+  // [需求@2026-06-11 §1+§4] reply-template 改成问题清单 + 同步设黄灯状态
+  //   - has_questions=true 时:
+  //     1. thread.metadata.has_pending_question = true → 前端 computeStateLight 黄闪
+  //     2. WS 推 questions 给前端 → 前端格式化成"Q1: ...\n答:\n\nQ2: ..."填入输入框
+  //   - has_questions=false 时:
+  //     1. 清除 thread.metadata.has_pending_question(R 自答完了,等下一条 user 输入)
   async _generateReplyTemplateAsync(projectId, threadSlug, assistantText) {
     const r = await SystemAgent.generateReplyTemplate(assistantText);
-    if (!r.hasQuestion) return;  // 没问题就不推
-    if (!r.template) return;
 
-    bus.publish('thread.suggested_reply', {
-      projectId,
-      threadSlug,
-      template: r.template,
-      reasoning: r.reasoning,
-    });
+    // Patch thread.metadata.has_pending_question
+    const thread = ThreadStore.get(projectId, threadSlug);
+    if (thread) {
+      const meta = thread.metadata || {};
+      const wasPending = !!meta.has_pending_question;
+      if (r.hasQuestions) {
+        meta.has_pending_question = true;
+        meta.pending_questions = r.questions;
+        meta.pending_questions_at = Date.now();
+      } else if (wasPending) {
+        delete meta.has_pending_question;
+        delete meta.pending_questions;
+        delete meta.pending_questions_at;
+      }
+      if (r.hasQuestions || wasPending) {
+        try {
+          db.prepare(`UPDATE threads SET metadata_json = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
+            .run(JSON.stringify(meta), Date.now(), projectId, threadSlug);
+        } catch (e) {
+          console.warn(`[ThreadHooks] pending_question persist failed: ${e.message}`);
+        }
+        // Publish updated thread so front-end recomputes state light
+        bus.publish('thread.metadata_updated', {
+          projectId,
+          threadSlug,
+          thread: ThreadStore.get(projectId, threadSlug),
+        });
+      }
+    }
+
+    // Push the questions list to the focused input (FE decides format)
+    if (r.hasQuestions && r.questions.length > 0) {
+      bus.publish('thread.suggested_reply', {
+        projectId,
+        threadSlug,
+        questions: r.questions,
+      });
+    }
   },
 };
 

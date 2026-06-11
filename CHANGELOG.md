@@ -7,6 +7,20 @@
 ### 进行中
 - Phase 2D:系统监控模块 + 全局并发 cap + session TTL 4h
 
+## [0.3.1] — 2C+ 增量(2026-06-11)
+
+User 实测后 4 条反馈,小迭代修正:
+
+### 改进
+- **回答模板改成问题清单**(§1):reply-template task 的 schema 改成 `{has_questions, questions: [{question}]}`(原来给"建议答案",user 反馈要"列出所有要回答的问题、留空白"),前端预填格式为 `Q1: ...\n答:\n\nQ2: ...\n答:`,占用 textarea + 自动 focus
+- **统一"等用户回答"信号 = 黄灯**(§4 bug fix):之前只有 `<mate:blocked />` marker 触发黄灯,R 普通追问没触发。现在 `thread.metadata.has_pending_question`(SystemAgent 识别)和 `metadata.blocked`(marker 触发)都让线索看板黄灯闪烁。user 发新消息时 SpawnManager 自动清除 `has_pending_question`(回答了 → 灯熄)
+- **终端管理 modal**(§2):顶栏新增 "终端 (N)" 按钮(N = 当前活实例数,实时更新),点击弹 modal 列**跨所有 project** 的所有 claude 实例(可勾选包含 dead),显示 id / role / project / pid / sessionId / 绑定 thread,可一键 kill
+- **顶栏下方动态事件流**(§3):顶栏下面一条窄高度 marquee(36px 高),实时显示 spawn / kill / handoff / done / blocked 事件,新事件 slide-in 动画 + 4s 高亮,最多保留 5 条,事件类型按颜色区分(绿 = spawn/done,红 = kill,紫 = handoff,黄闪 = blocked)。前缀 `[EVENTS]` 带发光 badge
+
+### 新增 API
+- `GET /api/instances/all?includeDead=0|1` — 跨 project 列实例(终端管理 modal 用)
+- WS event `thread.metadata_updated` — 当 has_pending_question 翻转时广播,前端重算状态灯
+
 ## [0.3.0] — Phase 2C 完成(2026-06-10)
 
 详细需求 / 14 个细节问答见 [docs/discussions/2026-06-10-phase-2c-needs.md](./docs/discussions/2026-06-10-phase-2c-needs.md)。

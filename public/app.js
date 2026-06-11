@@ -37,6 +37,15 @@ const els = {
   hcDialog: el('#healthcheck-dialog'),
   hcResults: el('#hc-results'),
   hcRun: el('#hc-run'),
+  // [需求@2026-06-11 §2] 终端管理 modal
+  terminalsBtn: el('#terminals-btn'),
+  terminalsCount: el('#terminals-count'),
+  terminalsDialog: el('#terminals-dialog'),
+  terminalsList: el('#terminals-list'),
+  termIncludeDead: el('#term-include-dead'),
+  termRefresh: el('#term-refresh'),
+  // [需求@2026-06-11 §3] 顶栏下方事件流
+  tickerEvents: el('#ticker-events'),
   newThreadBtn: el('#new-thread-btn'),
   newThreadDialog: el('#new-thread-dialog'),
   ntTitle: el('#nt-title'),
@@ -53,6 +62,10 @@ const els = {
   sendForm: el('#send-form'),
   sendBtn: el('#send-btn'),
 };
+
+// [需求@2026-06-11 §3] 事件流配置
+const TICKER_MAX = 5;            // 顶栏最多保留 5 条事件
+const TICKER_FRESH_MS = 4000;    // 4 秒内的事件高亮
 
 const LS_KEY = 'mate.activeProjectId';
 const LS_FOCUSED_THREAD = 'mate.focusedThread';
@@ -198,6 +211,9 @@ async function init() {
 
   await reloadProjectScopedData();
 
+  // [需求@2026-06-11 §2] 初始化终端计数
+  updateTerminalsCount();
+
   connectWs();
   wireInputs();
 }
@@ -253,10 +269,12 @@ function renderProjectPicker() {
   }
 }
 
-// [需求@2026-06-10 §3] 计算线索看板的状态灯
+// [需求@2026-06-10 §3 + 2026-06-11 §4] 计算线索看板的状态灯
+//   2026-06-11 修复:任何 has_pending_question(SystemAgent 识别)都该黄灯闪,
+//   不只是 <mate:blocked /> marker。user 看到 R 普通追问也要看到等待信号。
 function computeStateLight(thread) {
   const meta = thread.metadata || {};
-  if (meta.blocked) return 'yellow-blink';
+  if (meta.blocked || meta.has_pending_question) return 'yellow-blink';
 
   const roleTypes = ['requirements', 'orchestrator', 'executor', 'validator'];
   const bound = roleTypes
@@ -475,11 +493,19 @@ function connectWs() {
 function handleWsMsg({ type, payload }) {
   if (type === 'instance.spawned' || type === 'instance.status_change') {
     const inst = payload.instance || payload;
+    // [需求@2026-06-11 §3] 事件流 — spawn 推一条
+    if (type === 'instance.spawned') {
+      pushTickerEvent('spawn', `+ ${inst.id}  @ ${shortProj(inst.projectId)}`);
+      updateTerminalsCount();
+    }
     if (inst.projectId !== state.activeProjectId) return;
     state.instances.set(inst.id, inst);
     renderThreads();
   } else if (type === 'instance.exited') {
     const inst = payload.instance;
+    // [需求@2026-06-11 §3] 事件流 — kill/exit 推一条
+    pushTickerEvent('kill', `× ${inst.id}  (${payload.code !== null ? 'rc=' + payload.code : payload.signal || 'killed'})`);
+    updateTerminalsCount();
     if (inst.projectId !== state.activeProjectId) return;
     state.instances.set(inst.id, inst);
     renderThreads();
@@ -495,14 +521,29 @@ function handleWsMsg({ type, payload }) {
     renderThreads();
     if (payload.threadSlug === state.focusedSlug) renderConvHeader();
   } else if (type === 'thread.suggested_reply') {
-    // [需求@2026-06-10 §1.6] SystemAgent 生成的回答模板,预填输入框(空才填)
+    // [需求@2026-06-11 §1] 列出 SystemAgent 识别的所有问题,留答案空白
+    //   格式: Q1: <问题>\n答:\n\nQ2: <问题>\n答:\n
+    //   空才填,有 user 输入不覆盖
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug !== state.focusedSlug) return;
     if (els.msgInput.value.trim()) return;
-    els.msgInput.value = payload.template;
-    els.msgInput.placeholder = '系统建议的回答模板(可改可删,Ctrl+Enter 发送)';
+    const questions = payload.questions || [];
+    if (!questions.length) return;
+    const text = questions
+      .map((q, i) => `Q${i + 1}: ${q}\n答:`)
+      .join('\n\n') + '\n';
+    els.msgInput.value = text;
+    els.msgInput.placeholder = `${questions.length} 个待回答问题 — 在每个"答:"后填写,Ctrl+Enter 发送`;
+    // Focus the input box (so user can start typing immediately)
+    els.msgInput.focus();
+  } else if (type === 'thread.metadata_updated') {
+    // [需求@2026-06-11 §4] 线索 metadata 变化(pending_question 翻转)→ 重算黄灯
+    if (payload.projectId !== state.activeProjectId) return;
+    state.threads.set(payload.threadSlug, payload.thread);
+    renderThreads();
   } else if (type === 'thread.handoff') {
     // [需求@2026-06-10 §6.4] 角色切换:对话流加一条隐式分割条(small system msg)
+    pushTickerEvent('handoff', `${payload.from} → ${payload.target}  ${payload.reason ? '· ' + payload.reason.slice(0, 30) : ''}`);
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug === state.focusedSlug) {
       const node = makeMsg('system handoff-card', `→ ${payload.target}`,
@@ -510,12 +551,11 @@ function handleWsMsg({ type, payload }) {
       els.stream.appendChild(node);
       els.stream.scrollTop = els.stream.scrollHeight;
     }
-    // Refresh thread snapshot to get new stage
     api(`/threads/${encodeURIComponent(payload.threadSlug)}?projectId=${state.activeProjectId}`)
       .then((t) => { state.threads.set(t.slug, t); renderThreads(); if (t.slug === state.focusedSlug) renderConvHeader(); })
       .catch(() => {});
   } else if (type === 'thread.done') {
-    // [需求@2026-06-10 §6] 自验完成 = verified = IDLE,user 视角:线索后台干完了
+    pushTickerEvent('done', `✓ ${payload.threadSlug} verified`);
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug === state.focusedSlug) {
       const node = makeMsg('system done-card', '✓ 线索完成', payload.summary || '后台自验通过');
@@ -525,7 +565,7 @@ function handleWsMsg({ type, payload }) {
     state.threads.set(payload.threadSlug, payload.thread);
     renderThreads();
   } else if (type === 'thread.blocked') {
-    // [需求@2026-06-10 §6.2] BLOCKED → 线索看板黄灯闪烁 + 对话流卡片
+    pushTickerEvent('blocked', `⚠ ${payload.threadSlug}: ${String(payload.question).slice(0, 40)}`);
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug === state.focusedSlug) {
       const node = makeMsg('blocked-card', `⚠️ 需要你拍板 (${payload.raisedBy})`,
@@ -536,6 +576,107 @@ function handleWsMsg({ type, payload }) {
     state.threads.set(payload.threadSlug, payload.thread);
     renderThreads();
   }
+}
+
+// [需求@2026-06-11 §3] 顶栏事件流
+function pushTickerEvent(kind, text) {
+  const node = document.createElement('div');
+  node.className = `ticker-event kind-${kind} fresh`;
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  node.innerHTML = `<span class="ts">${hh}:${mm}:${ss}</span> ${escapeHtml(text)}`;
+  els.tickerEvents.insertBefore(node, els.tickerEvents.firstChild);
+  // Cap length
+  while (els.tickerEvents.children.length > TICKER_MAX) {
+    els.tickerEvents.lastChild.remove();
+  }
+  // Defresh after TICKER_FRESH_MS
+  setTimeout(() => node.classList.remove('fresh'), TICKER_FRESH_MS);
+}
+
+function shortProj(projectId) {
+  const p = state.projects.find((x) => x.id === projectId);
+  return p ? p.name : '#' + projectId;
+}
+
+// [需求@2026-06-11 §2] 终端管理 modal
+async function refreshTerminalsList() {
+  try {
+    const includeDead = els.termIncludeDead.checked;
+    const r = await fetch(`/api/instances/all${includeDead ? '?includeDead=1' : ''}`);
+    if (!r.ok) throw new Error('fetch failed: ' + r.status);
+    const instances = await r.json();
+    renderTerminalsList(instances);
+  } catch (e) {
+    els.terminalsList.innerHTML = `<div class="term-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderTerminalsList(instances) {
+  if (!instances.length) {
+    els.terminalsList.innerHTML = `<div class="term-empty">当前没有 claude 终端实例</div>`;
+    return;
+  }
+  const head = `
+    <div class="term-row head">
+      <div></div>
+      <div>ID</div>
+      <div>角色</div>
+      <div>Project</div>
+      <div>PID</div>
+      <div>Session</div>
+      <div>Thread</div>
+      <div></div>
+    </div>
+  `;
+  const rows = instances.map((i) => {
+    const sidShort = i.sessionId ? i.sessionId.slice(0, 8) : '-';
+    const threadShort = i.threadSlug || '-';
+    const lastSeen = relTime(i.lastActiveAt);
+    const canKill = !['dead', 'disconnected'].includes(i.status);
+    return `
+      <div class="term-row">
+        <div><span class="term-status ${i.status}">${i.status[0]}</span></div>
+        <div title="${escapeHtml(i.id)} · last seen ${lastSeen}">${escapeHtml(i.id)}</div>
+        <div>${escapeHtml(i.roleName)}</div>
+        <div>${escapeHtml(i.projectName || '?')}</div>
+        <div>${i.pid ?? '-'}</div>
+        <div title="${i.sessionId || ''}">${sidShort}</div>
+        <div title="${threadShort}">${escapeHtml(threadShort.slice(0, 16))}</div>
+        <div>${canKill
+          ? `<button class="term-kill" data-id="${escapeHtml(i.id)}">kill</button>`
+          : `<button class="term-kill" disabled>-</button>`}
+        </div>
+      </div>
+    `;
+  }).join('');
+  els.terminalsList.innerHTML = head + rows;
+
+  els.terminalsList.querySelectorAll('.term-kill[data-id]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const id = btn.dataset.id;
+      if (!confirm(`Kill ${id}?`)) return;
+      try {
+        await api(`/instances/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        await refreshTerminalsList();
+      } catch (err) {
+        alert('kill failed: ' + err.message);
+      }
+    });
+  });
+}
+
+async function updateTerminalsCount() {
+  try {
+    const r = await fetch('/api/instances/all');
+    if (!r.ok) return;
+    const list = await r.json();
+    const alive = list.filter((i) => ['spawning', 'idle', 'busy', 'awaiting_verify', 'blocked'].includes(i.status)).length;
+    els.terminalsCount.textContent = String(alive);
+  } catch {}
 }
 
 // ---------------- Input wiring ----------------
@@ -604,6 +745,14 @@ function wireInputs() {
     els.hcDialog.showModal();
   });
   els.hcRun.addEventListener('click', runHealthcheck);
+
+  // [需求@2026-06-11 §2] 终端管理 modal
+  els.terminalsBtn.addEventListener('click', async () => {
+    await refreshTerminalsList();
+    els.terminalsDialog.showModal();
+  });
+  els.termRefresh.addEventListener('click', refreshTerminalsList);
+  els.termIncludeDead.addEventListener('change', refreshTerminalsList);
 
   // [需求@2026-06-10 §1.4] 新线索 dialog(slug 由 backend 自动生成)
   els.newThreadBtn.addEventListener('click', () => {

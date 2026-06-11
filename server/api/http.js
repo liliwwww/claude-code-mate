@@ -85,6 +85,19 @@ function buildRouter() {
     res.json(spawnManager.listInstances(req.project.id));
   });
 
+  // [需求@2026-06-11 §2] 终端管理 modal:跨 project 列所有实例(可含 dead)
+  r.get('/instances/all', (req, res) => {
+    const includeDead = req.query.includeDead === '1' || req.query.includeDead === 'true';
+    const insts = spawnManager.listInstances(null, { includeDead });
+    // Attach project name for FE display
+    const projects = ProjectStore.list();
+    const projById = new Map(projects.map((p) => [p.id, p]));
+    res.json(insts.map((i) => ({
+      ...i,
+      projectName: projById.get(i.projectId)?.name || '(unknown)',
+    })));
+  });
+
   r.post('/instances', requireProjectId, (req, res) => {
     const { roleName, customGreeting } = req.body || {};
     if (!roleName) return res.status(400).json({ error: 'roleName required' });
