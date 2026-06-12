@@ -229,15 +229,17 @@ const stmts = {
     INSERT INTO messages (project_id, thread_slug, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json)
     VALUES (@project_id, @thread_slug, @instance_id, @role_name, @direction, @claude_session_id, @ts, @event_type, @payload_json)
   `),
+  // [需求@2026-06-12 §8.3] pool_slot 字段贯通持久化
   upsertInstance: db.prepare(`
-    INSERT INTO role_instances (id, project_id, role_name, pid, claude_session_id, status, bound_thread_slug, spawn_args_json, created_at, last_active_at)
-    VALUES (@id, @project_id, @role_name, @pid, @claude_session_id, @status, @bound_thread_slug, @spawn_args_json, @created_at, @last_active_at)
+    INSERT INTO role_instances (id, project_id, role_name, pid, claude_session_id, status, bound_thread_slug, spawn_args_json, created_at, last_active_at, pool_slot)
+    VALUES (@id, @project_id, @role_name, @pid, @claude_session_id, @status, @bound_thread_slug, @spawn_args_json, @created_at, @last_active_at, @pool_slot)
     ON CONFLICT(id) DO UPDATE SET
       pid               = excluded.pid,
       claude_session_id = excluded.claude_session_id,
       status            = excluded.status,
       bound_thread_slug = excluded.bound_thread_slug,
-      last_active_at    = excluded.last_active_at
+      last_active_at    = excluded.last_active_at,
+      pool_slot         = excluded.pool_slot
   `),
   setInstanceStatus: db.prepare(`UPDATE role_instances SET status = ?, last_active_at = ? WHERE id = ?`),
   setInstanceDied:   db.prepare(`UPDATE role_instances SET status = 'dead', died_at = ? WHERE id = ?`),

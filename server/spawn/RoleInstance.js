@@ -65,15 +65,18 @@ function buildSpawnArgs({ role, sessionId, resumeSessionId, forkSession, cwd }) 
 }
 
 class RoleInstance {
-  constructor({ role, projectId, projectRootDir, threadSlug = null, customGreeting = null, restoreState = null }) {
+  constructor({ role, projectId, projectRootDir, threadSlug = null, customGreeting = null, poolSlot = null, restoreState = null }) {
     // [需求@2026-06-10] 每个实例归属一个 project (user Q3/Q4),
     // cwd 用 project.root_dir,不再用全局 config.siblingProjectDir。
+    // [需求@2026-06-12 §8.3] poolSlot: 1..N for pooled roles (H/execB/testC/mateBot),
+    //   null for per-thread R. Stable across restarts.
     if (restoreState) {
       this.id = restoreState.id;
       this.role = role;
       this.projectId = restoreState.projectId;
       this.projectRootDir = restoreState.projectRootDir;
       this.threadSlug = restoreState.threadSlug || null;
+      this.poolSlot = restoreState.poolSlot ?? null;
       this.status = 'disconnected';
       this.pid = null;
       this.sessionId = restoreState.sessionId || null;
@@ -88,6 +91,7 @@ class RoleInstance {
       this.projectId = projectId;
       this.projectRootDir = projectRootDir;
       this.threadSlug = threadSlug;
+      this.poolSlot = poolSlot;
       this.status = 'spawning';
       this.pid = null;
       this.sessionId = null;
@@ -300,11 +304,21 @@ class RoleInstance {
     });
   }
 
+  // [需求@2026-06-12 §8.3] displayName 给 UI 用:
+  //   pooled 角色:`execB-2`(稳定,跨重启)
+  //   per-thread R:`planA-R.xy3z2k`(原 id)
+  get displayName() {
+    if (this.poolSlot != null) return `${this.role.name}-${this.poolSlot}`;
+    return this.id;
+  }
+
   snapshot() {
     return {
       id: this.id,
       projectId: this.projectId,
       roleName: this.role.name,
+      poolSlot: this.poolSlot,
+      displayName: this.displayName,
       pid: this.pid,
       sessionId: this.sessionId,
       status: this.status,

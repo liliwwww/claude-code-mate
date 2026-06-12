@@ -24,10 +24,11 @@ class SpawnManager {
 
   // [需求@2026-06-10] lazy resurrection: on boot, restore non-dead instances
   // from SQLite as `disconnected` RoleInstance objects.
+  // [需求@2026-06-12 §8.3] 同时 backfill pool_slot for legacy 实例
   restoreFromDisk() {
     const rows = db.prepare(`
       SELECT id, project_id, role_name, claude_session_id, status, bound_thread_slug,
-             created_at, last_active_at
+             created_at, last_active_at, pool_slot
       FROM role_instances
       WHERE status != 'dead'
     `).all();
@@ -61,6 +62,7 @@ class SpawnManager {
           projectRootDir: proj.root_dir,
           sessionId: r.claude_session_id,
           threadSlug: r.bound_thread_slug,
+          poolSlot: r.pool_slot,
           createdAt: r.created_at,
           lastActiveAt: r.last_active_at,
         },
@@ -72,8 +74,65 @@ class SpawnManager {
       } catch {}
       restored++;
     }
-    console.log(`[SpawnManager] restored ${restored} disconnected instance(s), skipped ${skipped}`);
-    return { restored, skipped };
+
+    // [需求@2026-06-12 §8.3] backfill pool_slot for legacy non-R 实例
+    const backfilled = this._backfillPoolSlots();
+    console.log(`[SpawnManager] restored ${restored} disconnected, skipped ${skipped}, backfilled ${backfilled} pool slots`);
+    return { restored, skipped, backfilled };
+  }
+
+  // [需求@2026-06-12 §8.3] legacy 实例无 pool_slot 时按 createdAt 顺序分配 1..N。
+  //   只动 pooled 角色(非 requirements)。超过 pool 上限的 excess 实例标 dead。
+  _backfillPoolSlots() {
+    const groups = new Map(); // `${projectId}|${roleName}` → [insts sorted createdAt]
+    for (const inst of this.instances.values()) {
+      if (inst.role.type === 'requirements') continue;  // R 不池化
+      if (inst.poolSlot != null) continue;  // 已有 slot
+      const key = `${inst.projectId}|${inst.role.name}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(inst);
+    }
+
+    let backfilled = 0;
+    for (const [key, insts] of groups) {
+      insts.sort((a, b) => a.createdAt - b.createdAt);
+      const [projectIdStr, roleName] = key.split('|');
+      const projectId = parseInt(projectIdStr, 10);
+      const role = roleCatalog.get(roleName);
+      if (!role) continue;
+
+      // Slots already used by other non-dead instances in this (project, role)
+      const used = new Set();
+      for (const i of this.instances.values()) {
+        if (i.projectId === projectId && i.role.name === roleName && i.poolSlot != null && i.status !== 'dead') {
+          used.add(i.poolSlot);
+        }
+      }
+
+      for (const inst of insts) {
+        let assigned = null;
+        for (let s = 1; s <= role.parallelismLimit; s++) {
+          if (!used.has(s)) { assigned = s; used.add(s); break; }
+        }
+        if (assigned != null) {
+          inst.poolSlot = assigned;
+          try {
+            db.prepare(`UPDATE role_instances SET pool_slot = ? WHERE id = ?`).run(assigned, inst.id);
+            backfilled++;
+          } catch (e) {
+            console.warn(`[SpawnManager] backfill pool_slot for ${inst.id} failed:`, e.message);
+          }
+        } else {
+          // Pool 满了,这条 excess 实例标 dead(从 in-memory pool 也清掉)
+          console.warn(`[SpawnManager] excess ${roleName} instance ${inst.id} — no free slot (pool ${role.parallelismLimit} full), marking dead`);
+          inst._setStatus('dead');
+          inst.diedAt = Date.now();
+          try { stmts.setInstanceDied.run(Date.now(), inst.id); } catch {}
+          this.instances.delete(inst.id);
+        }
+      }
+    }
+    return backfilled;
   }
 
   // [需求@2026-06-10] spawn per-project — parallelism limit is per (project, role) tuple.
@@ -134,6 +193,19 @@ class SpawnManager {
         }
       }
 
+      // [需求@2026-06-12 §6.2 Gap 1] 在 thread.metadata 暂存 _current_role_type
+      //   让 ThreadHooks 知道是哪个角色 type 在说话(用于 last_questioner_role_type)
+      if (inst.threadSlug && eventType === 'assistant') {
+        try {
+          const cur = ThreadStore.get(inst.projectId, inst.threadSlug);
+          if (cur) {
+            const meta = { ...cur.metadata, _current_role_type: inst.role.type };
+            db.prepare(`UPDATE threads SET metadata_json = ? WHERE project_id = ? AND slug = ?`)
+              .run(JSON.stringify(meta), inst.projectId, inst.threadSlug);
+          }
+        } catch {}
+      }
+
       bus.publish('instance.event', {
         instanceId: inst.id,
         projectId: inst.projectId,
@@ -192,6 +264,7 @@ class SpawnManager {
         spawn_args_json: JSON.stringify(inst._spawnArgs || []),
         created_at: inst.createdAt,
         last_active_at: inst.lastActiveAt,
+        pool_slot: inst.poolSlot,
       });
     } catch (e) {
       console.warn(`[SpawnManager] upsertInstance failed for ${inst.id}: ${e.message}`);
@@ -231,27 +304,42 @@ class SpawnManager {
   //   - done: 标记线索 verified(H 自验通过 = 流程到头 = IDLE,user 体验回归)
   //   - blocked: 标记线索为 blocked 状态,前端黄灯闪烁
   //   marker 由 SpawnManager._wireListeners 在 result event 时通过 MarkerDetector 提取
+  // [需求@2026-06-12 §6.1 + 8.3] Marker 优先级:done > blocked > handoff
+  //   首个出现的高优先级 marker 处理完后,**静默忽略**剩余 marker(避免 done 翻 verified 后还派下一个角色,产生孤儿实例)。
   async _handleMarkers(inst, markers) {
     if (!inst.threadSlug) return;
-    for (const m of markers) {
-      try {
-        if (m.kind === 'handoff') {
-          await this._performHandoff(inst, m.target, m.reason);
-        } else if (m.kind === 'done') {
-          this._performDone(inst, m.summary);
-        } else if (m.kind === 'blocked') {
-          this._performBlocked(inst, m.question, m.severity);
-        }
-      } catch (e) {
-        console.warn(`[SpawnManager] marker ${m.kind} failed (${inst.id}):`, e.message);
+    const done = markers.find((m) => m.kind === 'done');
+    if (done) {
+      try { this._performDone(inst, done.summary); }
+      catch (e) { console.warn(`[SpawnManager] done marker failed (${inst.id}):`, e.message); }
+      if (markers.length > 1) {
+        console.warn(`[SpawnManager] ignoring ${markers.length - 1} subsequent marker(s) after <mate:done /> from ${inst.id}`);
       }
+      return;
+    }
+    const blocked = markers.find((m) => m.kind === 'blocked');
+    if (blocked) {
+      try { this._performBlocked(inst, blocked.question, blocked.severity); }
+      catch (e) { console.warn(`[SpawnManager] blocked marker failed (${inst.id}):`, e.message); }
+      const others = markers.filter((m) => m.kind !== 'blocked');
+      if (others.length) {
+        console.warn(`[SpawnManager] ignoring ${others.length} non-blocked marker(s) alongside <mate:blocked /> from ${inst.id}`);
+      }
+      return;
+    }
+    const handoff = markers.find((m) => m.kind === 'handoff');
+    if (handoff) {
+      try { await this._performHandoff(inst, handoff.target, handoff.reason); }
+      catch (e) { console.warn(`[SpawnManager] handoff marker failed (${inst.id}):`, e.message); }
     }
   }
 
-  async _performHandoff(fromInst, targetRoleName, reason) {
+  // [需求@2026-06-12 §6 + 8.3] target 可以是 "execB"(泛型)或 "execB-2"(具体 slot)
+  async _performHandoff(fromInst, targetSpec, reason) {
+    const { roleName: targetRoleName, poolSlot: targetSlot } = this._parseMarkerTarget(targetSpec);
     const targetRole = roleCatalog.get(targetRoleName);
     if (!targetRole) {
-      console.warn(`[SpawnManager] handoff target "${targetRoleName}" not found in catalog`);
+      console.warn(`[SpawnManager] handoff target "${targetSpec}" → role "${targetRoleName}" not found in catalog`);
       return;
     }
     const project = stmts.getProject.get(fromInst.projectId);
@@ -308,17 +396,19 @@ class SpawnManager {
       threadSlug: fromInst.threadSlug,
       text: handoffText,
       roleType: targetRole.type,
+      targetSlot,
     });
 
     recordEvent('thread.handoff', {
-      from: fromInst.role.name, target: targetRoleName, reason,
+      from: fromInst.role.name, target: targetSpec, resolvedRole: targetRoleName,
+      resolvedSlot: targetSlot, reason,
       fromInstanceId: fromInst.id, toInstanceId: inst.id,
     }, { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
     bus.publish('thread.handoff', {
       projectId: fromInst.projectId,
       threadSlug: fromInst.threadSlug,
       from: fromInst.role.name,
-      target: targetRoleName,
+      target: targetSpec,
       reason,
     });
   }
@@ -369,14 +459,13 @@ class SpawnManager {
     });
   }
 
-  // [需求@2026-06-10] Phase 2B 线索为主视图:
-  //   sendToThread 是 user 跟系统打交道的主入口。它做 3 件事:
-  //   1) 找到线索当前绑定的角色实例(默认 requirements / R 类型)
-  //   2) 如果没绑定或绑定已死,**懒 spawn** 一个新实例,把 user 消息作为首条 stdin(无 greeting 浪费)
-  //   3) 否则直接 sendUserText
+  // [需求@2026-06-10] Phase 2B 线索为主视图:sendToThread 是 user 跟系统的主入口。
+  // [需求@2026-06-12 §8.3] Phase 2D 拆 2 条路径:
+  //   - role.type === 'requirements'(R):per-thread,durable 1:1 绑定(原逻辑)
+  //   - 其它(orchestrator/executor/validator/advisor):pooled,slot 化复用
   //
-  // roleType 默认 'requirements'(R);Phase 2C+ 智能路由会决定真实 target。
-  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements' }) {
+  //   targetSlot:可选,marker `target="execB-2"` 解析后传进来。
+  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null }) {
     if (!projectId) throw new Error('sendToThread requires projectId');
     if (!projectRootDir) throw new Error('sendToThread requires projectRootDir');
     if (!threadSlug) throw new Error('sendToThread requires threadSlug');
@@ -385,28 +474,27 @@ class SpawnManager {
     const thread = ThreadStore.get(projectId, threadSlug);
     if (!thread) throw new Error(`thread "${threadSlug}" not found in project ${projectId}`);
 
-    // Find role definition for this type (roleCatalog.list() returns an Array of RoleDefinition)
     const role = roleCatalog.list().find((r) => r.type === roleType);
     if (!role) throw new Error(`no role found of type ${roleType}`);
 
-    // Look up bound instance
+    if (role.type === 'requirements') {
+      return this._sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType });
+    }
+    return this._sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot });
+  }
+
+  // R 走原 per-thread 路径
+  _sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType }) {
+    const thread = ThreadStore.get(projectId, threadSlug);
     const boundId = thread.metadata?.current_role_instances?.[roleType];
     let inst = boundId ? this.instances.get(boundId) : null;
 
-    // [需求@2026-06-10] 懒 spawn — 没绑定或已死 = 起新的;用 user 文本作首条 stdin
     if (!inst || inst.status === 'dead') {
-      // [bug@2026-06-10] parallelism 只算活实例,disconnected 不算
       const alive = this._countAliveInstances(projectId, role.name);
       if (alive >= role.parallelismLimit) {
         throw new Error(`role ${role.name} in this project at parallelism limit (${role.parallelismLimit})`);
       }
-      inst = new RoleInstance({
-        role,
-        projectId,
-        projectRootDir,
-        threadSlug,
-      });
-      // Stash the user text as pending — spawn() will flush it as first stdin (probe 02)
+      inst = new RoleInstance({ role, projectId, projectRootDir, threadSlug, poolSlot: null });
       inst._pendingUserText = text;
       this.instances.set(inst.id, inst);
       this._wireListeners(inst);
@@ -419,20 +507,131 @@ class SpawnManager {
       return inst;
     }
 
-    // Disconnected → sendUserText triggers lazy resurrection (Phase 1 mechanism)
     if (inst.status === 'disconnected') {
-      inst.threadSlug = threadSlug; // ensure binding sticks
+      inst.threadSlug = threadSlug;
       inst.sendUserText(text);
       ThreadStore.touch(projectId, threadSlug, roleType);
       return inst;
     }
 
-    // Alive — just send
     inst.sendUserText(text);
     ThreadStore.touch(projectId, threadSlug, roleType);
-    // [需求@2026-06-11 §4] user 一发新消息就清除黄灯(她回答了 pending question)
     this._clearPendingQuestion(projectId, threadSlug);
     return inst;
+  }
+
+  // [需求@2026-06-12 §8.3] Pooled 角色派工
+  //   1. acquire 一个 instance(指定 slot 或任意 idle 或新分配)
+  //   2. 设 inst.threadSlug = currentTask
+  //   3. 加 [Thread: <slug>] task tag 前缀
+  //   4. 派工(idle → sendUserText / disconnected → resurrect / 新 → spawn with pending)
+  //   5. 绑定到 thread.metadata + touch
+  _sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot }) {
+    const inst = this._acquirePoolInstance({ projectId, projectRootDir, role, requestedSlot: targetSlot, threadSlug });
+    if (!inst) throw new Error(`could not acquire pool instance for ${role.name}`);
+
+    // Bind current task — inst.threadSlug = current task being processed
+    inst.threadSlug = threadSlug;
+
+    // [需求@2026-06-12 §6 边界标记] task tag — 让 claude 知道当前 scope,但**不要它忘记过去**
+    const taggedText = `[Thread: ${threadSlug}]\n\n${text}`;
+
+    // Dispatch by status
+    if (inst.status === 'idle' || inst.status === 'busy') {
+      // Phase 2D §8.5 will add queueing for busy; for now just send (claude will process in order)
+      inst.sendUserText(taggedText);
+    } else if (inst.status === 'disconnected') {
+      inst.sendUserText(taggedText); // lazy resurrect via Phase 1 mechanism
+    } else if (inst.status === 'spawning') {
+      // Was already mid-spawn — append to pending
+      inst._pendingUserText = taggedText;
+    } else {
+      // Fresh, not yet spawned
+      inst._pendingUserText = taggedText;
+      inst.spawn({ suppressGreeting: true });
+    }
+
+    this._persistInstanceUpsert(inst);
+    ThreadStore.bindInstance(projectId, threadSlug, roleType, inst.id);
+    ThreadStore.touch(projectId, threadSlug, roleType);
+    this._clearPendingQuestion(projectId, threadSlug);
+    return inst;
+  }
+
+  // [需求@2026-06-12 §8.3] 池子 acquire 逻辑
+  _acquirePoolInstance({ projectId, projectRootDir, role, requestedSlot, threadSlug }) {
+    // 指定 slot
+    if (requestedSlot != null) {
+      if (requestedSlot < 1 || requestedSlot > role.parallelismLimit) {
+        throw new Error(`slot ${requestedSlot} out of range 1..${role.parallelismLimit} for ${role.name}`);
+      }
+      const existing = this._findPoolInstance(projectId, role.name, requestedSlot);
+      if (existing) return existing;
+      return this._createPoolInstance({ projectId, projectRootDir, role, poolSlot: requestedSlot, threadSlug });
+    }
+
+    // 泛型:优先用现有 idle → disconnected(lazy resurrect) → 新分配 slot → 任意 busy(由 §8.5 queue)
+    const idle = [...this.instances.values()].find(
+      (i) => i.projectId === projectId && i.role.name === role.name && i.status === 'idle' && i.poolSlot != null
+    );
+    if (idle) return idle;
+
+    const disconnected = [...this.instances.values()].find(
+      (i) => i.projectId === projectId && i.role.name === role.name && i.status === 'disconnected' && i.poolSlot != null
+    );
+    if (disconnected) return disconnected;
+
+    const freeSlot = this._findNextFreePoolSlot(projectId, role.name, role.parallelismLimit);
+    if (freeSlot != null) {
+      return this._createPoolInstance({ projectId, projectRootDir, role, poolSlot: freeSlot, threadSlug });
+    }
+
+    // Pool 满 — 返回任意 busy(caller / queue 后续处理)
+    const anyBusy = [...this.instances.values()].find(
+      (i) => i.projectId === projectId && i.role.name === role.name && i.status === 'busy'
+    );
+    return anyBusy || null;
+  }
+
+  _findPoolInstance(projectId, roleName, slot) {
+    return [...this.instances.values()].find(
+      (i) => i.projectId === projectId && i.role.name === roleName && i.poolSlot === slot && i.status !== 'dead'
+    );
+  }
+
+  _findNextFreePoolSlot(projectId, roleName, maxSlot) {
+    const used = new Set();
+    for (const i of this.instances.values()) {
+      if (i.projectId === projectId && i.role.name === roleName && i.poolSlot != null && i.status !== 'dead') {
+        used.add(i.poolSlot);
+      }
+    }
+    for (let s = 1; s <= maxSlot; s++) if (!used.has(s)) return s;
+    return null;
+  }
+
+  _createPoolInstance({ projectId, projectRootDir, role, poolSlot, threadSlug }) {
+    const inst = new RoleInstance({
+      role, projectId, projectRootDir, threadSlug, poolSlot,
+    });
+    this.instances.set(inst.id, inst);
+    this._wireListeners(inst);
+    this._persistInstanceUpsert(inst);
+    bus.publish('instance.spawned', inst.snapshot());
+    recordEvent('pool.allocated', { roleName: role.name, poolSlot, instanceId: inst.id },
+                { projectId, threadSlug, instanceId: inst.id });
+    return inst;
+  }
+
+  // [需求@2026-06-12 §6 + 8.3] Parse marker target:
+  //   "execB" → { roleName: 'execB', poolSlot: null }
+  //   "execB-2" → { roleName: 'execB', poolSlot: 2 }
+  _parseMarkerTarget(target) {
+    const m = String(target).match(/^([a-zA-Z][a-zA-Z0-9_-]*?)-(\d+)$/);
+    if (m && roleCatalog.get(m[1])) {
+      return { roleName: m[1], poolSlot: parseInt(m[2], 10) };
+    }
+    return { roleName: target, poolSlot: null };
   }
 
   // [需求@2026-06-11 §4] 清除 thread.metadata.has_pending_question(user 已回答 → 黄灯熄)

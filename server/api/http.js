@@ -218,13 +218,29 @@ function buildRouter() {
     const { text } = req.body || {};
     if (typeof text !== 'string' || !text.length) return res.status(400).json({ error: 'text required' });
     try {
+      // [需求@2026-06-12 §6.2 Gap 1] 路由依据 last_questioner_role_type(谁问送回谁)
+      //   - has_pending_question 且 last_questioner_role_type='orchestrator' → 送给 H
+      //   - has_pending_question 且 last_questioner_role_type='requirements' → 送给 R
+      //   - 无 pending → 默认送 R(discussing 阶段 fresh thread)
+      const ThreadStore = require('../threads/ThreadStore');
+      const thread = ThreadStore.get(req.project.id, req.params.slug);
+      let roleType = 'requirements';
+      if (thread?.metadata?.has_pending_question && thread.metadata?.last_questioner_role_type) {
+        // execB/testC 不直接问 user(它们的 question 已经走 handoff 到 H)
+        // 所以这里 last_questioner_role_type 只可能是 'requirements' 或 'orchestrator'
+        const lq = thread.metadata.last_questioner_role_type;
+        if (lq === 'requirements' || lq === 'orchestrator') {
+          roleType = lq;
+        }
+      }
       const inst = spawnManager.sendToThread({
         projectId: req.project.id,
         projectRootDir: req.project.root_dir,
         threadSlug: req.params.slug,
         text,
+        roleType,
       });
-      res.json({ ok: true, instance: inst.snapshot() });
+      res.json({ ok: true, instance: inst.snapshot(), routedTo: roleType });
     } catch (e) {
       res.status(400).json({ error: e.message });
     }

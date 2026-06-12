@@ -124,10 +124,14 @@ const ThreadHooks = {
         meta.has_pending_question = true;
         meta.pending_questions = r.questions;
         meta.pending_questions_at = Date.now();
+        // [需求@2026-06-12 §6.2 Gap 1] 记 last_questioner = 当前角色的实例 id
+        //   user 在该 thread 回复时 sendToThread 用 last_questioner 找回路由(role.type)
+        meta.last_questioner_role_type = thread.metadata?._current_role_type || null;
       } else if (wasPending) {
         delete meta.has_pending_question;
         delete meta.pending_questions;
         delete meta.pending_questions_at;
+        delete meta.last_questioner_role_type;
       }
       if (r.hasQuestions || wasPending) {
         try {
