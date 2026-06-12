@@ -6,6 +6,7 @@
 
 ### 进行中
 - Phase 2D:系统监控模块 + 全局并发 cap + session TTL 4h
+  - 含 [**Mate 仪表盘**(方向 C)](docs/discussions/2026-06-12-mate-dashboard.md):顶栏"终端"按钮升级成"系统",modal 加统计卡片 + 底部 chat 输入框跟 System Agent 自然语言问答(`今日 cost 多少?` `最近 BLOCKED 是哪些?` 等)
 
 ## [0.3.1] — 2C+ 增量(2026-06-11)
 
