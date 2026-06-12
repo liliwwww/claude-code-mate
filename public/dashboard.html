@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mate 系统监控</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- [需求@2026-06-12 §8.6.5] 独立 URL 页面 + 10s 自动刷新 -->
+  <header id="topbar">
+    <div class="brand">Mate 系统监控 <span class="phase">/dashboard</span></div>
+    <div class="banners">
+      <span class="banner warn" id="db-last-refresh" style="background:#1f3a1f;color:#88dd88">最后刷新: —</span>
+    </div>
+    <div class="actions">
+      <label style="font-size:11px;color:var(--text-secondary)">
+        <input type="checkbox" id="db-autorefresh" checked /> 10s 自动刷新
+      </label>
+      <button id="db-refresh-btn">立即刷新</button>
+      <a href="/" style="font-size:11px;color:var(--accent);text-decoration:underline;margin-left:8px">← 回主视图</a>
+    </div>
+  </header>
+
+  <main style="display:block;padding:16px;overflow-y:auto">
+    <div class="dashboard-tabs" id="dashboard-tabs" style="margin:0 0 16px">
+      <button type="button" class="tab-btn active" data-tab="terminals">终端实时</button>
+      <button type="button" class="tab-btn" data-tab="queue">任务队列</button>
+      <button type="button" class="tab-btn" data-tab="dispatch">H 派工时序</button>
+      <button type="button" class="tab-btn" data-tab="control">对话控制</button>
+    </div>
+
+    <div class="tab-content" data-tab="terminals">
+      <div class="terminals-toolbar">
+        <label><input type="checkbox" id="term-include-dead" /> 显示已死亡(dead)</label>
+      </div>
+      <div id="terminals-list"></div>
+    </div>
+
+    <div class="tab-content" data-tab="queue" hidden>
+      <div class="queue-toolbar">
+        <label><input type="checkbox" id="queue-include-closed" /> 显示已 closed</label>
+      </div>
+      <div id="queue-list"></div>
+    </div>
+
+    <div class="tab-content" data-tab="dispatch" hidden>
+      <div class="dispatch-toolbar">
+        <label>
+          <input type="radio" name="dispatch-view" id="dispatch-view-thread" value="thread" checked />
+          按线索分组
+        </label>
+        <label>
+          <input type="radio" name="dispatch-view" id="dispatch-view-global" value="global" />
+          全局时序倒序
+        </label>
+      </div>
+      <div id="dispatch-list"></div>
+    </div>
+
+    <div class="tab-content" data-tab="control" hidden>
+      <div class="tab-placeholder">对话控制(NL 跟 mateBot 聊)— Phase 2D §8.9 实现</div>
+    </div>
+  </main>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>

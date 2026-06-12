@@ -91,55 +91,7 @@
     </form>
   </dialog>
 
-  <!-- [需求@2026-06-12 §8.6-8.9] Mate 系统仪表盘 — 4 个 tab -->
-  <dialog id="terminals-dialog">
-    <form method="dialog">
-      <h3>Mate 系统</h3>
-      <div class="dashboard-tabs" id="dashboard-tabs">
-        <button type="button" class="tab-btn active" data-tab="terminals">终端实时</button>
-        <button type="button" class="tab-btn" data-tab="queue">任务队列</button>
-        <button type="button" class="tab-btn" data-tab="dispatch">H 派工时序</button>
-        <button type="button" class="tab-btn" data-tab="control">对话控制</button>
-      </div>
-
-      <div class="tab-content" data-tab="terminals">
-        <div class="terminals-toolbar">
-          <label><input type="checkbox" id="term-include-dead" /> 显示已死亡(dead)</label>
-          <button type="button" id="term-refresh">刷新</button>
-        </div>
-        <div id="terminals-list"></div>
-      </div>
-
-      <div class="tab-content" data-tab="queue" hidden>
-        <div class="queue-toolbar">
-          <label><input type="checkbox" id="queue-include-closed" /> 显示已 closed</label>
-          <button type="button" id="queue-refresh">刷新</button>
-        </div>
-        <div id="queue-list"></div>
-      </div>
-      <div class="tab-content" data-tab="dispatch" hidden>
-        <div class="dispatch-toolbar">
-          <label>
-            <input type="radio" name="dispatch-view" id="dispatch-view-thread" value="thread" checked />
-            按线索分组
-          </label>
-          <label>
-            <input type="radio" name="dispatch-view" id="dispatch-view-global" value="global" />
-            全局时序倒序
-          </label>
-          <button type="button" id="dispatch-refresh">刷新</button>
-        </div>
-        <div id="dispatch-list"></div>
-      </div>
-      <div class="tab-content" data-tab="control" hidden>
-        <div class="tab-placeholder">对话控制(NL 跟 mateBot 聊)— Phase 2D §8.9 实现</div>
-      </div>
-
-      <div class="dialog-actions">
-        <button type="submit">关闭</button>
-      </div>
-    </form>
-  </dialog>
+  <!-- [需求@2026-06-12 §8.6.5] 仪表盘改独立 URL /dashboard.html,原 modal 已删 -->
 
   <main>
     <aside id="thread-board">
