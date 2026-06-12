@@ -12,6 +12,7 @@
 const { RoleInstance } = require('./RoleInstance');
 const roleCatalog = require('../roles/RoleCatalog');
 const bus = require('../messageBus');
+const config = require('../config');
 const { db, recordMessage, recordEvent, stmts } = require('../db');
 const ThreadStore = require('../threads/ThreadStore');
 const ThreadHooks = require('../system-agent/ThreadHooks');
@@ -148,6 +149,7 @@ class SpawnManager {
     if (alive >= role.parallelismLimit) {
       throw new Error(`Role ${roleName} in this project at parallelism limit (${role.parallelismLimit})`);
     }
+    this._checkGlobalCap();  // [需求@2026-06-12 §8.10] soft cap warn
 
     const inst = new RoleInstance({ role, projectId, projectRootDir, threadSlug, customGreeting });
     this.instances.set(inst.id, inst);
@@ -677,6 +679,7 @@ class SpawnManager {
   }
 
   _createPoolInstance({ projectId, projectRootDir, role, poolSlot, threadSlug }) {
+    this._checkGlobalCap();  // [需求@2026-06-12 §8.10] soft cap warn
     const inst = new RoleInstance({
       role, projectId, projectRootDir, threadSlug, poolSlot,
     });
@@ -817,9 +820,85 @@ class SpawnManager {
   }
 
   async shutdown() {
+    this.stopTtlScanner();
     const live = [...this.instances.values()].filter((i) => i.status !== 'dead');
     console.log(`[SpawnManager] shutting down ${live.length} live instances`);
     await Promise.all(live.map((i) => i.kill().catch((e) => console.warn('kill err:', e))));
+  }
+
+  // [需求@2026-06-12 §8.10] 全局软上限:超出 emit cap_warn 事件 + 红条 banner,**不硬拒**。
+  //   每次新建实例时检查;dead 实例不算。
+  _checkGlobalCap() {
+    const alive = [...this.instances.values()].filter((i) => i.status !== 'dead').length;
+    const cap = config.globalMaxClaudeProcesses;
+    if (alive >= cap) {
+      bus.publish('system.cap_warn', { alive, cap, ts: Date.now() });
+      try {
+        recordEvent('system.cap_warn', { alive, cap });
+      } catch {}
+      console.warn(`[SpawnManager] global cap soft-exceeded: ${alive}/${cap}`);
+    }
+  }
+
+  // [需求@2026-06-12 §8.10] 后台 TTL 扫描:
+  //   - 即将到期(< ttlWarnBeforeMin)→ publish 'instance.ttl_soon'(UI 黄条)
+  //   - 已过期 → publish 'instance.ttl_expired'(UI 红条);实际 session 重启在 lazy
+  //     check(sendUserText 时)触发,不主动 kill 在线进程
+  startTtlScanner() {
+    if (this._ttlScanner) return;
+    const intervalMs = (config.ttlScanIntervalMin || 5) * 60 * 1000;
+    this._ttlScanner = setInterval(() => this._runTtlScan(), intervalMs);
+    console.log(`[SpawnManager] TTL scanner started (every ${config.ttlScanIntervalMin}m)`);
+  }
+
+  stopTtlScanner() {
+    if (this._ttlScanner) {
+      clearInterval(this._ttlScanner);
+      this._ttlScanner = null;
+    }
+  }
+
+  _runTtlScan() {
+    const now = Date.now();
+    const warnAheadMs = (config.ttlWarnBeforeMin || 15) * 60 * 1000;
+    for (const inst of this.instances.values()) {
+      if (inst.status === 'dead') continue;
+      const ttlMs = (inst.role.sessionTtlHours || 4) * 3600 * 1000;
+      const expiresAt = inst.lastActiveAt + ttlMs;
+      const remainMs = expiresAt - now;
+      if (remainMs < 0) {
+        if (!inst._ttlExpiredWarned) {
+          inst._ttlExpiredWarned = true;
+          inst._ttlSoonWarned = false;
+          bus.publish('instance.ttl_expired', {
+            instanceId: inst.id,
+            displayName: inst.displayName,
+            roleName: inst.role.name,
+            projectId: inst.projectId,
+            idleHours: +(((now - inst.lastActiveAt) / 3600000)).toFixed(1),
+            ttlHours: inst.role.sessionTtlHours,
+            ts: now,
+          });
+        }
+      } else if (remainMs < warnAheadMs) {
+        if (!inst._ttlSoonWarned) {
+          inst._ttlSoonWarned = true;
+          bus.publish('instance.ttl_soon', {
+            instanceId: inst.id,
+            displayName: inst.displayName,
+            roleName: inst.role.name,
+            projectId: inst.projectId,
+            minutesUntilExpiry: Math.round(remainMs / 60000),
+            ttlHours: inst.role.sessionTtlHours,
+            ts: now,
+          });
+        }
+      } else {
+        // 有活动了,清 warn 标志(下一次过期前可再 warn 一次)
+        inst._ttlSoonWarned = false;
+        inst._ttlExpiredWarned = false;
+      }
+    }
   }
 }
 

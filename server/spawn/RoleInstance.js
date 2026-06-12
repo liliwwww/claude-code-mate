@@ -250,6 +250,28 @@ class RoleInstance {
       if (!this.sessionId) {
         throw new Error(`Cannot resume ${this.id}: no saved session_id`);
       }
+      // [需求@2026-06-12 §8.10] TTL 防生锈:idle 太久 → session 内的代码/文件记忆已陈腐,
+      //   --resume 续上反而是负资产。丢 session_id 起全新会话,role 靠 system prompt 重建认知。
+      const ttlMs = (this.role.sessionTtlHours || 4) * 3600 * 1000;
+      const idleMs = Date.now() - this.lastActiveAt;
+      if (idleMs > ttlMs) {
+        const oldSessionId = this.sessionId;
+        console.log(`[RoleInstance ${this.id}] session TTL expired (idle ${Math.round(idleMs/3600000)}h > ${this.role.sessionTtlHours}h) — starting fresh session`);
+        // 发一条系统消息让前端在对话流插分隔符
+        this._emit('event', {
+          eventType: 'system/ttl_expired',
+          raw: {
+            previousSessionId: oldSessionId,
+            idleHours: Math.round(idleMs / 3600000),
+            ttlHours: this.role.sessionTtlHours,
+          },
+        });
+        this.sessionId = null;
+        this._pendingUserText = text;
+        this.spawn({ suppressGreeting: true });
+        this._setStatus('busy');
+        return;
+      }
       this._pendingUserText = text;
       this.spawn({ resumeSessionId: this.sessionId, suppressGreeting: true });
       this._setStatus('busy');

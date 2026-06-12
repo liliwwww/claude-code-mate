@@ -49,6 +49,14 @@ const config = {
 
   // Default session TTL — overridden per-role via role frontmatter
   defaultSessionTtlHours: 4,
+
+  // [需求@2026-06-12 §8.10] 全局并发软上限 — 超出 emit cap_warn,前端红条 banner,不硬拒
+  //   默认 16(R 池 10 + 2 H + 2 execB + 2 testC 起算)。
+  globalMaxClaudeProcesses: int(process.env.GLOBAL_MAX_CLAUDE_PROCESSES, 16),
+
+  // [需求@2026-06-12 §8.10] background recycler 扫描间隔 + 提前预警阈值
+  ttlScanIntervalMin: int(process.env.TTL_SCAN_INTERVAL_MIN, 5),
+  ttlWarnBeforeMin: int(process.env.TTL_WARN_BEFORE_MIN, 15),
 };
 
 // Ensure data dirs exist

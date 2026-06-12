@@ -541,6 +541,16 @@ function setupMatetermWS() {
   ws.addEventListener('message', (ev) => {
     let msg = null;
     try { msg = JSON.parse(ev.data); } catch { return; }
+    // [需求@2026-06-12 §8.10] 全局 cap warn 顶栏红条
+    if (msg.type === 'system.cap_warn') {
+      const b = el('#db-cap-banner');
+      if (b) {
+        b.hidden = false;
+        b.textContent = `⚠ 实例数 ${msg.payload.alive}/${msg.payload.cap} — 软上限,清理空闲`;
+        b.onclick = () => { b.hidden = true; };
+      }
+      return;
+    }
     if (msg.type !== 'instance.event') return;
     const p = msg.payload;
     if (!p || p.instanceId !== MT_STATE.selectedInstanceId) return;

@@ -12,6 +12,8 @@
     <div class="brand">Mate 系统监控 <span class="phase">/dashboard</span></div>
     <div class="banners">
       <span class="banner warn" id="db-last-refresh" style="background:#1f3a1f;color:#88dd88">最后刷新: —</span>
+      <!-- [需求@2026-06-12 §8.10] cap warn 红条;隐藏直到 system.cap_warn 事件 -->
+      <span class="banner" id="db-cap-banner" hidden style="background:#5a1f1f;color:#ffaaaa;cursor:pointer" title="点击关闭"></span>
     </div>
     <div class="actions">
       <label style="font-size:11px;color:var(--text-secondary)">

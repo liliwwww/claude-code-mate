@@ -15,6 +15,8 @@ const { attach: attachWs } = require('./api/ws');
 roleCatalog.load();
 console.log('[boot] roles loaded:', roleCatalog.list().map((r) => `${r.name}(${r.type})`).join(', '));
 spawnManager.restoreFromDisk();
+// [需求@2026-06-12 §8.10] 后台 TTL 扫描:idle 太久的实例 emit warn 事件
+spawnManager.startTtlScanner();
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -33,6 +35,8 @@ app.get('/api/system', (req, res) => {
     warnings: config.warnings || [],
     defaultSessionTtlHours: config.defaultSessionTtlHours,
     defaultProjectId: defaultProject?.id ?? 1,
+    // [需求@2026-06-12 §8.10] 让 UI 知道全局 cap 阈值,显示"N/16"红条
+    globalMaxClaudeProcesses: config.globalMaxClaudeProcesses,
   });
 });
 

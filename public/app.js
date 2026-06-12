@@ -571,7 +571,35 @@ function handleWsMsg({ type, payload }) {
     }
     state.threads.set(payload.threadSlug, payload.thread);
     renderThreads();
+  } else if (type === 'system.cap_warn') {
+    // [需求@2026-06-12 §8.10] 全局软上限超出 — 顶栏红条 banner
+    showSystemBanner('cap_warn', `⚠ 实例数 ${payload.alive}/${payload.cap} — 已达全局软上限,新 spawn 仍允许但请清理空闲实例`);
+    pushTickerEvent('blocked', `⚠ cap ${payload.alive}/${payload.cap}`);
+  } else if (type === 'instance.ttl_soon') {
+    // [需求@2026-06-12 §8.10] 黄色提示:即将到期
+    pushTickerEvent('handoff', `⏳ ${payload.displayName} 还有 ${payload.minutesUntilExpiry}m TTL 过期`);
+  } else if (type === 'instance.ttl_expired') {
+    // [需求@2026-06-12 §8.10] 已过期:下次 user send 会自动开新 session
+    pushTickerEvent('blocked', `⏰ ${payload.displayName} TTL 过期(idle ${payload.idleHours}h > ${payload.ttlHours}h),下次 send 起新 session`);
   }
+}
+
+// [需求@2026-06-12 §8.10] 顶栏粘性 system banner(cap warn 用)
+function showSystemBanner(kind, text) {
+  const id = `sys-banner-${kind}`;
+  let node = document.getElementById(id);
+  if (!node) {
+    node = document.createElement('span');
+    node.id = id;
+    node.className = 'banner';
+    node.style.background = '#5a1f1f';
+    node.style.color = '#ffaaaa';
+    node.style.cursor = 'pointer';
+    node.title = '点击关闭';
+    node.addEventListener('click', () => node.remove());
+    els.banners.appendChild(node);
+  }
+  node.textContent = text;
 }
 
 // [需求@2026-06-11 §3] 顶栏事件流
