@@ -304,6 +304,26 @@ H 判断:
 
 整体范围已经冻结。从 §8.1 起按顺序实施,每个阶段独立 commit + push。
 
+### Phase 2D 完工状态(2026-06-12)
+
+✅ **全部 11 个 sub-task 完成**(含临时插入的 §8.6.5 仪表盘改独立 URL)。
+最终 commit 链:`33c8c45` (§8.6.5) → `130b62e` (§8.9 mateTerm) → `9600d24` (§8.10 TTL+cap)。
+
+端到端冒烟通过:
+- 28/28 单元测试 pass
+- 4 个 dashboard tab 全部渲染正常,零 console error
+- DB schema v4,messages.direct_target 列就位
+- TTL scanner 后台启动(每 5 分钟)
+- 全局 cap = 16(env 可覆盖)
+- 14 个 disconnected 实例正确恢复
+- mateTerm 双模式(直连 / 干预)端到端可用,干预模式自动隐藏 R
+
+Phase 2D 余下未实施的 backlog(放到 Phase 3 或之后):
+- 终端长期累积压缩策略(jsonl 膨胀)
+- thread fork 快捷
+- thread 导出 markdown
+- 跨 mate-installation 状态同步(明确不做)
+
 ---
 
 ## §9 §8.9 二次修订:mateTerm 终端直连(2026-06-12 后续)
