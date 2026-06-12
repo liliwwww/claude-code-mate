@@ -605,16 +605,26 @@ class SpawnManager {
     const taggedText = `[Thread: ${threadSlug}]\n\n${finalText}`;
 
     // Dispatch by status
+    // [bug@2026-06-12] 派工沉默根因:_createPoolInstance 只分配 slot 不调 spawn(),
+    //   新建实例 RoleInstance ctor 默认 status='spawning'。原代码在 'spawning' 分支只 queue
+    //   _pendingUserText 不 spawn,认为"已经在 spawn 中"。结果 child 永远没启动,
+    //   stdin 写入也丢失,user 沉默。
+    //   修复:'spawning' 分支检查 inst._child;若 null 表示"还没真 spawn,只是 ctor 默认态",
+    //   先设 pending 再 spawn(顺序确保 spawn 时 _pendingUserText 已有,suppressGreeting 路径会 flush)。
     if (inst.status === 'idle' || inst.status === 'busy') {
       // Phase 2D §8.5 will add queueing for busy; for now just send (claude will process in order)
       inst.sendUserText(taggedText);
     } else if (inst.status === 'disconnected') {
       inst.sendUserText(taggedText); // lazy resurrect via Phase 1 mechanism
     } else if (inst.status === 'spawning') {
-      // Was already mid-spawn — append to pending
       inst._pendingUserText = taggedText;
+      if (!inst._child) {
+        // _createPoolInstance 创建后 ctor 默认 'spawning' 但还没真 spawn — 现在补
+        inst.spawn({ suppressGreeting: true });
+      }
+      // 否则真的在 spawn 中,pending 会在 init 完成时 flush
     } else {
-      // Fresh, not yet spawned
+      // Defensive fallback(理论上 ctor 把 status 限定在 spawning/disconnected,这里走不到)
       inst._pendingUserText = taggedText;
       inst.spawn({ suppressGreeting: true });
     }
