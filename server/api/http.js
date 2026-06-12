@@ -86,15 +86,76 @@ function buildRouter() {
   });
 
   // [需求@2026-06-11 §2] 终端管理 modal:跨 project 列所有实例(可含 dead)
+  // [需求@2026-06-12 §8.6] ?details=1 加 latestActivity + memory 状况(给仪表盘 tab 1 用)
   r.get('/instances/all', (req, res) => {
     const includeDead = req.query.includeDead === '1' || req.query.includeDead === 'true';
+    const wantDetails = req.query.details === '1' || req.query.details === 'true';
     const insts = spawnManager.listInstances(null, { includeDead });
-    // Attach project name for FE display
-    const projects = ProjectStore.list();
+    // ProjectStore.list() filters out is_system; need listAllProjects to include System
+    const projects = (require('../db').stmts.listAllProjects.all());
     const projById = new Map(projects.map((p) => [p.id, p]));
+
+    let detailsByInstance = null;
+    if (wantDetails) {
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const os = require('node:os');
+      const { db } = require('../db');
+
+      const encodeCwd = (cwd) => cwd.replace(/:/g, '--').replace(/[\\/]/g, '-');
+      const memoryRoot = path.join(os.homedir(), '.claude', 'projects');
+
+      detailsByInstance = {};
+      for (const i of insts) {
+        // latestActivity: latest assistant text or tool_use from messages table
+        const latestRow = db.prepare(`
+          SELECT event_type, payload_json, ts FROM messages
+          WHERE instance_id = ? AND event_type IN ('assistant')
+          ORDER BY ts DESC LIMIT 1
+        `).get(i.id);
+        let latestActivity = '(no recent activity)';
+        let latestActivityTs = null;
+        if (latestRow) {
+          try {
+            const p = JSON.parse(latestRow.payload_json);
+            const content = p.message?.content || [];
+            const textParts = content.filter((c) => c.type === 'text').map((c) => c.text);
+            const toolUses = content.filter((c) => c.type === 'tool_use');
+            if (toolUses.length) {
+              latestActivity = `🔧 ${toolUses[0].name}`;
+            } else if (textParts.length) {
+              const t = textParts.join(' ').trim();
+              latestActivity = t.length > 60 ? t.slice(0, 60) + '…' : t;
+            }
+            latestActivityTs = latestRow.ts;
+          } catch {}
+        }
+
+        // memory: count .md files + latest mtime in ~/.claude/projects/<encoded-cwd>/memory/
+        const proj = projById.get(i.projectId);
+        let memory = { fileCount: 0, latestMtime: null };
+        if (proj?.root_dir) {
+          const memDir = path.join(memoryRoot, encodeCwd(proj.root_dir), 'memory');
+          try {
+            const files = fs.readdirSync(memDir).filter((f) => f.endsWith('.md'));
+            memory.fileCount = files.length;
+            let mt = 0;
+            for (const f of files) {
+              const st = fs.statSync(path.join(memDir, f));
+              if (st.mtimeMs > mt) mt = st.mtimeMs;
+            }
+            memory.latestMtime = mt || null;
+          } catch {}
+        }
+
+        detailsByInstance[i.id] = { latestActivity, latestActivityTs, memory };
+      }
+    }
+
     res.json(insts.map((i) => ({
       ...i,
       projectName: projById.get(i.projectId)?.name || '(unknown)',
+      ...(detailsByInstance ? detailsByInstance[i.id] : {}),
     })));
   });
 

@@ -118,14 +118,24 @@ body { display: flex; flex-direction: column; }
   to   { transform: translateX(0); opacity: 1; }
 }
 
-/* Terminals modal — wider than other dialogs */
-#terminals-dialog { min-width: 720px; max-width: 92vw; }
+/* [需求@2026-06-12 §8.6] 仪表盘 — 4 tab 化,比原 terminals modal 更宽 */
+#terminals-dialog { min-width: 900px; max-width: 95vw; }
 #terminals-dialog form { gap: 8px; }
-#terminals-dialog .terminals-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 11px; color: var(--text-secondary); }
+.dashboard-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 -20px 8px; padding: 0 16px; }
+.dashboard-tabs .tab-btn { background: transparent; color: var(--text-secondary); border: none; border-bottom: 2px solid transparent; padding: 6px 14px; font-size: 12px; font-family: inherit; cursor: pointer; transition: color 0.15s, border-color 0.15s; }
+.dashboard-tabs .tab-btn:hover { color: var(--text-primary); }
+.dashboard-tabs .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-content { padding: 0; }
+.tab-content[hidden] { display: none; }
+.tab-placeholder { padding: 40px; text-align: center; color: var(--text-muted); font-size: 12px; }
+
+#terminals-dialog .terminals-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 0 8px; font-size: 11px; color: var(--text-secondary); }
 #terminals-dialog .terminals-toolbar input[type=checkbox] { vertical-align: middle; margin-right: 4px; }
 #terminals-dialog .terminals-toolbar button { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-light); padding: 3px 10px; border-radius: 3px; font-size: 11px; cursor: pointer; }
-#terminals-list { max-height: 60vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
-.term-row { display: grid; grid-template-columns: 38px minmax(140px, 1.2fr) 0.7fr 0.7fr 70px minmax(120px, 1fr) 60px 60px; gap: 8px; padding: 6px 8px; border-top: 1px solid var(--border); align-items: center; font-size: 11px; font-family: ui-monospace, Consolas, monospace; }
+#terminals-list { max-height: 56vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
+
+/* [需求@2026-06-12 §8.6] tab 1 行布局加 displayName/活动/memory 列 */
+.term-row { display: grid; grid-template-columns: 28px minmax(100px, 1fr) 60px 0.6fr 70px minmax(120px, 1.5fr) 0.8fr 50px; gap: 8px; padding: 6px 8px; border-top: 1px solid var(--border); align-items: center; font-size: 11px; font-family: ui-monospace, Consolas, monospace; }
 .term-row:first-child { border-top: none; }
 .term-row.head { background: var(--bg-card); color: var(--text-secondary); text-transform: uppercase; font-size: 10px; font-weight: 600; }
 .term-row .term-status { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; text-transform: uppercase; }

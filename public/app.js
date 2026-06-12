@@ -601,11 +601,13 @@ function shortProj(projectId) {
   return p ? p.name : '#' + projectId;
 }
 
-// [需求@2026-06-11 §2] 终端管理 modal
+// [需求@2026-06-11 §2 + 2026-06-12 §8.6] 仪表盘 tab 1 — 终端实时(含 memory + 活动)
 async function refreshTerminalsList() {
   try {
     const includeDead = els.termIncludeDead.checked;
-    const r = await fetch(`/api/instances/all${includeDead ? '?includeDead=1' : ''}`);
+    const params = ['details=1'];
+    if (includeDead) params.push('includeDead=1');
+    const r = await fetch(`/api/instances/all?${params.join('&')}`);
     if (!r.ok) throw new Error('fetch failed: ' + r.status);
     const instances = await r.json();
     renderTerminalsList(instances);
@@ -619,32 +621,36 @@ function renderTerminalsList(instances) {
     els.terminalsList.innerHTML = `<div class="term-empty">当前没有 claude 终端实例</div>`;
     return;
   }
+  // [需求@2026-06-12 §8.6] 列加 displayName/slot/活动/memory
   const head = `
     <div class="term-row head">
       <div></div>
-      <div>ID</div>
-      <div>角色</div>
+      <div>名字</div>
+      <div>Slot</div>
       <div>Project</div>
       <div>PID</div>
-      <div>Session</div>
-      <div>Thread</div>
+      <div>当前活动</div>
+      <div>Memory</div>
       <div></div>
     </div>
   `;
   const rows = instances.map((i) => {
-    const sidShort = i.sessionId ? i.sessionId.slice(0, 8) : '-';
-    const threadShort = i.threadSlug || '-';
-    const lastSeen = relTime(i.lastActiveAt);
     const canKill = !['dead', 'disconnected'].includes(i.status);
+    const slotText = i.poolSlot != null ? String(i.poolSlot) : '-';
+    const activity = i.latestActivity || '(no data)';
+    const memoryText = i.memory && i.memory.fileCount > 0
+      ? `${i.memory.fileCount} files${i.memory.latestMtime ? ' · ' + relTime(i.memory.latestMtime) : ''}`
+      : '—';
+    const fullId = i.id;
     return `
       <div class="term-row">
         <div><span class="term-status ${i.status}">${i.status[0]}</span></div>
-        <div title="${escapeHtml(i.id)} · last seen ${lastSeen}">${escapeHtml(i.id)}</div>
-        <div>${escapeHtml(i.roleName)}</div>
+        <div title="${escapeHtml(fullId)} · session ${i.sessionId || '-'}">${escapeHtml(i.displayName || fullId)}</div>
+        <div>${slotText}</div>
         <div>${escapeHtml(i.projectName || '?')}</div>
         <div>${i.pid ?? '-'}</div>
-        <div title="${i.sessionId || ''}">${sidShort}</div>
-        <div title="${threadShort}">${escapeHtml(threadShort.slice(0, 16))}</div>
+        <div title="${escapeHtml(activity)}">${escapeHtml(activity)}</div>
+        <div title="${i.memory ? 'latest: ' + (i.memory.latestMtime ? new Date(i.memory.latestMtime).toLocaleString() : '-') : ''}">${escapeHtml(memoryText)}</div>
         <div>${canKill
           ? `<button class="term-kill" data-id="${escapeHtml(i.id)}">kill</button>`
           : `<button class="term-kill" disabled>-</button>`}
@@ -665,6 +671,19 @@ function renderTerminalsList(instances) {
       } catch (err) {
         alert('kill failed: ' + err.message);
       }
+    });
+  });
+}
+
+// [需求@2026-06-12 §8.6] tab 切换
+function wireDashboardTabs() {
+  const tabs = document.querySelectorAll('#dashboard-tabs .tab-btn');
+  const contents = document.querySelectorAll('#terminals-dialog .tab-content');
+  tabs.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.tab;
+      tabs.forEach((t) => t.classList.toggle('active', t === btn));
+      contents.forEach((c) => { c.hidden = c.dataset.tab !== target; });
     });
   });
 }
@@ -746,13 +765,14 @@ function wireInputs() {
   });
   els.hcRun.addEventListener('click', runHealthcheck);
 
-  // [需求@2026-06-11 §2] 终端管理 modal
+  // [需求@2026-06-11 §2 + 2026-06-12 §8.6] 仪表盘 modal + tab 切换
   els.terminalsBtn.addEventListener('click', async () => {
     await refreshTerminalsList();
     els.terminalsDialog.showModal();
   });
   els.termRefresh.addEventListener('click', refreshTerminalsList);
   els.termIncludeDead.addEventListener('change', refreshTerminalsList);
+  wireDashboardTabs();
 
   // [需求@2026-06-10 §1.4] 新线索 dialog(slug 由 backend 自动生成)
   els.newThreadBtn.addEventListener('click', () => {
