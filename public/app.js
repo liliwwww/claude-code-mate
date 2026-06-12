@@ -686,6 +686,8 @@ function wireDashboardTabs() {
       contents.forEach((c) => { c.hidden = c.dataset.tab !== target; });
       // [需求@2026-06-12 §8.7] 切到任务队列 tab 自动刷新
       if (target === 'queue') await refreshQueueList();
+      // [需求@2026-06-12 §8.8] 切到派工时序 tab 自动刷新
+      if (target === 'dispatch') await refreshDispatchHistory();
     });
   });
 }
@@ -776,6 +778,111 @@ function formatBindings(cri) {
   return out.join(', ');
 }
 
+// [需求@2026-06-12 §8.8] tab 3 — H 派工时序
+async function refreshDispatchHistory() {
+  const listEl = el('#dispatch-list');
+  try {
+    const r = await fetch(`/api/dispatches/history?limit=200`);
+    if (!r.ok) throw new Error('fetch failed: ' + r.status);
+    const events = await r.json();
+    const view = (document.querySelector('input[name="dispatch-view"]:checked') || {}).value || 'thread';
+    if (view === 'global') {
+      renderDispatchGlobal(events);
+    } else {
+      renderDispatchByThread(events);
+    }
+  } catch (e) {
+    listEl.innerHTML = `<div class="dispatch-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function fmtDispatchTs(ts) {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+}
+
+function renderDispatchEvent(e) {
+  let arrow = '';
+  if (e.kind === 'thread.handoff') {
+    const from = e.payload.from || '?';
+    const target = e.payload.target || e.payload.resolvedRole || '?';
+    arrow = `<span class="arrow">${escapeHtml(from)} → ${escapeHtml(target)}</span>`;
+  } else if (e.kind === 'thread.done') {
+    arrow = `<span class="arrow">✓ done</span>`;
+  } else if (e.kind === 'thread.blocked') {
+    arrow = `<span class="arrow">⚠ blocked</span>`;
+  }
+  const reason = e.payload.reason || e.payload.summary || e.payload.question || '';
+  const kindShort = e.kind === 'thread.handoff' ? 'h-o' : e.kind === 'thread.done' ? 'done' : 'blkd';
+  const kindCls = e.kind === 'thread.handoff' ? 'handoff' : e.kind === 'thread.done' ? 'done' : 'blocked';
+  return `
+    <div class="dispatch-event ${kindCls}">
+      <div class="ts">${fmtDispatchTs(e.ts)}</div>
+      <div class="kind-tag">${kindShort}</div>
+      ${arrow}
+      <div class="reason" title="${escapeHtml(reason)}">${escapeHtml(reason.slice(0, 60))}</div>
+    </div>
+  `;
+}
+
+function renderDispatchByThread(events) {
+  const listEl = el('#dispatch-list');
+  if (!events.length) {
+    listEl.innerHTML = `<div class="dispatch-empty">还没有派工记录</div>`;
+    return;
+  }
+  // Group by thread_slug, keep project too for header
+  const groups = new Map(); // slug → { projectName, events[] }
+  for (const e of events) {
+    const key = `${e.projectId}::${e.threadSlug}`;
+    if (!groups.has(key)) groups.set(key, { projectName: e.projectName, slug: e.threadSlug, events: [] });
+    groups.get(key).events.push(e);
+  }
+  // For each group, sort events ASC (oldest first) for timeline reading
+  const groupList = [...groups.values()];
+  for (const g of groupList) g.events.sort((a, b) => a.ts - b.ts);
+  // Group order: by most recent event DESC (most active thread on top)
+  groupList.sort((a, b) => b.events[b.events.length - 1].ts - a.events[a.events.length - 1].ts);
+
+  const html = [];
+  for (const g of groupList) {
+    html.push(`<div class="dispatch-thread">`);
+    html.push(`<h5><span class="slug">${escapeHtml(g.slug)}</span> <span class="proj">${escapeHtml(g.projectName)}</span></h5>`);
+    for (const e of g.events) html.push(renderDispatchEvent(e));
+    html.push(`</div>`);
+  }
+  listEl.innerHTML = html.join('');
+}
+
+function renderDispatchGlobal(events) {
+  const listEl = el('#dispatch-list');
+  if (!events.length) {
+    listEl.innerHTML = `<div class="dispatch-empty">还没有派工记录</div>`;
+    return;
+  }
+  // events already DESC from API
+  const html = ['<div class="dispatch-thread">'];
+  for (const e of events) {
+    html.push(`<div class="dispatch-event ${e.kind === 'thread.handoff' ? 'handoff' : e.kind === 'thread.done' ? 'done' : 'blocked'}">`);
+    html.push(`<div class="ts">${fmtDispatchTs(e.ts)}</div>`);
+    const kindShort = e.kind === 'thread.handoff' ? 'h-o' : e.kind === 'thread.done' ? 'done' : 'blkd';
+    html.push(`<div class="kind-tag">${kindShort}</div>`);
+    const slugPart = `<span class="slug" style="color:var(--text-secondary)">${escapeHtml(e.threadSlug)}</span>`;
+    if (e.kind === 'thread.handoff') {
+      const from = e.payload.from || '?';
+      const target = e.payload.target || e.payload.resolvedRole || '?';
+      html.push(`<div class="arrow">${slugPart}: ${escapeHtml(from)} → ${escapeHtml(target)}</div>`);
+    } else {
+      html.push(`<div class="arrow">${slugPart}: ${e.kind.replace('thread.', '')}</div>`);
+    }
+    const reason = e.payload.reason || e.payload.summary || e.payload.question || '';
+    html.push(`<div class="reason" title="${escapeHtml(reason)}">${escapeHtml(reason.slice(0, 60))}</div>`);
+    html.push(`</div>`);
+  }
+  html.push(`</div>`);
+  listEl.innerHTML = html.join('');
+}
+
 async function updateTerminalsCount() {
   try {
     const r = await fetch('/api/instances/all');
@@ -861,6 +968,19 @@ function wireInputs() {
   els.termRefresh.addEventListener('click', refreshTerminalsList);
   els.termIncludeDead.addEventListener('change', refreshTerminalsList);
   wireDashboardTabs();
+
+  // [需求@2026-06-12 §8.7] tab 2 toolbar
+  const queueRefreshBtn = document.getElementById('queue-refresh');
+  const queueIncludeClosed = document.getElementById('queue-include-closed');
+  if (queueRefreshBtn) queueRefreshBtn.addEventListener('click', refreshQueueList);
+  if (queueIncludeClosed) queueIncludeClosed.addEventListener('change', refreshQueueList);
+
+  // [需求@2026-06-12 §8.8] tab 3 toolbar
+  const dispatchRefresh = document.getElementById('dispatch-refresh');
+  if (dispatchRefresh) dispatchRefresh.addEventListener('click', refreshDispatchHistory);
+  document.querySelectorAll('input[name="dispatch-view"]').forEach((el) => {
+    el.addEventListener('change', refreshDispatchHistory);
+  });
 
   // [需求@2026-06-10 §1.4] 新线索 dialog(slug 由 backend 自动生成)
   els.newThreadBtn.addEventListener('click', () => {

@@ -118,7 +118,18 @@
         <div id="queue-list"></div>
       </div>
       <div class="tab-content" data-tab="dispatch" hidden>
-        <div class="tab-placeholder">H 派工时序视图 — Phase 2D §8.8 实现</div>
+        <div class="dispatch-toolbar">
+          <label>
+            <input type="radio" name="dispatch-view" id="dispatch-view-thread" value="thread" checked />
+            按线索分组
+          </label>
+          <label>
+            <input type="radio" name="dispatch-view" id="dispatch-view-global" value="global" />
+            全局时序倒序
+          </label>
+          <button type="button" id="dispatch-refresh">刷新</button>
+        </div>
+        <div id="dispatch-list"></div>
       </div>
       <div class="tab-content" data-tab="control" hidden>
         <div class="tab-placeholder">对话控制(NL 跟 mateBot 聊)— Phase 2D §8.9 实现</div>

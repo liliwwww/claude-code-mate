@@ -148,6 +148,25 @@ body { display: flex; flex-direction: column; }
 .queue-row .archive-btn:hover { opacity: 0.85; }
 .queue-empty { padding: 20px; text-align: center; color: var(--text-muted); font-size: 11px; }
 
+/* [需求@2026-06-12 §8.8] tab 3 H 派工时序 */
+.dispatch-toolbar { display: flex; gap: 12px; align-items: center; padding: 4px 0 8px; font-size: 11px; color: var(--text-secondary); }
+.dispatch-toolbar input[type=radio] { vertical-align: middle; margin-right: 4px; }
+.dispatch-toolbar button { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-light); padding: 3px 10px; border-radius: 3px; font-size: 11px; cursor: pointer; margin-left: auto; }
+#dispatch-list { max-height: 56vh; overflow-y: auto; }
+.dispatch-thread { margin-bottom: 14px; }
+.dispatch-thread h5 { margin: 6px 0 4px; font-size: 11px; color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+.dispatch-thread h5 .slug { font-family: ui-monospace, Consolas, monospace; font-weight: 700; }
+.dispatch-thread h5 .proj { color: var(--text-muted); font-weight: normal; font-size: 10px; }
+.dispatch-event { display: grid; grid-template-columns: 60px 24px minmax(140px, 1.2fr) minmax(140px, 2fr); gap: 8px; padding: 4px 8px; border-left: 2px solid var(--border); margin-left: 12px; font-size: 11px; font-family: ui-monospace, Consolas, monospace; }
+.dispatch-event.handoff { border-left-color: var(--accent-purple); }
+.dispatch-event.done    { border-left-color: var(--accent-green); }
+.dispatch-event.blocked { border-left-color: var(--accent-yellow); }
+.dispatch-event .ts { color: var(--text-muted); font-size: 10px; }
+.dispatch-event .kind-tag { font-size: 10px; padding: 1px 4px; border-radius: 2px; background: var(--bg-card); color: var(--text-secondary); text-align: center; }
+.dispatch-event .arrow { color: var(--text-primary); }
+.dispatch-event .reason { color: var(--text-secondary); }
+.dispatch-empty { padding: 20px; text-align: center; color: var(--text-muted); font-size: 11px; }
+
 #terminals-dialog .terminals-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 0 8px; font-size: 11px; color: var(--text-secondary); }
 #terminals-dialog .terminals-toolbar input[type=checkbox] { vertical-align: middle; margin-right: 4px; }
 #terminals-dialog .terminals-toolbar button { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-light); padding: 3px 10px; border-radius: 3px; font-size: 11px; cursor: pointer; }

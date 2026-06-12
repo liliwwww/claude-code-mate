@@ -225,6 +225,35 @@ function buildRouter() {
     res.json(ThreadStore.list(req.project.id, { includeClosed }));
   });
 
+  // [需求@2026-06-12 §8.8] 派工时序事件 — 仪表盘 tab 3 用
+  //   返回 thread.handoff / thread.done / thread.blocked 三类事件(跨 project)
+  //   payload 已 parse,projectName 附上
+  r.get('/dispatches/history', (req, res) => {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
+    const rows = db.prepare(`
+      SELECT id, project_id, ts, kind, thread_slug, instance_id, payload_json
+      FROM events
+      WHERE kind IN ('thread.handoff', 'thread.done', 'thread.blocked')
+      ORDER BY ts DESC LIMIT ?
+    `).all(limit);
+    const projects = require('../db').stmts.listAllProjects.all();
+    const projById = new Map(projects.map((p) => [p.id, p]));
+    res.json(rows.map((e) => {
+      let payload = {};
+      try { payload = JSON.parse(e.payload_json || '{}'); } catch {}
+      return {
+        id: e.id,
+        projectId: e.project_id,
+        projectName: projById.get(e.project_id)?.name || '?',
+        ts: e.ts,
+        kind: e.kind,
+        threadSlug: e.thread_slug,
+        instanceId: e.instance_id,
+        payload,
+      };
+    }));
+  });
+
   // [需求@2026-06-12 §8.7] 跨 project 列所有线索 — 仪表盘 tab 2 用
   //   返回每条 thread 含 projectName + projectId,方便前端按 project 分组或跳转
   r.get('/threads/all', (req, res) => {
