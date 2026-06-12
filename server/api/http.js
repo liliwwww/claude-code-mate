@@ -9,6 +9,9 @@ const spawnManager = require('../spawn/SpawnManager');
 const ProjectStore = require('../projects/ProjectStore');
 const ThreadStore = require('../threads/ThreadStore');
 const envCheck = require('../system-agent/envCheck');
+const QuotaState = require('../quota/QuotaState');
+const PendingSends = require('../spawn/PendingSends');
+const config = require('../config');
 const { db } = require('../db');
 
 function requireProjectId(req, res, next) {
@@ -24,6 +27,122 @@ function requireProjectId(req, res, next) {
 
 function buildRouter() {
   const r = express.Router();
+
+  // ---------------- Runtime snapshot (Phase 2E §14 chip) ----------------
+  // [需求@2026-06-12 Phase 2E §14] chip + popover 数据源
+  //   GET /api/runtime/snapshot?projectId=N  →  {
+  //     project: { id, name },
+  //     instances: { idle: [], busy: [], spawning: [], disconnected: [] }(每个含
+  //                  displayName, roleName, roleType, poolSlot, threadSlug,
+  //                  currentModel, lastActiveAt, currentActivity)
+  //     pending:   { total, byReason: { busy: N, quota_pause: N }, byTarget: [...] }
+  //     quota:     QuotaState.snapshot()
+  //     cap:       { alive, cap, atCap } 新口径(只算 idle+busy+spawning)
+  //   }
+  r.get('/runtime/snapshot', (req, res) => {
+    const idStr = req.query.projectId;
+    const projectId = idStr ? parseInt(idStr, 10) : null;
+    let project = null;
+    if (projectId) {
+      project = ProjectStore.get(projectId);
+      if (!project) return res.status(404).json({ error: `project ${projectId} not found` });
+    }
+
+    const ACTIVE = new Set(['idle', 'busy', 'spawning']);
+    const all = spawnManager.listInstances(projectId, { includeDead: false });
+    // 按 project 过滤(projectId null 时 = 全局)
+    const scoped = projectId ? all.filter((i) => i.projectId === projectId) : all;
+
+    // 分组
+    const groups = { idle: [], busy: [], spawning: [], disconnected: [] };
+    for (const i of scoped) {
+      const g = groups[i.status];
+      if (!g) continue;
+      // currentActivity:最近一条 assistant 的 tool_use 或文本(只对 busy/idle 有意义)
+      let currentActivity = null;
+      if (i.status === 'busy' || i.status === 'idle') {
+        try {
+          const row = db.prepare(`
+            SELECT payload_json, ts FROM messages
+            WHERE instance_id = ? AND event_type = 'assistant'
+            ORDER BY ts DESC LIMIT 1
+          `).get(i.id);
+          if (row) {
+            const p = JSON.parse(row.payload_json);
+            const content = p.message?.content || [];
+            const tools = content.filter((c) => c.type === 'tool_use');
+            const texts = content.filter((c) => c.type === 'text');
+            if (tools.length) currentActivity = `🔧 ${tools[0].name}`;
+            else if (texts.length) {
+              const t = texts.join(' ').trim();
+              currentActivity = t.length > 80 ? t.slice(0, 80) + '…' : t;
+            }
+          }
+        } catch {}
+      }
+      g.push({
+        id: i.id,
+        displayName: i.displayName || i.id,
+        roleName: i.roleName,
+        roleType: i.roleType,
+        poolSlot: i.poolSlot,
+        threadSlug: i.threadSlug,
+        currentModel: i.currentModel,
+        claudeCodeVersion: i.claudeCodeVersion,
+        lastActiveAt: i.lastActiveAt,
+        currentActivity,
+        pid: i.pid,
+        sessionId: i.sessionId,
+      });
+    }
+
+    // pending 计数
+    const byReason = PendingSends.countByReason();
+    const pendingByTarget = (projectId ? PendingSends.listByProject(projectId) : PendingSends.listAll())
+      .reduce((acc, p) => {
+        const key = `${p.targetKind}:${p.targetId}`;
+        if (!acc[key]) acc[key] = { targetKind: p.targetKind, targetId: p.targetId, n: 0, latestEnqueuedAt: 0 };
+        acc[key].n++;
+        if (p.enqueuedAt > acc[key].latestEnqueuedAt) acc[key].latestEnqueuedAt = p.enqueuedAt;
+        return acc;
+      }, {});
+    const pending = {
+      total: projectId ? PendingSends.countByProject(projectId) : PendingSends.count(),
+      byReason,
+      byTarget: Object.values(pendingByTarget),
+    };
+
+    // cap 新口径(§13 修复:不算 disconnected)
+    const aliveCount = groups.idle.length + groups.busy.length + groups.spawning.length;
+    const cap = config.globalMaxClaudeProcesses;
+    const capInfo = { alive: aliveCount, cap, atCap: aliveCount >= cap };
+
+    res.json({
+      project: project ? { id: project.id, name: project.name } : null,
+      counts: {
+        idle: groups.idle.length,
+        busy: groups.busy.length,
+        spawning: groups.spawning.length,
+        disconnected: groups.disconnected.length,
+      },
+      instances: groups,
+      pending,
+      quota: QuotaState.snapshot(),
+      cap: capInfo,
+      ts: Date.now(),
+    });
+  });
+
+  // [需求@2026-06-12 Phase 2E §6] user 点 banner × 手动 abort quota PAUSED
+  r.post('/runtime/quota/override', (req, res) => {
+    const { type } = req.body || {};  // 可选,不传则同时 override 5h + 7d
+    try {
+      QuotaState.manualOverride(type || null);
+      res.json({ ok: true, quota: QuotaState.snapshot() });
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
 
   // ---------------- Environment check (Phase 2C.2) ----------------
   // [需求@2026-06-10 §2.1] 手动触发,失败不阻塞

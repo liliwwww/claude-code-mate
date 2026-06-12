@@ -101,6 +101,9 @@ class RoleInstance {
     }
     this.exitCode = null;
     this.exitSignal = null;
+    // [需求@2026-06-12 Phase 2E §5] currentModel:claude system/init 时填充,disconnect 保留
+    this.currentModel = null;
+    this.claudeCodeVersion = null;
     this._listeners = new Map(); // event -> Set<handler>
     this._customGreeting = customGreeting;
     this._spawnArgs = null;
@@ -226,6 +229,13 @@ class RoleInstance {
     if (eventType === 'system/init') {
       // session_id is reported here — overrides the preallocated one
       this.sessionId = raw.session_id;
+      // [需求@2026-06-12 Phase 2E §5] 抓 claude 自报的当前模型
+      //   (system/init payload 含 model 字段,如 'claude-opus-4-8' / 'claude-haiku-4-5')
+      if (raw.model && this.currentModel !== raw.model) {
+        this.currentModel = raw.model;
+      }
+      // 顺便记录其他可能有用的元数据
+      if (raw.claude_code_version) this.claudeCodeVersion = raw.claude_code_version;
       this._setStatus('idle');
     } else if (eventType === 'user') {
       // stdin echo — confirms our message was consumed (we go busy)
@@ -352,6 +362,9 @@ class RoleInstance {
       diedAt: this.diedAt,
       exitCode: this.exitCode,
       displayColor: this.role.displayColor,
+      // [需求@2026-06-12 Phase 2E §5] 当前 child 实际用的模型(claude 自报)
+      currentModel: this.currentModel || null,
+      claudeCodeVersion: this.claudeCodeVersion || null,
     };
   }
 }

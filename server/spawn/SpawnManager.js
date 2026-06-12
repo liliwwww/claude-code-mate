@@ -69,6 +69,19 @@ class SpawnManager {
           lastActiveAt: r.last_active_at,
         },
       });
+      // [需求@2026-06-12 Phase 2E §5] 从 messages 表抓最近一次 system/init 的 model
+      try {
+        const lastInit = db.prepare(`
+          SELECT payload_json FROM messages
+          WHERE instance_id = ? AND event_type = 'system/init'
+          ORDER BY ts DESC LIMIT 1
+        `).get(r.id);
+        if (lastInit) {
+          const p = JSON.parse(lastInit.payload_json);
+          inst.currentModel = p.model || null;
+          inst.claudeCodeVersion = p.claude_code_version || null;
+        }
+      } catch {}
       this._wireListeners(inst);
       this.instances.set(inst.id, inst);
       try {
@@ -843,10 +856,12 @@ class SpawnManager {
     await Promise.all(live.map((i) => i.kill().catch((e) => console.warn('kill err:', e))));
   }
 
-  // [需求@2026-06-12 §8.10] 全局软上限:超出 emit cap_warn 事件 + 红条 banner,**不硬拒**。
-  //   每次新建实例时检查;dead 实例不算。
+  // [需求@2026-06-12 §8.10 + Phase 2E §13] 全局软上限 cap_warn
+  //   **新口径**:只算 idle/busy/spawning 真活实例(disconnected 不算 — 它们没 child,资源消耗 0)。
+  //   这同时修了 §13 的 bug:历史 disconnected 累积导致 cap 永远红条 + cap 形同虚设。
   _checkGlobalCap() {
-    const alive = [...this.instances.values()].filter((i) => i.status !== 'dead').length;
+    const ACTIVE = new Set(['idle', 'busy', 'spawning']);
+    const alive = [...this.instances.values()].filter((i) => ACTIVE.has(i.status)).length;
     const cap = config.globalMaxClaudeProcesses;
     if (alive >= cap) {
       bus.publish('system.cap_warn', { alive, cap, ts: Date.now() });

@@ -50,9 +50,10 @@ const config = {
   // Default session TTL — overridden per-role via role frontmatter
   defaultSessionTtlHours: 4,
 
-  // [需求@2026-06-12 §8.10] 全局并发软上限 — 超出 emit cap_warn,前端红条 banner,不硬拒
-  //   默认 16(R 池 10 + 2 H + 2 execB + 2 testC 起算)。
-  globalMaxClaudeProcesses: int(process.env.GLOBAL_MAX_CLAUDE_PROCESSES, 16),
+  // [需求@2026-06-12 §8.10 + Phase 2E §13] 全局并发软上限 — 超出 emit cap_warn,前端红条 banner,不硬拒
+  //   口径:**只算 idle/busy/spawning 真活实例**(disconnected 不算 — 它们没 child process,资源消耗 0)
+  //   默认 8(真活口径下,2 R + 1 H + 2 execB + 1 testC + 余 2 弹性)。
+  globalMaxClaudeProcesses: int(process.env.GLOBAL_MAX_CLAUDE_PROCESSES, 8),
 
   // [需求@2026-06-12 §8.10] background recycler 扫描间隔 + 提前预警阈值
   ttlScanIntervalMin: int(process.env.TTL_SCAN_INTERVAL_MIN, 5),
