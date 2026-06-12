@@ -94,8 +94,11 @@ CREATE TABLE IF NOT EXISTS events (
 );
 `);
 
-// --- Step 2: migration v1 -> v2 (add projects, project_id columns, backfill) ---
-const SCHEMA_VERSION = 2;
+// --- Step 2: migrations ---
+// v1 -> v2: add projects + project_id columns
+// v2 -> v3 [需求@2026-06-12]: pool_slot for role_instances + is_system for projects
+//          + ensureSystemProject + ensureSystemThread
+const SCHEMA_VERSION = 3;
 let cur = db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get();
 let curVersion = cur ? parseInt(cur.value, 10) : 1;
 
@@ -144,9 +147,65 @@ if (curVersion < 2) {
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '2');
   curVersion = 2;
 } else {
-  // Fresh install path — projects table may not exist yet (we never created it in step 1)
   ensureProjectsTable();
   ensureDefaultProject();
+}
+
+// [需求@2026-06-12 §8.2] v2 -> v3:
+//   projects.is_system flag (1 = hidden System project for mate-self chat)
+//   role_instances.pool_slot integer (NULL for non-pooled R; 1..N for pooled execB/testC/H)
+//   Auto-create System project + mate-self singleton thread
+if (curVersion < 3) {
+  if (!tableHasColumn('projects', 'is_system')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!tableHasColumn('role_instances', 'pool_slot')) {
+    db.exec(`ALTER TABLE role_instances ADD COLUMN pool_slot INTEGER`);
+  }
+  const systemId = ensureSystemProject();
+  ensureSystemThread(systemId);
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '3');
+  curVersion = 3;
+} else {
+  // Even on already-v3 DBs, make sure System project + thread exist (fresh install / accidental delete)
+  const systemId = ensureSystemProject();
+  ensureSystemThread(systemId);
+}
+
+function ensureSystemProject() {
+  const existing = db.prepare(`SELECT id FROM projects WHERE name = 'System'`).get();
+  if (existing) return existing.id;
+  const path = require('node:path');
+  const ROOT = path.resolve(__dirname, '..');
+  const r = db.prepare(`
+    INSERT INTO projects (name, root_dir, settings_json, created_at, is_system)
+    VALUES (?, ?, ?, ?, 1)
+  `).run('System', ROOT, '{"hidden":true}', Date.now());
+  return r.lastInsertRowid;
+}
+
+function ensureSystemThread(systemProjectId) {
+  const existing = db.prepare(`
+    SELECT slug FROM threads WHERE project_id = ? AND slug = 'mate-self'
+  `).get(systemProjectId);
+  if (existing) return;
+  const now = Date.now();
+  const metadata = {
+    current_role_instances: {
+      requirements: null,
+      orchestrator: null,
+      executor: null,
+      validator: null,
+      advisor: null,  // [需求@2026-06-12] mateBot 占用
+    },
+    last_session_activity_at: {},
+    queue_file_path: null,
+    is_system_thread: true,
+  };
+  db.prepare(`
+    INSERT INTO threads (slug, project_id, title, stage, created_at, updated_at, metadata_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run('mate-self', systemProjectId, '跟 mate 对话', 'discussing', now, now, JSON.stringify(metadata));
 }
 
 // --- Step 3: indexes (safe to recreate on v2 schema) ---
@@ -192,11 +251,14 @@ const stmts = {
   insertEvent: db.prepare(`INSERT INTO events (project_id, ts, kind, thread_slug, instance_id, payload_json) VALUES (?, ?, ?, ?, ?, ?)`),
 
   // Project CRUD
-  listProjects:    db.prepare(`SELECT * FROM projects WHERE archived_at IS NULL ORDER BY id`),
-  getProject:      db.prepare(`SELECT * FROM projects WHERE id = ?`),
-  getProjectByName:db.prepare(`SELECT * FROM projects WHERE name = ?`),
-  insertProject:   db.prepare(`INSERT INTO projects (name, root_dir, settings_json, created_at) VALUES (?, ?, ?, ?)`),
-  archiveProject:  db.prepare(`UPDATE projects SET archived_at = ? WHERE id = ?`),
+  // [需求@2026-06-12] 默认 list 过滤 is_system(=1 是 mate self chat 用的隐藏 System project)
+  listProjects:       db.prepare(`SELECT * FROM projects WHERE archived_at IS NULL AND is_system = 0 ORDER BY id`),
+  listAllProjects:    db.prepare(`SELECT * FROM projects WHERE archived_at IS NULL ORDER BY id`),
+  getProject:         db.prepare(`SELECT * FROM projects WHERE id = ?`),
+  getProjectByName:   db.prepare(`SELECT * FROM projects WHERE name = ?`),
+  getSystemProject:   db.prepare(`SELECT * FROM projects WHERE is_system = 1 LIMIT 1`),
+  insertProject:      db.prepare(`INSERT INTO projects (name, root_dir, settings_json, created_at) VALUES (?, ?, ?, ?)`),
+  archiveProject:     db.prepare(`UPDATE projects SET archived_at = ? WHERE id = ?`),
 };
 
 module.exports = {

@@ -88,11 +88,13 @@ const ThreadStore = {
     const now = Date.now();
     const metadata = {
       // [需求@2026-06-10] 线索绑定到具体实例 — 一个角色 type 当前最多一个 active 实例
+      // [需求@2026-06-12] 加 advisor 槽位给 mateBot(只在 System thread 用)
       current_role_instances: {
         requirements: null,
         orchestrator: null,
         executor: null,
         validator: null,
+        advisor: null,
       },
       // For Phase 2C session-TTL anti-rot check
       last_session_activity_at: {},
