@@ -540,3 +540,237 @@ UX 改进方向:
 - 可能 0 行代码改动,纯文档治理
 
 ---
+
+## 12. 发送按钮无即时反馈 — 自己的消息要等服务端回显才出现
+
+**状态**:待细化
+
+**原话**:"我输入完问题,点击发送。应该在对话列表立即看到我的问题,这样,才代表系统收到请求了。现在点击按钮没有反应,过一段儿时间才有响应。体验不好。"
+
+**根因**:当前 send 流程(`app.js`):
+1. user 按钮点击 / Ctrl+Enter
+2. fetch `POST /api/threads/:slug/message`
+3. 等待 mate 把消息写到 child stdin
+4. claude 流出 `user` echo event(几百 ms - 几秒)
+5. WS 把 echo 推回前端 → 渲染 user bubble
+
+这意味着 user 自己的消息要**等 round-trip**才出现,中间是**静默期**。如果中途网络慢或 mate 阻塞,user 完全不知道点击有没有生效。
+
+**修复方向**(乐观 UI):
+- 点击瞬间**立刻在对话流插一条临时 user bubble**(灰色 / 半透明 / 带"sending..."角标)
+- 输入框立刻清空 + 失焦
+- fetch 成功 → bubble 转正(去掉 sending 角标)
+- fetch 失败(网络错 / 409 busy / 404) → bubble 标红"发送失败,点击重试"
+- WS 推来真的 user echo event 时,用一个 dedup key(比如 fetch 返回的 message id,或时间戳 + text hash)合并到临时 bubble 上,不重复展示
+
+**待澄清**:
+- dedup 怎么实现?fetch 响应里没返回 message id(目前 endpoint 只返 `{ok: true, instance: ..., routedTo: ...}`)— 需要后端补返 id 或前端用 (text + ts) 模糊匹配
+- 失败重试是当条原地重试,还是回填到输入框?
+- 同 §10 一脉相承的 UX 病:"用户操作 → 沉默 → 不知道发生了什么"。这个 backlog 项跟 §10 应该一起设计
+
+**关联**:跟 §10(派工沉默)同源 — 都是"操作发出去到反馈出现之间没有过渡态"。同一时间一起做,UI 一致性更好。
+
+**预估影响**:`public/app.js` send handler + 对话流 dedup ~50 行;后端 send endpoint 返回 message id ~5 行;mateTerm tab 4 同样问题要一起改 ~20 行
+
+---
+
+## 13. 全局 cap 计数口径错误 — disconnected 实例不该算占用
+
+**状态**:待细化
+
+**bug 报告**(2026-06-12):顶栏红条 banner 显示"实例数 16/16 — 已达全局软上限"。user 反馈"明显没有到 16 个终端"。
+
+**实测**(查 SQLite):
+- mate 当前算的 alive:**17**(3 busy + 14 disconnected)
+- 真正有 child process 的:**3**
+- Cap:16
+- 真实跑着的 claude 进程:用 PowerShell 查也确认 3-4 个左右(早期遗留进程除外)
+
+**根因**:`SpawnManager._checkGlobalCap`:
+```js
+const alive = [...this.instances.values()].filter((i) => i.status !== 'dead').length;
+```
+
+把 `disconnected`(SQLite 有记录、有 session_id、但 child 进程没活)也算进 alive。**disconnected 实例占系统资源 = 0**:
+- 没有内存(child process 不在)
+- 没有 API token 消耗
+- 没有占 Anthropic 配额
+- 只是 SQLite 里的一行记录 + 内存里一个 RoleInstance 对象(轻量)
+
+**user 心智**:"实例数 = 现在跑着几个 claude" — 不该把"睡着的可唤醒记录"算进去。
+
+**累积效应**:多 project + 多次创建 R → disconnected 实例越攒越多。一周后可能 50+ disconnected,但实际同时跑的只有 2-3 个。cap 形同虚设(永远红条),user 麻木。
+
+**修复方向**:
+
+A. **改计数口径**(推荐):
+```js
+const alive = [...this.instances.values()].filter(
+  (i) => ['idle', 'busy', 'spawning'].includes(i.status)
+).length;
+```
+只算真有 child 的。disconnected 不占 cap。
+
+B. **改 banner 文案**:`alive=17(含 14 个待复活),活进程 3 / 上限 16` — 让 user 知道两层计数。
+
+C. **加 disconnected 清理策略**:超过 N 个 disconnected(比如 30)就批量标 dead,腾出 SQLite。
+
+**待澄清**:
+- 选 A 后,撞 cap 时 spawn 一个新的会不会就反向把更多 disconnected 唤醒?(disconnected lazy resurrect 触发就变 busy → 占 cap → 又超)。需要复算"潜在 alive" = busy + disconnected,作为 cap 检查的另一个维度
+- B 双口径 banner 文案怎么排版才不挤
+- cap 默认 16 在 disconnected 不算的口径下,可能要降到 8 或 10(实际不会有那么多并发活进程)
+- §4.1 "卡死 busy" + 这条一起看 — 都是状态字段语义被 misused
+
+**关联**:跟 §4(卡死 busy 状态不刷新)+ §3(busy 时直连被拒)都是**实例状态字段语义混乱**的家族 bug,实施时一起治理。
+
+**预估影响**:
+- A:`SpawnManager._checkGlobalCap` + `_countAliveInstances` 改 ~5 行
+- B:banner 文案 + `system.cap_warn` payload 加 disconnected count ~10 行
+- C:TTL scanner 加 disconnected 老化逻辑 ~20 行
+
+---
+
+## 14. "现在到底是哪个 term 在跑" — 缺一个明确的 SSOT 实时视图
+
+**状态**:待细化(本轮核心 UX 痛点)
+
+**场景**(2026-06-12):
+- §6 预测的撞墙发生:token 到达限额 → 运行中断
+- user 不知道发生了啥,输入"继续"想推进
+- 系统反馈:"execB-1 TTL 过期(idle 2.1h > 2h),下次 send 起新 session"
+- user 一头雾水:
+  - 这跟"继续"有啥关系?
+  - 我刚才在哪个 thread 上发的?
+  - 现在到底有几个 claude 在跑?
+  - 派工链路走到哪一步了?
+  - 我"继续"那条消息进 R 了还是被吞了?
+
+**根本问题**:**user 没有一个明确的地方,一眼看清"此刻 mate 内部到底在跑啥"**。
+
+现有视图的不足:
+- **主视图**:线索板有状态灯,但只反映该 thread 的局部状态,不告诉 user"整个 mate 在跑啥"
+- **顶栏 ticker**:事件流式滚动,**短期内有用,过了就消失**,没法回查"3 分钟前 H 接到 handoff 了吗"
+- **顶栏 banner**:只有 warn / error,**正常态空白**
+- **仪表盘 tab 1 终端实时**:已经在那了,但
+  - 它是**静态轮询**(10s 一次刷新),不是 push,有滞后
+  - 显示 status + memory + 活动,但**没有"链路"概念** — user 看不到"这条 user input → 进了哪个 thread → 走到了 R → R 调了 tool → 还在 busy / 已 idle"
+  - **没在主视图随时可见**,user 要切 tab,中断当前对话
+
+**user 真正想要的(我推测)**:
+
+一个**"现在运行态"**的小面板,**永远可见**(顶栏下、对话流右上角,或固定一个小方块),内容包括:
+
+1. 此刻有几个 child 进程真的活着(idle / busy 分开计数)
+2. 每个 busy 实例:在哪个 thread 上、跑了多久、上次活动几秒前
+3. 最近一次 user input:进了哪个 R、目前 R 是 idle / busy / blocked
+4. 待处理的派工(handoff queued)有几个、目标是谁
+5. quota 状态(5h / 7d 利用率,reset 倒计时)
+6. 黄/红条:TTL 临近、quota warn、cap warn 等
+
+→ user 一眼能回答:"我刚才那条消息到底被谁收了、走到了哪一步、需不需要等。"
+
+**设计候选**:
+
+A. **顶栏右侧固定的实时面板**(像 IDE 的 status bar):一行紧凑 chip,例:
+```
+[3 idle · 1 busy@spike-x] [Q:0] [5h:91%↘19:30] [7d:60%↘06-17]
+```
+点开展开详情。
+
+B. **侧抽屉**:从主视图右侧滑出"运行态"抽屉,显示完整树形 (R → H → execB → testC 的 swimlane)。
+
+C. **强化主视图线索板**:每个 thread 行下面挂一个 mini-timeline,显示该 thread 当前活跃实例 + 它们的 busy 时长。
+
+D. **WS push 替代轮询**:仪表盘 tab 1 改成 WS 实时推 → 不滞后,但 user 还得切 tab。
+
+**我的倾向**:**A 顶栏 chip + 点开展开** + **D WS 推送替代 tab 1 轮询**。两个互补:
+- A 满足"瞥一眼就知道"
+- D 满足"想看详细去 tab 1"
+
+**待细化**:
+- 主视图顶栏空间够吗(已经有 project picker + banners + 多个按钮)?要不要把"环境检测"等次要按钮收进菜单
+- "最近一次 user input 走哪了"这种信息怎么 track — 后端要不要新增一个 `last_user_send` 内存字段
+- 派工待处理队列(handoff queued)在哪里?目前架构是同步 fire 的,没"queued" 概念 — 要不要先有 queue 再监控
+- 黄/红条聚合:TTL + quota + cap 现在是分别 publish 的,UI 要做统一聚合方便 user 抓 priority
+
+**关联**:这条**汇集**了多条 backlog 子问题的 UI 表达:
+- §3 / §4(busy 状态不准)→ 这个面板会暴露准确性问题
+- §6(quota 处理)→ quota chip 是这里的子组件
+- §10(派工沉默)→ 派工 chip 解决"派出去没"的疑问
+- §12(发送无即时反馈)→ "最近一次 user input"chip 让 user 立刻看到"系统收到了"
+- §13(cap 计数口径)→ "活进程数"chip 的语义要正确
+
+**预估影响**:大。属于"独立模块",~400 行(后端实时聚合 endpoint + WS push + 顶栏 chip + 展开面板)。但**做完一次性解决一片**。
+
+---
+
+## 本轮 backlog 汇总(2026-06-12 整理)
+
+到目前共 14 项 backlog。按**痛苦度**和**关联度**分组,推荐"统一升级一轮"的组合:
+
+### A 组:可见性 / UX 反馈链(最痛,本轮**第一优先**)
+
+| # | 项目 | 关键作用 |
+|---|---|---|
+| §14 | 实时运行态 SSOT 面板 | **主线** — user 永远能瞥一眼知道"在跑啥" |
+| §12 | 发送即时反馈(乐观 UI) | user 点完按钮立刻看到自己消息 |
+| §10 | 派工沉默 — 派出之后 UI 进度可见 | 解决"派出去了吗"疑问 |
+| §11 | role markdown 旧协议措辞清理 | R 不再说"WORK_HANDOFF",避免 user 认知错乱 |
+
+→ 这组合做完,user **再也不会问"现在到底咋样了"**。
+
+### B 组:状态语义家族 bug(中等优先,跟 A 组解耦但 A 组里会"暴露"它们)
+
+| # | 项目 |
+|---|---|
+| §3 | mateTerm busy 实例不让发(改 UX 提示 + 自动重试,B 方案) |
+| §4 | "卡死 busy" 状态不刷新(后台 unstick + 主视图状态灯对齐) |
+| §13 | cap 计数口径错(disconnected 不该算占用) |
+
+→ 这组做完,**实例 status 字段在所有视图含义一致**。
+
+### C 组:Quota 防撞墙(用户已经撞了,**实战刚需**)
+
+| # | 项目 |
+|---|---|
+| §6 | 订阅配额耗尽自动暂停 + 自动恢复 |
+| §7 | 测试方案(模拟 + 等真实样本)|
+
+→ §6 在 §14 的实时面板里出 chip,串起来很自然。
+
+### D 组:模型管控(中低优先,可延后)
+
+| # | 项目 |
+|---|---|
+| §5 | 显示 + 改模型 |
+| §6 P2 | 配额降级到 Haiku |
+
+### E 组:对话流渲染细节(低优先,有空再做)
+
+| # | 项目 |
+|---|---|
+| §1 | tool 框可折叠 |
+| §8 | 消息顺序倒置 bug |
+| §9 | 代码块空白渲染 bug |
+
+### F 组:Sibling project governance(独立方向)
+
+| # | 项目 |
+|---|---|
+| §2 | 角色实例的 SQL 自查通道 |
+
+---
+
+## 推荐统一升级方案
+
+**本轮做 A 组 + B 组 + C 组**(共 9 项)— 这是**user 当前最痛的部分**,做完后:
+- 派工/发送链路全程可见,不再沉默
+- 实例状态语义统一,各视图不打架
+- 撞墙不再让 user 一脸懵,自动暂停 + 自动恢复
+- §11 顺带把 R 说话错的认知错乱也清了
+
+**D / E / F 留到下一轮**。
+
+预估工时:大致 **3-5 天**(主要是 §14 实时面板 + §6 quota 全链路 + 一堆状态语义清理)。改完打 Phase 2E。
+
+具体先后 / 拆分要不要细化,等 user 拍板再说。

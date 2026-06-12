@@ -17,6 +17,9 @@ console.log('[boot] roles loaded:', roleCatalog.list().map((r) => `${r.name}(${r
 spawnManager.restoreFromDisk();
 // [需求@2026-06-12 §8.10] 后台 TTL 扫描:idle 太久的实例 emit warn 事件
 spawnManager.startTtlScanner();
+// [需求@2026-06-12 Phase 2E §6] QuotaState 启动 — 恢复持久化状态 + setTimer + cron
+const QuotaState = require('./quota/QuotaState');
+QuotaState.start();
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -55,6 +58,7 @@ server.listen(config.port, '127.0.0.1', () => {
 async function shutdown(reason) {
   console.log(`[shutdown] reason: ${reason}`);
   try {
+    QuotaState.stop();
     await spawnManager.shutdown();
   } catch (e) {
     console.error('[shutdown] spawnManager.shutdown error:', e);

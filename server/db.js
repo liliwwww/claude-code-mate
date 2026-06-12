@@ -101,7 +101,9 @@ CREATE TABLE IF NOT EXISTS events (
 // v3 -> v4 [需求@2026-06-12 §9 mateTerm]:
 //          messages.direct_target 列(直连模式消息的目标 instance);
 //          删除 mate-self thread bootstrap(mateBot 砍掉,System project 保留)
-const SCHEMA_VERSION = 4;
+// v4 -> v5 [需求@2026-06-12 Phase 2E §1.5]:
+//          mate_pending_sends + mate_quota_state 双表(§3 排队 + §6 quota 暂停共用)
+const SCHEMA_VERSION = 5;
 let cur = db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get();
 let curVersion = cur ? parseInt(cur.value, 10) : 1;
 
@@ -194,6 +196,37 @@ if (curVersion < 4) {
   curVersion = 4;
 }
 
+// [需求@2026-06-12 Phase 2E §1.5] v4 -> v5:
+//   mate_pending_sends:§3 mateTerm busy 排队 + §6 quota 暂停期间 user send / handoff marker 缓存
+//   mate_quota_state:§6 5h / 7d 配额状态持久化,mate 重启后能恢复 PAUSED 态 + setTimer
+if (curVersion < 5) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mate_pending_sends (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind            TEXT NOT NULL,         -- 'direct_send' | 'thread_send' | 'handoff_marker'
+      target_kind     TEXT NOT NULL,         -- 'instance' | 'thread'
+      target_id       TEXT NOT NULL,         -- instance.id 或 thread_slug
+      project_id      INTEGER,
+      payload_json    TEXT NOT NULL,
+      enqueued_at     INTEGER NOT NULL,
+      reason          TEXT                   -- 'busy' | 'quota_pause' | 'spawning'
+    );
+    CREATE INDEX IF NOT EXISTS idx_pending_sends_target ON mate_pending_sends(target_kind, target_id, enqueued_at);
+    CREATE INDEX IF NOT EXISTS idx_pending_sends_reason ON mate_pending_sends(reason, enqueued_at);
+
+    CREATE TABLE IF NOT EXISTS mate_quota_state (
+      rate_limit_type TEXT PRIMARY KEY,      -- 'five_hour' | 'seven_day'
+      status          TEXT NOT NULL,         -- 'allowed' | 'allowed_warning' | 'rate_limited' | 'manual_override'
+      utilization     REAL,
+      resets_at       INTEGER NOT NULL,      -- Unix ms(注意:rate_limit_event 给的是秒,这里统一换算成 ms)
+      updated_at      INTEGER NOT NULL,
+      manual_override INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '5');
+  curVersion = 5;
+}
+
 function ensureSystemProject() {
   const existing = db.prepare(`SELECT id FROM projects WHERE name = 'System'`).get();
   if (existing) return existing.id;
@@ -266,6 +299,39 @@ const stmts = {
   getSystemProject:   db.prepare(`SELECT * FROM projects WHERE is_system = 1 LIMIT 1`),
   insertProject:      db.prepare(`INSERT INTO projects (name, root_dir, settings_json, created_at) VALUES (?, ?, ?, ?)`),
   archiveProject:     db.prepare(`UPDATE projects SET archived_at = ? WHERE id = ?`),
+
+  // [需求@2026-06-12 Phase 2E §1.5] mate_pending_sends 操作
+  psEnqueue: db.prepare(`
+    INSERT INTO mate_pending_sends (kind, target_kind, target_id, project_id, payload_json, enqueued_at, reason)
+    VALUES (@kind, @target_kind, @target_id, @project_id, @payload_json, @enqueued_at, @reason)
+  `),
+  psListByTarget: db.prepare(`
+    SELECT * FROM mate_pending_sends
+    WHERE target_kind = ? AND target_id = ?
+    ORDER BY enqueued_at ASC
+  `),
+  psListAll: db.prepare(`SELECT * FROM mate_pending_sends ORDER BY enqueued_at ASC`),
+  psListByProject: db.prepare(`SELECT * FROM mate_pending_sends WHERE project_id = ? ORDER BY enqueued_at ASC`),
+  psDelete: db.prepare(`DELETE FROM mate_pending_sends WHERE id = ?`),
+  psCount: db.prepare(`SELECT COUNT(*) AS n FROM mate_pending_sends`),
+  psCountByProject: db.prepare(`SELECT COUNT(*) AS n FROM mate_pending_sends WHERE project_id = ?`),
+  psCountByReason: db.prepare(`SELECT reason, COUNT(*) AS n FROM mate_pending_sends GROUP BY reason`),
+
+  // [需求@2026-06-12 Phase 2E §1.5 §6] mate_quota_state 操作
+  qsUpsert: db.prepare(`
+    INSERT INTO mate_quota_state (rate_limit_type, status, utilization, resets_at, updated_at, manual_override)
+    VALUES (@rate_limit_type, @status, @utilization, @resets_at, @updated_at, @manual_override)
+    ON CONFLICT(rate_limit_type) DO UPDATE SET
+      status          = excluded.status,
+      utilization     = excluded.utilization,
+      resets_at       = excluded.resets_at,
+      updated_at      = excluded.updated_at,
+      manual_override = excluded.manual_override
+  `),
+  qsList: db.prepare(`SELECT * FROM mate_quota_state`),
+  qsGet:  db.prepare(`SELECT * FROM mate_quota_state WHERE rate_limit_type = ?`),
+  qsDelete: db.prepare(`DELETE FROM mate_quota_state WHERE rate_limit_type = ?`),
+  qsClearAll: db.prepare(`DELETE FROM mate_quota_state`),
 };
 
 module.exports = {
@@ -274,7 +340,8 @@ module.exports = {
   // convenience wrappers — project_id is REQUIRED in Phase 2A onward
   // [需求@2026-06-10] 所有持久化必须带 project_id
   recordMessage(msg) {
-    stmts.insertMessage.run({
+    // [需求@2026-06-12 Phase 2E §12] 返回 SQLite autoincrement id,用于乐观 UI dedup
+    const r = stmts.insertMessage.run({
       project_id: msg.projectId,
       thread_slug: msg.threadSlug || null,
       instance_id: msg.instanceId || null,
@@ -287,6 +354,7 @@ module.exports = {
       // [需求@2026-06-12 §9] mateTerm 直连消息标记;为 null 时表示普通 thread 消息
       direct_target: msg.directTarget || null,
     });
+    return r.lastInsertRowid;
   },
   recordEvent(kind, payload, opts = {}) {
     stmts.insertEvent.run(

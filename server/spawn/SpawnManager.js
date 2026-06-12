@@ -17,6 +17,7 @@ const { db, recordMessage, recordEvent, stmts } = require('../db');
 const ThreadStore = require('../threads/ThreadStore');
 const ThreadHooks = require('../system-agent/ThreadHooks');
 const MarkerDetector = require('../system-agent/MarkerDetector');
+const QuotaState = require('../quota/QuotaState');
 
 class SpawnManager {
   constructor() {
@@ -169,6 +170,12 @@ class SpawnManager {
     });
 
     inst.on('event', ({ eventType, raw }) => {
+      // [需求@2026-06-12 Phase 2E §6 §7] rate_limit_event → QuotaState
+      //   claude 在每条 user 消息处理时会推送 5h + 7d 双轨,QuotaState 维护全局状态
+      if (eventType === 'rate_limit_event') {
+        try { QuotaState.ingest(raw); } catch (e) { console.warn(`[SpawnManager] QuotaState.ingest failed: ${e.message}`); }
+      }
+
       const direction =
         eventType === 'user' ? 'user_to_role' :
         eventType === 'assistant' ? 'role_to_user' :
