@@ -111,7 +111,11 @@
       </div>
 
       <div class="tab-content" data-tab="queue" hidden>
-        <div class="tab-placeholder">任务队列视图 — Phase 2D §8.7 实现</div>
+        <div class="queue-toolbar">
+          <label><input type="checkbox" id="queue-include-closed" /> 显示已 closed</label>
+          <button type="button" id="queue-refresh">刷新</button>
+        </div>
+        <div id="queue-list"></div>
       </div>
       <div class="tab-content" data-tab="dispatch" hidden>
         <div class="tab-placeholder">H 派工时序视图 — Phase 2D §8.8 实现</div>

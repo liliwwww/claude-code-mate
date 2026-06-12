@@ -675,17 +675,105 @@ function renderTerminalsList(instances) {
   });
 }
 
-// [需求@2026-06-12 §8.6] tab 切换
+// [需求@2026-06-12 §8.6] tab 切换 + 各 tab 加载触发
 function wireDashboardTabs() {
   const tabs = document.querySelectorAll('#dashboard-tabs .tab-btn');
   const contents = document.querySelectorAll('#terminals-dialog .tab-content');
   tabs.forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const target = btn.dataset.tab;
       tabs.forEach((t) => t.classList.toggle('active', t === btn));
       contents.forEach((c) => { c.hidden = c.dataset.tab !== target; });
+      // [需求@2026-06-12 §8.7] 切到任务队列 tab 自动刷新
+      if (target === 'queue') await refreshQueueList();
     });
   });
+}
+
+// [需求@2026-06-12 §8.7] tab 2 — 任务队列
+async function refreshQueueList() {
+  const listEl = el('#queue-list');
+  const includeClosedEl = el('#queue-include-closed');
+  try {
+    const includeClosed = includeClosedEl?.checked ? '1' : '0';
+    const r = await fetch(`/api/threads/all?includeClosed=${includeClosed}`);
+    if (!r.ok) throw new Error('fetch failed: ' + r.status);
+    const threads = await r.json();
+    renderQueueList(threads);
+  } catch (e) {
+    listEl.innerHTML = `<div class="queue-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+const STAGE_ORDER = ['discussing', 'designing', 'executing', 'testing', 'verified', 'closed'];
+
+function renderQueueList(threads) {
+  const listEl = el('#queue-list');
+  if (!threads.length) {
+    listEl.innerHTML = `<div class="queue-empty">当前没有活跃线索</div>`;
+    return;
+  }
+  const groups = new Map(STAGE_ORDER.map((s) => [s, []]));
+  for (const t of threads) {
+    if (!groups.has(t.stage)) groups.set(t.stage, []);
+    groups.get(t.stage).push(t);
+  }
+  const html = [];
+  for (const stage of STAGE_ORDER) {
+    const list = groups.get(stage) || [];
+    if (list.length === 0) continue;
+    html.push(`<div class="queue-group">`);
+    html.push(`<h4><span class="stage ${stage}">${stage}</span> <span class="count">(${list.length})</span></h4>`);
+    for (const t of list) {
+      const bindings = formatBindings(t.metadata?.current_role_instances);
+      const canArchive = stage !== 'closed';
+      html.push(`
+        <div class="queue-row" data-slug="${escapeHtml(t.slug)}" data-pid="${t.projectId}">
+          <div class="slug" title="${escapeHtml(t.slug)}">${escapeHtml(t.title || t.slug)}</div>
+          <div class="project">${escapeHtml(t.projectName || '?')}</div>
+          <div class="title" title="${escapeHtml(t.slug)}">${escapeHtml(t.slug)}</div>
+          <div class="bindings" title="${escapeHtml(bindings)}">${escapeHtml(bindings || '(no bindings)')}</div>
+          <div>${canArchive
+            ? `<button class="archive-btn" data-slug="${escapeHtml(t.slug)}" data-pid="${t.projectId}">archive</button>`
+            : ''}</div>
+        </div>
+      `);
+    }
+    html.push(`</div>`);
+  }
+  listEl.innerHTML = html.join('');
+
+  listEl.querySelectorAll('.archive-btn').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const slug = btn.dataset.slug;
+      const projectId = btn.dataset.pid;
+      if (!confirm(`Archive thread "${slug}"?`)) return;
+      try {
+        await api(`/threads/${encodeURIComponent(slug)}?projectId=${projectId}`, {
+          method: 'PATCH', body: { stage: 'closed' },
+        });
+        await refreshQueueList();
+        // also refresh main left-side thread board if relevant
+        if (parseInt(projectId, 10) === state.activeProjectId) {
+          await reloadProjectScopedData();
+        }
+      } catch (err) {
+        alert('archive failed: ' + err.message);
+      }
+    });
+  });
+}
+
+function formatBindings(cri) {
+  if (!cri) return '';
+  const out = [];
+  if (cri.requirements) out.push('R');
+  if (cri.orchestrator) out.push('H');
+  if (cri.executor) out.push('B');
+  if (cri.validator) out.push('C');
+  if (cri.advisor) out.push('mateBot');
+  return out.join(', ');
 }
 
 async function updateTerminalsCount() {

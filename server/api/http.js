@@ -225,6 +225,26 @@ function buildRouter() {
     res.json(ThreadStore.list(req.project.id, { includeClosed }));
   });
 
+  // [需求@2026-06-12 §8.7] 跨 project 列所有线索 — 仪表盘 tab 2 用
+  //   返回每条 thread 含 projectName + projectId,方便前端按 project 分组或跳转
+  r.get('/threads/all', (req, res) => {
+    const includeClosed = req.query.includeClosed === '1' || req.query.includeClosed === 'true';
+    const includeSystem = req.query.includeSystem === '1' || req.query.includeSystem === 'true';
+    const projects = includeSystem
+      ? require('../db').stmts.listAllProjects.all()
+      : ProjectStore.list();
+    const all = [];
+    for (const p of projects) {
+      const threads = ThreadStore.list(p.id, { includeClosed });
+      for (const t of threads) {
+        all.push({ ...t, projectName: p.name, projectId: p.id });
+      }
+    }
+    // Sort by updatedAt DESC (most active first)
+    all.sort((a, b) => b.updatedAt - a.updatedAt);
+    res.json(all);
+  });
+
   r.post('/threads', requireProjectId, (req, res) => {
     const { slug, title } = req.body || {};
     try {

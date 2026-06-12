@@ -129,6 +129,25 @@ body { display: flex; flex-direction: column; }
 .tab-content[hidden] { display: none; }
 .tab-placeholder { padding: 40px; text-align: center; color: var(--text-muted); font-size: 12px; }
 
+/* [需求@2026-06-12 §8.7] tab 2 任务队列 */
+.queue-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 0 8px; font-size: 11px; color: var(--text-secondary); }
+.queue-toolbar input[type=checkbox] { vertical-align: middle; margin-right: 4px; }
+.queue-toolbar button { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-light); padding: 3px 10px; border-radius: 3px; font-size: 11px; cursor: pointer; }
+#queue-list { max-height: 56vh; overflow-y: auto; }
+.queue-group { margin-bottom: 12px; }
+.queue-group h4 { margin: 8px 0 4px; font-size: 11px; text-transform: uppercase; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
+.queue-group h4 .stage { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+.queue-group h4 .count { color: var(--text-muted); font-weight: normal; }
+.queue-row { display: grid; grid-template-columns: minmax(140px, 1fr) 80px minmax(140px, 1.2fr) minmax(160px, 1.5fr) 70px; gap: 8px; padding: 6px 8px; border-top: 1px solid var(--border); align-items: center; font-size: 11px; }
+.queue-row:first-child { border-top: none; }
+.queue-row .slug { font-family: ui-monospace, Consolas, monospace; font-weight: 600; color: var(--text-primary); }
+.queue-row .title { color: var(--text-secondary); }
+.queue-row .project { font-size: 10px; color: var(--text-muted); }
+.queue-row .bindings { font-size: 10px; color: var(--text-muted); font-family: ui-monospace, Consolas, monospace; }
+.queue-row .archive-btn { background: var(--accent-yellow); color: #000; border: none; border-radius: 3px; padding: 2px 8px; font-size: 10px; cursor: pointer; }
+.queue-row .archive-btn:hover { opacity: 0.85; }
+.queue-empty { padding: 20px; text-align: center; color: var(--text-muted); font-size: 11px; }
+
 #terminals-dialog .terminals-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 0 8px; font-size: 11px; color: var(--text-secondary); }
 #terminals-dialog .terminals-toolbar input[type=checkbox] { vertical-align: middle; margin-right: 4px; }
 #terminals-dialog .terminals-toolbar button { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-light); padding: 3px 10px; border-radius: 3px; font-size: 11px; cursor: pointer; }
