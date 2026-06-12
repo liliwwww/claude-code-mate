@@ -7,7 +7,9 @@ const matter = require('gray-matter');
 const config = require('../config');
 
 const REQUIRED_FIELDS = ['name', 'type', 'parallelism_limit'];
-const ALLOWED_TYPES = ['orchestrator', 'requirements', 'executor', 'validator'];
+// [需求@2026-06-12] 加 'advisor' type 给 mateBot — 它是 mate self-talk 角色,
+//   不参与 R/H/B/C 业务流转,只在 System project 的 mate-self 线索里跟 user 对话。
+const ALLOWED_TYPES = ['orchestrator', 'requirements', 'executor', 'validator', 'advisor'];
 
 class RoleCatalog {
   constructor() {

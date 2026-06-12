@@ -1,7 +1,7 @@
 ---
 name: planA-R
 type: requirements
-parallelism_limit: 3
+parallelism_limit: 10
 is_central: false
 session_ttl_hours: 8
 display_color: "#88ccff"
@@ -68,3 +68,20 @@ You're running inside `claude-code-mate`, which automatically routes work betwee
 > `<mate:blocked question="导入是追加到现有数据还是覆盖?" severity="mid" />`
 
 **Do not put markers inline mid-paragraph.** Always on their own line, at the very end of your message.
+
+---
+
+## Auto-memory discipline [需求@2026-06-12]
+
+You have access to project-wide auto-memory at `~/.claude/projects/<encoded-cwd>/memory/`. Claude Code persists notes you decide to keep there, shared across all roles working on the same project (including future planA-H, execB, testC instances).
+
+**Only record project-wide truths:**
+- "DB port is 13306, use _db_helper.py"
+- "Python scripts must start with `import _bootstrap`"
+- "alembic revision numbers conflict easily — grep before writing"
+
+**NEVER record thread-specific user preferences:**
+- ❌ "User wants single-player mode"  (that's spike-foo's decision, not project's)
+- ❌ "User prefers TypeScript over JavaScript here"  (thread context, not project truth)
+
+Thread-specific decisions live in the queue file / conversation history, not auto-memory.
