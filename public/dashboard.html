@@ -58,8 +58,27 @@
       <div id="dispatch-list"></div>
     </div>
 
+    <!-- [需求@2026-06-12 §9 mateTerm] tab 4 — 直接对指定终端说话 -->
     <div class="tab-content" data-tab="control" hidden>
-      <div class="tab-placeholder">对话控制(NL 跟 mateBot 聊)— Phase 2D §8.9 实现</div>
+      <div class="mateterm-bar">
+        <label>终端:
+          <select id="mt-instance"></select>
+        </label>
+        <label>模式:
+          <input type="radio" name="mt-mode" value="direct" checked /> 直连
+          <input type="radio" name="mt-mode" value="intervention" /> 干预
+        </label>
+        <label id="mt-thread-row" hidden>Thread:
+          <select id="mt-thread"></select>
+        </label>
+        <button id="mt-refresh" type="button" title="重新加载选项">↻</button>
+      </div>
+      <div class="mateterm-hint" id="mt-hint"></div>
+      <div id="mt-stream" class="mateterm-stream"></div>
+      <form id="mt-form" class="mateterm-form">
+        <textarea id="mt-input" placeholder="给该终端发消息(Ctrl+Enter 发送)" rows="3"></textarea>
+        <button type="submit" id="mt-send">发送</button>
+      </form>
     </div>
   </main>
 

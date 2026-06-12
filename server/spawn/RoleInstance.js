@@ -317,6 +317,8 @@ class RoleInstance {
       id: this.id,
       projectId: this.projectId,
       roleName: this.role.name,
+      // [需求@2026-06-12 §9] mateTerm 干预模式下,前端按 roleType=='requirements' 隐藏 R
+      roleType: this.role.type,
       poolSlot: this.poolSlot,
       displayName: this.displayName,
       pid: this.pid,

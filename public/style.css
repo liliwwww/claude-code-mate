@@ -326,3 +326,27 @@ main { flex: 1; display: flex; min-height: 0; }
 #send-form button { padding: 6px 16px; background: var(--accent-green); color: #fff; border: none; border-radius: 4px; cursor: pointer; }
 #send-form button:hover:not([disabled]) { opacity: 0.85; }
 #send-form button[disabled] { background: var(--bg-card); color: var(--text-muted); cursor: not-allowed; opacity: 0.6; }
+
+/* [需求@2026-06-12 §9 mateTerm] tab 4 终端直连 */
+.mateterm-bar { display: flex; align-items: center; gap: 12px; padding: 8px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px; flex-wrap: wrap; font-size: 12px; }
+.mateterm-bar label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+.mateterm-bar select { background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-light); border-radius: 3px; padding: 3px 6px; font-size: 12px; }
+.mateterm-bar input[type=radio] { vertical-align: middle; margin: 0 4px 0 8px; }
+.mateterm-bar button { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-light); padding: 3px 10px; border-radius: 3px; font-size: 11px; cursor: pointer; }
+.mateterm-hint { padding: 4px 10px; font-size: 11px; color: var(--text-secondary); border-left: 3px solid var(--border-light); margin-bottom: 8px; }
+.mateterm-hint .hint-direct { color: var(--accent); }
+.mateterm-hint .hint-interv { color: var(--accent-orange, #d8a142); }
+.mateterm-stream { height: 50vh; min-height: 320px; overflow-y: auto; background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; padding: 10px; margin-bottom: 8px; }
+.mateterm-stream .mt-empty { color: var(--text-muted); text-align: center; padding: 20px; font-size: 12px; }
+.mt-msg { margin-bottom: 10px; padding: 8px 10px; border-radius: 4px; font-size: 13px; line-height: 1.5; }
+.mt-msg.user { background: var(--bg-card); border-left: 3px solid var(--accent); }
+.mt-msg.assistant { background: var(--bg-card); border-left: 3px solid var(--accent-green); }
+.mt-msg.system { background: transparent; color: var(--text-muted); text-align: center; font-size: 11px; padding: 4px; }
+.mt-msg-head { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-secondary); margin-bottom: 4px; }
+.mt-msg-head .who { font-weight: 600; }
+.mt-msg-body { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+.mt-marker-hint { margin-top: 6px; padding: 4px 8px; background: var(--bg-input); color: var(--text-muted); border: 1px dashed var(--border-light); border-radius: 3px; font-size: 11px; }
+.mateterm-form { display: flex; gap: 8px; }
+.mateterm-form textarea { flex: 1; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-light); border-radius: 4px; padding: 6px 8px; font-family: inherit; font-size: 13px; resize: vertical; }
+.mateterm-form button { padding: 6px 16px; background: var(--accent-green); color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+.mateterm-form button:disabled { opacity: 0.5; cursor: not-allowed; }

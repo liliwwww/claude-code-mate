@@ -197,6 +197,44 @@ function buildRouter() {
     }
   });
 
+  // [需求@2026-06-12 §9 mateTerm] 直连模式 — user 直接对 instance 说话,无 thread。
+  //   marker 不触发后端 side effect(显示给前端做灰色提示);消息持久化挂 instance (direct_target)。
+  r.post('/instances/:id/direct-message', (req, res) => {
+    const { text } = req.body || {};
+    if (typeof text !== 'string' || !text.length) return res.status(400).json({ error: 'text required' });
+    try {
+      const inst = spawnManager.sendDirectToInstance(req.params.id, text);
+      res.json({ ok: true, instance: inst.snapshot(), mode: 'direct' });
+    } catch (e) {
+      const code = /not found/i.test(e.message) ? 404
+                 : /busy|spawning|dead/i.test(e.message) ? 409 : 400;
+      res.status(code).json({ error: e.message });
+    }
+  });
+
+  // [需求@2026-06-12 §9] 直连历史:按 direct_target = instance.id 拉
+  r.get('/instances/:id/direct-history', (req, res) => {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
+    const rows = db.prepare(`
+      SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json, direct_target
+      FROM messages
+      WHERE direct_target = ?
+      ORDER BY ts ASC
+      LIMIT ?
+    `).all(req.params.id, limit);
+    res.json(rows.map((m) => ({
+      id: m.id,
+      instanceId: m.instance_id,
+      roleName: m.role_name,
+      direction: m.direction,
+      claudeSessionId: m.claude_session_id,
+      ts: m.ts,
+      eventType: m.event_type,
+      payload: JSON.parse(m.payload_json),
+      directTarget: m.direct_target,
+    })));
+  });
+
   r.get('/instances/:id/history', (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
     const rows = db.prepare(`
@@ -325,10 +363,21 @@ function buildRouter() {
   });
 
   r.post('/threads/:slug/message', requireProjectId, (req, res) => {
-    const { text } = req.body || {};
+    const { text, targetInstance } = req.body || {};
     if (typeof text !== 'string' || !text.length) return res.status(400).json({ error: 'text required' });
     try {
-      // [需求@2026-06-12 §6.2 Gap 1] 路由依据 last_questioner_role_type(谁问送回谁)
+      // [需求@2026-06-12 §9.2] mateTerm 干预模式:targetInstance 指定 → 走 sendToThread 的指定路径
+      if (targetInstance) {
+        const inst = spawnManager.sendToThread({
+          projectId: req.project.id,
+          projectRootDir: req.project.root_dir,
+          threadSlug: req.params.slug,
+          text,
+          targetInstance,
+        });
+        return res.json({ ok: true, instance: inst.snapshot(), routedTo: inst.role.name, mode: 'intervention' });
+      }
+      // [需求@2026-06-12 §6.2 Gap 1] 默认路由:依据 last_questioner_role_type(谁问送回谁)
       //   - has_pending_question 且 last_questioner_role_type='orchestrator' → 送给 H
       //   - has_pending_question 且 last_questioner_role_type='requirements' → 送给 R
       //   - 无 pending → 默认送 R(discussing 阶段 fresh thread)

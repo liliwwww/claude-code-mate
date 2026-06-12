@@ -296,10 +296,63 @@ H 判断:
 | 8.6 | 仪表盘 tab 1 终端实时(含 memory 状况) | 1 |
 | 8.7 | 仪表盘 tab 2 任务队列 | 0.5 |
 | 8.8 | 仪表盘 tab 3 H 派工时序 | 0.8 |
-| 8.9 | 仪表盘 tab 4 NL 控制面板 + mateBot 接入 system thread | 1.5 |
+| 8.9 | 仪表盘 tab 4 mateTerm 终端直连(2 模式:直连 / 干预) | 1.0 |
 | 8.10 | session TTL 防生锈(`recycle_idle_min`)+ 全局 soft cap | 0.5 |
 | 8.11 | 端到端冒烟 + commit + push | 0.5 |
 
-**总计 8.6 天**(原估 6-8,因加 mateBot/system project + cap 软化精细化,微涨)。砍掉 Gap 2 的通知模块(原 0.5 天),余净 ~8 天。
+**总计 8.1 天**。砍掉 Gap 2 通知模块(-0.5)+ §8.9 由原 mateBot 方案(1.5)缩为 mateTerm(1.0)。
 
 整体范围已经冻结。从 §8.1 起按顺序实施,每个阶段独立 commit + push。
+
+---
+
+## §9 §8.9 二次修订:mateTerm 终端直连(2026-06-12 后续)
+
+### 9.1 推翻原 mateBot 方案
+
+User 明确反馈:NL 控制面板 + mateBot 这一套**不要了**。改成"**直接和指定终端对话**"。
+
+**理由**(user 原话归纳):新项目启动时希望让 H 先了解项目状况;当前交互入口只有 R,人类无法直接和 H/execB/testC 交流。要补这条直连通道。
+
+砍掉的东西:
+- `roles/mateBot.md`(advisor 类型角色)
+- StateDigest / IntentParser / Whitelist / AuditLog 4 个原计划新文件
+- `mate-self` 单例 thread bootstrap(System project 保留,thread 删)
+- 原"对话控制 = mateBot 聊天 + 白名单 action 确认"语义
+
+### 9.2 mateTerm 双模式
+
+| 模式 | 用途 | 入参 | 后端行为 |
+|---|---|---|---|
+| **直连** (default) | brief / debug / 闲聊 | instance | 直接写 stdin。不带 task tag。**marker 灰显不触发**(不切 owner、不注入下一角色)。消息持久化用 `messages.direct_target = <instance.id>`,`thread_slug = NULL`。 |
+| **干预** | 接管派工 / 强制改派 / 修正 H 决策 | instance + thread | 走现有 `sendToThread` 链路,新增 `targetInstance` 参数强制指定实例。带 `[Thread: <slug>]` task tag。marker 正常 fire。消息持久化挂 thread。 |
+
+### 9.3 UI 约定
+
+- tab 4 单选 radio 切模式(轻视觉)
+- 模式 1 instance 下拉:所有活实例(含 R / H / execB / testC)
+- 模式 2 instance 下拉:**隐藏 R**(per-thread 主视图已覆盖,重复);其余照旧
+- 模式 2 thread 下拉:按 instance 所属 project 过滤的 active threads(非 closed)
+- 模式 1 下,assistant 输出里的 marker **客户端识别 + 灰色提示框展示**:"⚠ 直连模式不触发派工"
+- 模式 2 对话流复用 thread 现有对话流(看完整上下文再干预)
+
+### 9.4 决策回顾(2026-06-12 拍板)
+
+| Q | 决策 |
+|---|---|
+| 直连消息存哪? | 跟终端绑定(`messages.direct_target`)。回归"terminal 字符模式"心智:user 就像在 PS 里直接跑 `claude -p`,会话与 instance 一起持久化。 |
+| 谁能被直连? | 所有 mate 管的终端 — R / H / execB / testC 全部。 |
+| mateBot 何去何从? | 砍。能力名改 `mateTerm`(不是 LLM,是直连路由器)。 |
+| 状态机协议如何? | 跟原有保持一致 — marker 仍由 MarkerDetector 解析,但直连模式下后端**不执行 side effect**(因为没 thread 可挂),只供客户端渲染提示。干预模式下 marker 照常 fire。 |
+
+### 9.5 实施切分
+
+| 步骤 | 内容 |
+|---|---|
+| a | 删 `roles/mateBot.md` |
+| b | DB schema v4:`messages` 加 `direct_target TEXT`(nullable + index);删除 mate-self thread bootstrap(System project 保留) |
+| c | SpawnManager:加 `sendDirectToInstance(instanceId, text)`;event 路径识别 `_directMode` 标志:命中时记到 `direct_target` 不写 thread_slug + skip `_handleMarkers`;result 后清标志 |
+| d | sendToThread 增加可选 `targetInstance` 参数(优先于 last_questioner 路由) |
+| e | http 新端点:`POST /api/instances/:id/direct-message` + `GET /api/instances/:id/direct-history`;原 thread message 接受 `body.targetInstance` |
+| f | dashboard tab 4 UI 改造:instance/mode/thread 选择器 + 对话流 + 输入框;WS 订阅 `instance.event`(直连消息流) |
+| g | 端到端冒烟 + commit + push |

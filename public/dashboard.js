@@ -296,18 +296,336 @@ function renderDispatchGlobal(events) {
   listEl.innerHTML = html.join('');
 }
 
+// ============================== Tab 4: mateTerm (direct chat to a terminal) ==============================
+// [需求@2026-06-12 §9] 选 instance + 模式(直连/干预),发消息,流式回显。
+// - 直连:POST /api/instances/:id/direct-message; 历史按 direct_target 拉
+// - 干预:POST /api/threads/:slug/message  body.targetInstance=<id>;历史按 thread 拉
+// - WS 监听 instance.event 流式追加;按当前选中 instance 过滤
+
+const MT_STATE = {
+  instances: [],            // 完整 /api/instances/all?details=1 结果
+  threadsByProject: {},     // projectId → threads[]  (lazy filled)
+  selectedInstanceId: null,
+  selectedMode: 'direct',   // 'direct' | 'intervention'
+  selectedThreadSlug: null, // intervention 模式下选中的 thread
+};
+
+const MARKER_PATTERNS = [
+  { kind: 'handoff', re: /<mate:handoff\b[^>]*>/gi },
+  { kind: 'done', re: /<mate:done\b[^>]*\/?\s*>/gi },
+  { kind: 'blocked', re: /<mate:blocked\b[^>]*>/gi },
+];
+
+async function refreshMatetermInstances() {
+  try {
+    const r = await fetch('/api/instances/all?details=1');
+    if (!r.ok) throw new Error('fetch failed: ' + r.status);
+    MT_STATE.instances = await r.json();
+  } catch (e) {
+    el('#mt-hint').textContent = '加载实例失败: ' + e.message;
+    return;
+  }
+  renderMatetermInstanceOptions();
+  updateMatetermHint();
+}
+
+function renderMatetermInstanceOptions() {
+  const sel = el('#mt-instance');
+  const mode = MT_STATE.selectedMode;
+  // 干预模式 R 隐藏(主视图重复);直连模式全展示
+  const list = MT_STATE.instances.filter((i) => {
+    if (i.status === 'dead') return false;
+    // [需求@2026-06-12 §9.3] 干预模式隐藏 R(主视图已覆盖);直连模式 R 仍可选
+    if (mode === 'intervention' && i.roleType === 'requirements') return false;
+    return true;
+  });
+  // Sort: by role name then slot
+  list.sort((a, b) => {
+    const rn = (a.roleName || '').localeCompare(b.roleName || '');
+    if (rn !== 0) return rn;
+    return (a.poolSlot || 0) - (b.poolSlot || 0);
+  });
+  const prev = MT_STATE.selectedInstanceId;
+  sel.innerHTML = list.map((i) => {
+    const name = i.displayName || i.id;
+    const proj = i.projectName || '?';
+    return `<option value="${escapeHtml(i.id)}">${escapeHtml(name)} · ${escapeHtml(proj)} · ${escapeHtml(i.status)}</option>`;
+  }).join('') || '<option value="">(无可用实例)</option>';
+  // Restore selection if still present
+  if (prev && list.some((i) => i.id === prev)) {
+    sel.value = prev;
+  } else {
+    MT_STATE.selectedInstanceId = sel.value || null;
+  }
+}
+
+async function refreshMatetermThreads() {
+  if (MT_STATE.selectedMode !== 'intervention' || !MT_STATE.selectedInstanceId) {
+    el('#mt-thread-row').hidden = true;
+    return;
+  }
+  el('#mt-thread-row').hidden = false;
+  const inst = MT_STATE.instances.find((i) => i.id === MT_STATE.selectedInstanceId);
+  if (!inst) return;
+  const projectId = inst.projectId;
+  try {
+    const r = await fetch(`/api/threads?projectId=${projectId}`);
+    if (!r.ok) throw new Error('fetch failed: ' + r.status);
+    const threads = await r.json();
+    MT_STATE.threadsByProject[projectId] = threads;
+    const active = threads.filter((t) => t.stage !== 'closed');
+    const sel = el('#mt-thread');
+    sel.innerHTML = active.map((t) => `<option value="${escapeHtml(t.slug)}">${escapeHtml(t.title || t.slug)} (${escapeHtml(t.stage)})</option>`).join('')
+      || '<option value="">(该 project 暂无活跃线索)</option>';
+    if (MT_STATE.selectedThreadSlug && active.some((t) => t.slug === MT_STATE.selectedThreadSlug)) {
+      sel.value = MT_STATE.selectedThreadSlug;
+    } else {
+      MT_STATE.selectedThreadSlug = sel.value || null;
+    }
+  } catch (e) {
+    el('#mt-hint').textContent = '加载 thread 失败: ' + e.message;
+  }
+}
+
+function updateMatetermHint() {
+  const inst = MT_STATE.instances.find((i) => i.id === MT_STATE.selectedInstanceId);
+  if (!inst) {
+    el('#mt-hint').textContent = '选一个终端开始对话';
+    return;
+  }
+  if (MT_STATE.selectedMode === 'direct') {
+    el('#mt-hint').innerHTML = `<span class="hint-direct">📡 直连 <b>${escapeHtml(inst.displayName || inst.id)}</b> — 不挂 thread,marker 不触发派工(仅灰色展示)。</span>`;
+  } else {
+    const tInfo = MT_STATE.selectedThreadSlug ? ` · 干预 thread <b>${escapeHtml(MT_STATE.selectedThreadSlug)}</b>` : '';
+    el('#mt-hint').innerHTML = `<span class="hint-interv">⚡ 干预模式 ${escapeHtml(inst.displayName || inst.id)}${tInfo} — 走正常派工链路,marker 会真生效。</span>`;
+  }
+}
+
+function extractAssistantText(payload) {
+  if (!payload) return '';
+  if (payload.result) return payload.result;
+  const content = payload.message?.content;
+  if (Array.isArray(content)) {
+    return content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+  }
+  if (typeof content === 'string') return content;
+  return '';
+}
+
+function extractUserText(payload) {
+  if (!payload) return '';
+  const content = payload.message?.content;
+  if (Array.isArray(content)) {
+    return content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+  }
+  if (typeof content === 'string') return content;
+  return '';
+}
+
+function renderMatetermMessage(m) {
+  const ts = fmtTs(m.ts);
+  if (m.direction === 'user_to_role' && (m.eventType === 'user' || !m.eventType)) {
+    const text = extractUserText(m.payload);
+    if (!text) return '';
+    return `
+      <div class="mt-msg user">
+        <div class="mt-msg-head"><span class="who">you</span><span class="ts">${ts}</span></div>
+        <div class="mt-msg-body">${escapeHtml(text)}</div>
+      </div>
+    `;
+  }
+  if (m.eventType === 'assistant') {
+    const text = extractAssistantText(m.payload);
+    if (!text) return '';
+    const markerHints = [];
+    for (const mp of MARKER_PATTERNS) {
+      const matches = text.match(mp.re);
+      if (matches) {
+        for (const mm of matches) markerHints.push({ kind: mp.kind, raw: mm });
+      }
+    }
+    const cleaned = escapeHtml(text);
+    // direct mode: show gray "marker won't fire" hint
+    const hintHtml = (MT_STATE.selectedMode === 'direct' && markerHints.length)
+      ? `<div class="mt-marker-hint">⚠ 检测到 ${markerHints.length} 个 marker(${markerHints.map((h) => h.kind).join(', ')})— 直连模式不触发派工 / 状态机。</div>`
+      : '';
+    return `
+      <div class="mt-msg assistant">
+        <div class="mt-msg-head"><span class="who">${escapeHtml(m.roleName || 'assistant')}</span><span class="ts">${ts}</span></div>
+        <div class="mt-msg-body">${cleaned}</div>
+        ${hintHtml}
+      </div>
+    `;
+  }
+  if (m.eventType?.startsWith('result')) {
+    return `<div class="mt-msg system">— 一轮结束 · ${ts} —</div>`;
+  }
+  return '';
+}
+
+async function reloadMatetermHistory() {
+  const streamEl = el('#mt-stream');
+  if (!MT_STATE.selectedInstanceId) {
+    streamEl.innerHTML = '<div class="mt-empty">选一个终端开始</div>';
+    return;
+  }
+  streamEl.innerHTML = '<div class="mt-empty">加载历史 ...</div>';
+  try {
+    let rows = [];
+    if (MT_STATE.selectedMode === 'direct') {
+      const r = await fetch(`/api/instances/${encodeURIComponent(MT_STATE.selectedInstanceId)}/direct-history?limit=200`);
+      if (!r.ok) throw new Error('fetch failed: ' + r.status);
+      rows = await r.json();
+    } else if (MT_STATE.selectedMode === 'intervention' && MT_STATE.selectedThreadSlug) {
+      const inst = MT_STATE.instances.find((i) => i.id === MT_STATE.selectedInstanceId);
+      if (!inst) throw new Error('实例不存在');
+      const r = await fetch(`/api/threads/${encodeURIComponent(MT_STATE.selectedThreadSlug)}/history?projectId=${inst.projectId}&limit=200`);
+      if (!r.ok) throw new Error('fetch failed: ' + r.status);
+      rows = await r.json();
+    }
+    if (!rows.length) {
+      streamEl.innerHTML = '<div class="mt-empty">(无历史)</div>';
+      return;
+    }
+    streamEl.innerHTML = rows.map(renderMatetermMessage).filter(Boolean).join('');
+    streamEl.scrollTop = streamEl.scrollHeight;
+  } catch (e) {
+    streamEl.innerHTML = `<div class="mt-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function sendMatetermMessage() {
+  const text = el('#mt-input').value.trim();
+  if (!text) return;
+  if (!MT_STATE.selectedInstanceId) return alert('请先选一个终端');
+  const sendBtn = el('#mt-send');
+  sendBtn.disabled = true;
+  try {
+    if (MT_STATE.selectedMode === 'direct') {
+      const r = await fetch(`/api/instances/${encodeURIComponent(MT_STATE.selectedInstanceId)}/direct-message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${r.status}`);
+      }
+    } else {
+      if (!MT_STATE.selectedThreadSlug) throw new Error('请先选一条 thread');
+      const inst = MT_STATE.instances.find((i) => i.id === MT_STATE.selectedInstanceId);
+      const r = await fetch(`/api/threads/${encodeURIComponent(MT_STATE.selectedThreadSlug)}/message?projectId=${inst.projectId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, targetInstance: MT_STATE.selectedInstanceId, projectId: inst.projectId }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${r.status}`);
+      }
+    }
+    el('#mt-input').value = '';
+    // 不强制重载;WS 会推 user_to_role + assistant 增量。但首次 user 消息有时 ws 滞后,做一次 history 回拉。
+    setTimeout(reloadMatetermHistory, 300);
+  } catch (e) {
+    alert('发送失败: ' + e.message);
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+// WebSocket: 监听 instance.event,过滤当前选中 instance + 当前模式匹配
+function setupMatetermWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.addEventListener('message', (ev) => {
+    let msg = null;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type !== 'instance.event') return;
+    const p = msg.payload;
+    if (!p || p.instanceId !== MT_STATE.selectedInstanceId) return;
+    // 模式过滤:direct 模式只看 directTarget 非 null 的事件;intervention 模式只看挂 thread 的
+    if (MT_STATE.selectedMode === 'direct' && !p.directTarget) return;
+    if (MT_STATE.selectedMode === 'intervention') {
+      if (p.directTarget) return;
+      if (MT_STATE.selectedThreadSlug && p.threadSlug && p.threadSlug !== MT_STATE.selectedThreadSlug) return;
+    }
+    // 跳过高频 partial
+    if (p.eventType === 'stream_event') return;
+    // 渲染单条
+    const m = {
+      direction: p.eventType === 'user' ? 'user_to_role' : p.eventType === 'assistant' ? 'role_to_user' : 'system',
+      eventType: p.eventType,
+      payload: p.raw,
+      ts: p.ts,
+      roleName: p.roleName,
+    };
+    const html = renderMatetermMessage(m);
+    if (!html) return;
+    const streamEl = el('#mt-stream');
+    const wasAtBottom = streamEl.scrollTop + streamEl.clientHeight >= streamEl.scrollHeight - 50;
+    if (streamEl.querySelector('.mt-empty')) streamEl.innerHTML = '';
+    streamEl.insertAdjacentHTML('beforeend', html);
+    if (wasAtBottom) streamEl.scrollTop = streamEl.scrollHeight;
+  });
+  ws.addEventListener('close', () => setTimeout(setupMatetermWS, 2000));
+}
+
+function wireMatetermUI() {
+  el('#mt-instance').addEventListener('change', (e) => {
+    MT_STATE.selectedInstanceId = e.target.value || null;
+    updateMatetermHint();
+    refreshMatetermThreads();
+    reloadMatetermHistory();
+  });
+  document.querySelectorAll('input[name="mt-mode"]').forEach((r) => {
+    r.addEventListener('change', () => {
+      MT_STATE.selectedMode = document.querySelector('input[name="mt-mode"]:checked').value;
+      renderMatetermInstanceOptions();
+      updateMatetermHint();
+      refreshMatetermThreads();
+      reloadMatetermHistory();
+    });
+  });
+  el('#mt-thread').addEventListener('change', (e) => {
+    MT_STATE.selectedThreadSlug = e.target.value || null;
+    updateMatetermHint();
+    reloadMatetermHistory();
+  });
+  el('#mt-refresh').addEventListener('click', () => {
+    refreshMatetermInstances().then(refreshMatetermThreads);
+  });
+  el('#mt-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendMatetermMessage();
+  });
+  el('#mt-input').addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === 'Enter') {
+      e.preventDefault();
+      sendMatetermMessage();
+    }
+  });
+}
+
+async function refreshControl() {
+  await refreshMatetermInstances();
+  await refreshMatetermThreads();
+  await reloadMatetermHistory();
+}
+
 // ============================== Tabs + auto-refresh ==============================
 
 async function refreshActiveTab() {
   if (currentTab === 'terminals') await refreshTerminalsList();
   else if (currentTab === 'queue') await refreshQueueList();
   else if (currentTab === 'dispatch') await refreshDispatchHistory();
-  // control tab is placeholder; nothing to refresh
+  else if (currentTab === 'control') await refreshMatetermInstances();  // 只刷实例下拉,不重拉历史(避免打断对话)
   updateLastRefresh();
 }
 
 function switchTab(target) {
   if (!['terminals', 'queue', 'dispatch', 'control'].includes(target)) target = 'terminals';
+  const isEnteringControl = currentTab !== 'control' && target === 'control';
   currentTab = target;
   document.querySelectorAll('#dashboard-tabs .tab-btn').forEach((t) => {
     t.classList.toggle('active', t.dataset.tab === target);
@@ -317,6 +635,12 @@ function switchTab(target) {
   });
   if (location.hash !== `#tab=${target}`) {
     history.replaceState(null, '', `#tab=${target}`);
+  }
+  // 进入 control tab → full init(实例 + thread + 历史)
+  if (isEnteringControl) {
+    refreshControl();
+    updateLastRefresh();
+    return;
   }
   refreshActiveTab();
 }
@@ -375,6 +699,10 @@ function wireUI() {
 
 (function init() {
   wireUI();
+  wireMatetermUI();
   switchTab(tabFromHash());
   startAutoRefresh();
+  setupMatetermWS();
+  // 首次 tab=control 时也要初始化下拉
+  if (currentTab === 'control') refreshControl();
 })();

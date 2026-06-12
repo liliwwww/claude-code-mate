@@ -174,12 +174,15 @@ class SpawnManager {
 
       // For high-frequency partial deltas, skip persistence (only final assistant + result)
       const skip = eventType === 'stream_event';
+      // [需求@2026-06-12 §9] mateTerm 直连模式:消息挂 instance,不挂 thread。
+      //   `inst._directMode` 在 sendDirectToInstance 时置 true,result 事件后清除。
+      const isDirect = !!inst._directMode;
       if (!skip) {
         try {
-          // [需求@2026-06-10] 每条 message 持久化必须带 projectId
           recordMessage({
             projectId: inst.projectId,
-            threadSlug: inst.threadSlug,
+            // 直连时 thread_slug = NULL(避免污染 thread 历史)
+            threadSlug: isDirect ? null : inst.threadSlug,
             instanceId: inst.id,
             roleName: inst.role.name,
             direction,
@@ -187,6 +190,7 @@ class SpawnManager {
             ts: Date.now(),
             eventType,
             payload: raw,
+            directTarget: isDirect ? inst.id : null,
           });
         } catch (e) {
           console.warn(`[SpawnManager] recordMessage failed for ${inst.id}: ${e.message}`);
@@ -195,7 +199,8 @@ class SpawnManager {
 
       // [需求@2026-06-12 §6.2 Gap 1] 在 thread.metadata 暂存 _current_role_type
       //   让 ThreadHooks 知道是哪个角色 type 在说话(用于 last_questioner_role_type)
-      if (inst.threadSlug && eventType === 'assistant') {
+      // 直连模式不写 thread metadata(没有 thread 可写)
+      if (!isDirect && inst.threadSlug && eventType === 'assistant') {
         try {
           const cur = ThreadStore.get(inst.projectId, inst.threadSlug);
           if (cur) {
@@ -209,32 +214,41 @@ class SpawnManager {
       bus.publish('instance.event', {
         instanceId: inst.id,
         projectId: inst.projectId,
-        threadSlug: inst.threadSlug,
+        // 直连模式:threadSlug 标 null,前端按 instanceId 分流
+        threadSlug: isDirect ? null : inst.threadSlug,
         roleName: inst.role.name,
         eventType,
         raw,
         ts: Date.now(),
+        // [需求@2026-06-12 §9] mateTerm 直连事件标志
+        directTarget: isDirect ? inst.id : null,
       });
 
       // [需求@2026-06-10 §1.4, §1.6] result 事件 = 一轮结束,触发 ThreadHooks
       //   异步 fire-and-forget,不阻塞 event 派发
       // [bug@2026-06-10] streamParser 把 result/success 拼成 eventType='result/success'(含 subtype),
       //   不是 'result'。判断要 startsWith,不是 ===。
-      if (eventType.startsWith('result') && inst.threadSlug && raw.is_error !== true) {
-        setImmediate(() => {
-          ThreadHooks.onResultEvent({
-            projectId: inst.projectId,
-            threadSlug: inst.threadSlug,
-            instanceId: inst.id,
-          }).catch((e) => console.warn(`[SpawnManager] ThreadHooks error:`, e.message));
-        });
+      // [需求@2026-06-12 §9] 直连模式:不跑 ThreadHooks,不跑 _handleMarkers — 因为没 thread 可挂。
+      //   marker 由前端在 assistant 文本里识别后**灰色提示**显示,不触发 side effect。
+      if (eventType.startsWith('result') && raw.is_error !== true) {
+        if (!isDirect && inst.threadSlug) {
+          setImmediate(() => {
+            ThreadHooks.onResultEvent({
+              projectId: inst.projectId,
+              threadSlug: inst.threadSlug,
+              instanceId: inst.id,
+            }).catch((e) => console.warn(`[SpawnManager] ThreadHooks error:`, e.message));
+          });
 
-        // [需求@2026-06-10 §6.1-6.4] 自动状态机:detect mate markers,自动 handoff 下一角色
-        const assistantText = raw.result || '';
-        const markers = MarkerDetector.detect(assistantText);
-        if (markers.length) {
-          setImmediate(() => this._handleMarkers(inst, markers));
+          // [需求@2026-06-10 §6.1-6.4] 自动状态机:detect mate markers,自动 handoff 下一角色
+          const assistantText = raw.result || '';
+          const markers = MarkerDetector.detect(assistantText);
+          if (markers.length) {
+            setImmediate(() => this._handleMarkers(inst, markers));
+          }
         }
+        // result 后清除直连标志(若有);下一轮 user 再发才会再置位
+        if (isDirect) inst._directMode = false;
       }
     });
 
@@ -465,7 +479,9 @@ class SpawnManager {
   //   - 其它(orchestrator/executor/validator/advisor):pooled,slot 化复用
   //
   //   targetSlot:可选,marker `target="execB-2"` 解析后传进来。
-  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null }) {
+  //   targetInstance:可选(§9 mateTerm 干预模式),user 直接指定具体 instance.id 时由 caller 注入;
+  //     从中推导 roleType + targetSlot,覆盖默认 last_questioner 路由。
+  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null, targetInstance = null }) {
     if (!projectId) throw new Error('sendToThread requires projectId');
     if (!projectRootDir) throw new Error('sendToThread requires projectRootDir');
     if (!threadSlug) throw new Error('sendToThread requires threadSlug');
@@ -474,6 +490,17 @@ class SpawnManager {
     const thread = ThreadStore.get(projectId, threadSlug);
     if (!thread) throw new Error(`thread "${threadSlug}" not found in project ${projectId}`);
 
+    // [需求@2026-06-12 §9.2] mateTerm 干预模式:指定 instance 时覆盖 roleType + targetSlot
+    if (targetInstance) {
+      const tgt = this.instances.get(targetInstance);
+      if (!tgt) throw new Error(`targetInstance ${targetInstance} not found`);
+      if (tgt.projectId !== projectId) {
+        throw new Error(`targetInstance ${targetInstance} belongs to a different project`);
+      }
+      roleType = tgt.role.type;
+      if (tgt.poolSlot != null) targetSlot = tgt.poolSlot;
+    }
+
     const role = roleCatalog.list().find((r) => r.type === roleType);
     if (!role) throw new Error(`no role found of type ${roleType}`);
 
@@ -481,6 +508,39 @@ class SpawnManager {
       return this._sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType });
     }
     return this._sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot });
+  }
+
+  // [需求@2026-06-12 §9 mateTerm] 直连模式 — user 直接对某个实例说话。
+  //   - 不挂 thread(messages.direct_target = inst.id,thread_slug = NULL)
+  //   - 不加 [Thread: xxx] task tag
+  //   - 不触发 marker side effect(_handleMarkers / ThreadHooks 都跳过)
+  //   - busy / spawning 实例拒绝(409 by caller)
+  sendDirectToInstance(instanceId, text) {
+    if (!instanceId) throw new Error('sendDirectToInstance requires instanceId');
+    if (!text || typeof text !== 'string') throw new Error('sendDirectToInstance requires text');
+    const inst = this.instances.get(instanceId);
+    if (!inst) throw new Error(`instance ${instanceId} not found`);
+    if (inst.status === 'dead') throw new Error(`instance ${instanceId} is dead`);
+    if (inst.status === 'busy') throw new Error(`instance ${instanceId} is busy`);
+    if (inst.status === 'spawning') throw new Error(`instance ${instanceId} is still spawning`);
+
+    inst._directMode = true;  // event handler 看到这个就走直连持久化 + 跳 marker 派工
+    try {
+      inst.sendUserText(text);
+    } catch (e) {
+      inst._directMode = false;
+      throw e;
+    }
+    recordEvent('instance.direct_message', { text: text.slice(0, 200) },
+                { projectId: inst.projectId, instanceId: inst.id });
+    bus.publish('instance.direct_message', {
+      instanceId: inst.id,
+      projectId: inst.projectId,
+      roleName: inst.role.name,
+      text,
+      ts: Date.now(),
+    });
+    return inst;
   }
 
   // R 走原 per-thread 路径

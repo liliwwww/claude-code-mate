@@ -98,7 +98,10 @@ CREATE TABLE IF NOT EXISTS events (
 // v1 -> v2: add projects + project_id columns
 // v2 -> v3 [需求@2026-06-12]: pool_slot for role_instances + is_system for projects
 //          + ensureSystemProject + ensureSystemThread
-const SCHEMA_VERSION = 3;
+// v3 -> v4 [需求@2026-06-12 §9 mateTerm]:
+//          messages.direct_target 列(直连模式消息的目标 instance);
+//          删除 mate-self thread bootstrap(mateBot 砍掉,System project 保留)
+const SCHEMA_VERSION = 4;
 let cur = db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get();
 let curVersion = cur ? parseInt(cur.value, 10) : 1;
 
@@ -162,14 +165,33 @@ if (curVersion < 3) {
   if (!tableHasColumn('role_instances', 'pool_slot')) {
     db.exec(`ALTER TABLE role_instances ADD COLUMN pool_slot INTEGER`);
   }
-  const systemId = ensureSystemProject();
-  ensureSystemThread(systemId);
+  ensureSystemProject();
+  // v3 once created `mate-self` thread; v4 migration removes it (see below).
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '3');
   curVersion = 3;
 } else {
-  // Even on already-v3 DBs, make sure System project + thread exist (fresh install / accidental delete)
-  const systemId = ensureSystemProject();
-  ensureSystemThread(systemId);
+  // Even on already-v3 DBs, make sure System project exists (fresh install / accidental delete)
+  ensureSystemProject();
+}
+
+// [需求@2026-06-12 §9] v3 -> v4 mateTerm:
+//   messages.direct_target 列 = 直连模式下消息的目标 instance.id(thread_slug 为 NULL)
+//   并删除 §8.2 创建的 mate-self thread(mateBot 方案已废弃)
+if (curVersion < 4) {
+  if (!tableHasColumn('messages', 'direct_target')) {
+    db.exec(`ALTER TABLE messages ADD COLUMN direct_target TEXT`);
+  }
+  // Drop the now-defunct mate-self thread; System project itself stays (it's cheap).
+  try {
+    const sys = db.prepare(`SELECT id FROM projects WHERE is_system = 1`).get();
+    if (sys) {
+      db.prepare(`DELETE FROM threads WHERE project_id = ? AND slug = 'mate-self'`).run(sys.id);
+    }
+  } catch (e) {
+    console.warn(`[db] v4 mate-self cleanup failed: ${e.message}`);
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '4');
+  curVersion = 4;
 }
 
 function ensureSystemProject() {
@@ -184,29 +206,9 @@ function ensureSystemProject() {
   return r.lastInsertRowid;
 }
 
-function ensureSystemThread(systemProjectId) {
-  const existing = db.prepare(`
-    SELECT slug FROM threads WHERE project_id = ? AND slug = 'mate-self'
-  `).get(systemProjectId);
-  if (existing) return;
-  const now = Date.now();
-  const metadata = {
-    current_role_instances: {
-      requirements: null,
-      orchestrator: null,
-      executor: null,
-      validator: null,
-      advisor: null,  // [需求@2026-06-12] mateBot 占用
-    },
-    last_session_activity_at: {},
-    queue_file_path: null,
-    is_system_thread: true,
-  };
-  db.prepare(`
-    INSERT INTO threads (slug, project_id, title, stage, created_at, updated_at, metadata_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run('mate-self', systemProjectId, '跟 mate 对话', 'discussing', now, now, JSON.stringify(metadata));
-}
+// [需求@2026-06-12 §9] ensureSystemThread 删除:
+//   原 mate-self 单例 thread 是为 mateBot 准备的;mateBot 已废弃,改用 mateTerm 直连机制。
+//   System project 仍保留(便宜,后续可能复用)。v4 migration 会清空遗留的 mate-self thread 行。
 
 // --- Step 3: indexes (safe to recreate on v2 schema) ---
 db.exec(`
@@ -216,6 +218,7 @@ CREATE INDEX IF NOT EXISTS idx_instances_proj_role_st  ON role_instances(project
 CREATE INDEX IF NOT EXISTS idx_messages_thread_ts_v2   ON messages(project_id, thread_slug, ts);
 CREATE INDEX IF NOT EXISTS idx_messages_instance_ts    ON messages(instance_id, ts);
 CREATE INDEX IF NOT EXISTS idx_messages_session        ON messages(claude_session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_direct_ts      ON messages(direct_target, ts);
 CREATE INDEX IF NOT EXISTS idx_events_kind_ts          ON events(kind, ts DESC);
 `);
 
@@ -225,9 +228,11 @@ CREATE INDEX IF NOT EXISTS idx_events_kind_ts          ON events(kind, ts DESC);
 
 const stmts = {
   // [需求@2026-06-10] project_id 字段在所有 hot-path statements 里贯通
+  // [需求@2026-06-12 §9] direct_target 字段:
+  //   非 null 时表示这是 mateTerm 直连消息(thread_slug 为 NULL),持久化跟 instance 绑定
   insertMessage: db.prepare(`
-    INSERT INTO messages (project_id, thread_slug, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json)
-    VALUES (@project_id, @thread_slug, @instance_id, @role_name, @direction, @claude_session_id, @ts, @event_type, @payload_json)
+    INSERT INTO messages (project_id, thread_slug, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json, direct_target)
+    VALUES (@project_id, @thread_slug, @instance_id, @role_name, @direction, @claude_session_id, @ts, @event_type, @payload_json, @direct_target)
   `),
   // [需求@2026-06-12 §8.3] pool_slot 字段贯通持久化
   upsertInstance: db.prepare(`
@@ -279,6 +284,8 @@ module.exports = {
       ts: msg.ts ?? Date.now(),
       event_type: msg.eventType || null,
       payload_json: typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload ?? {}),
+      // [需求@2026-06-12 §9] mateTerm 直连消息标记;为 null 时表示普通 thread 消息
+      direct_target: msg.directTarget || null,
     });
   },
   recordEvent(kind, payload, opts = {}) {
