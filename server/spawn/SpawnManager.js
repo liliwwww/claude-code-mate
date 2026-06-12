@@ -524,8 +524,9 @@ class SpawnManager {
   //   1. acquire 一个 instance(指定 slot 或任意 idle 或新分配)
   //   2. 设 inst.threadSlug = currentTask
   //   3. 加 [Thread: <slug>] task tag 前缀
-  //   4. 派工(idle → sendUserText / disconnected → resurrect / 新 → spawn with pending)
-  //   5. 绑定到 thread.metadata + touch
+  //   4. [§8.5] H 还要前置 task board snapshot(活跃线索 + 池子状态 + 最近决策)
+  //   5. 派工(idle → sendUserText / disconnected → resurrect / 新 → spawn with pending)
+  //   6. 绑定到 thread.metadata + touch
   _sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot }) {
     const inst = this._acquirePoolInstance({ projectId, projectRootDir, role, requestedSlot: targetSlot, threadSlug });
     if (!inst) throw new Error(`could not acquire pool instance for ${role.name}`);
@@ -534,7 +535,12 @@ class SpawnManager {
     inst.threadSlug = threadSlug;
 
     // [需求@2026-06-12 §6 边界标记] task tag — 让 claude 知道当前 scope,但**不要它忘记过去**
-    const taggedText = `[Thread: ${threadSlug}]\n\n${text}`;
+    // [需求@2026-06-12 §1.7 §8.5] H 加 task board snapshot — 它需要全局视野做决策
+    let finalText = text;
+    if (role.type === 'orchestrator') {
+      finalText = this._buildTaskBoardSnapshot(projectId, threadSlug) + text;
+    }
+    const taggedText = `[Thread: ${threadSlug}]\n\n${finalText}`;
 
     // Dispatch by status
     if (inst.status === 'idle' || inst.status === 'busy') {
@@ -632,6 +638,103 @@ class SpawnManager {
       return { roleName: m[1], poolSlot: parseInt(m[2], 10) };
     }
     return { roleName: target, poolSlot: null };
+  }
+
+  // [需求@2026-06-12 §1.7 §8.5] 给 H 注入的 task board snapshot
+  //   每次 H 激活时拼一份当前 project 的全局视图:
+  //   - 活跃线索(stage != closed) + 谁绑了谁
+  //   - 池子状态(每个池化 instance:status + current/last task + 上次活动时间)
+  //   - 最近 5 个 thread.handoff 决策(H 复盘自己派工历史)
+  //   - 当前激活 thread 用 ← this activation 标记
+  _buildTaskBoardSnapshot(projectId, currentThreadSlug) {
+    const ts = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    const lines = [`[Mate task board · ${ts}]`, ''];
+
+    // Active threads
+    lines.push('## Active threads');
+    try {
+      const threads = db.prepare(`
+        SELECT slug, title, stage, metadata_json FROM threads
+        WHERE project_id = ? AND stage != 'closed'
+        ORDER BY updated_at DESC LIMIT 10
+      `).all(projectId);
+      if (threads.length === 0) {
+        lines.push('(none)');
+      } else {
+        for (const t of threads) {
+          const meta = JSON.parse(t.metadata_json || '{}');
+          const roles = meta.current_role_instances || {};
+          const boundInfo = [];
+          for (const [type, id] of Object.entries(roles)) {
+            if (!id) continue;
+            const inst = this.instances.get(id);
+            if (inst) boundInfo.push(`${inst.displayName}(${inst.status})`);
+          }
+          const marker = t.slug === currentThreadSlug ? '  ← this activation' : '';
+          lines.push(`- \`${t.slug}\`  ${t.stage}  ${boundInfo.join(', ') || '—'}${marker}`);
+        }
+      }
+    } catch (e) {
+      lines.push(`(error loading threads: ${e.message})`);
+    }
+
+    // Pool state — sorted by role then slot
+    lines.push('', '## Pool state');
+    const pooled = [...this.instances.values()].filter(
+      (i) => i.projectId === projectId && i.poolSlot != null && i.status !== 'dead'
+    ).sort((a, b) => {
+      if (a.role.name !== b.role.name) return a.role.name.localeCompare(b.role.name);
+      return a.poolSlot - b.poolSlot;
+    });
+    if (pooled.length === 0) {
+      lines.push('(pool empty — first task will allocate slot 1)');
+    } else {
+      for (const inst of pooled) {
+        const status = inst.status;
+        const task = inst.threadSlug || '(none)';
+        if (status === 'busy') {
+          lines.push(`- ${inst.displayName}  busy  current: \`${task}\``);
+        } else {
+          const ago = inst.lastActiveAt ? this._relativeTime(inst.lastActiveAt) : '';
+          lines.push(`- ${inst.displayName}  ${status}  last: \`${task}\` ${ago}`);
+        }
+      }
+    }
+
+    // Recent decisions (last 5 thread.handoff events)
+    lines.push('', '## Recent dispatch decisions (last 5)');
+    try {
+      const events = db.prepare(`
+        SELECT ts, thread_slug, payload_json FROM events
+        WHERE project_id = ? AND kind = 'thread.handoff'
+        ORDER BY ts DESC LIMIT 5
+      `).all(projectId);
+      if (events.length === 0) {
+        lines.push('(no handoffs yet)');
+      } else {
+        for (const e of events) {
+          let payload = {};
+          try { payload = JSON.parse(e.payload_json || '{}'); } catch {}
+          const tt = new Date(e.ts).toISOString().slice(11, 16);
+          const target = payload.target || payload.resolvedRole || '?';
+          const reason = (payload.reason || '').slice(0, 50);
+          lines.push(`- ${tt}  \`${e.thread_slug}\`  ${payload.from || '?'} → ${target}  "${reason}"`);
+        }
+      }
+    } catch (e) {
+      lines.push(`(error loading events: ${e.message})`);
+    }
+
+    lines.push('', '---', '');
+    return lines.join('\n');
+  }
+
+  _relativeTime(ts) {
+    const diff = Date.now() - ts;
+    if (diff < 60_000) return '(just now)';
+    if (diff < 3_600_000) return `(${Math.floor(diff / 60_000)}m ago)`;
+    if (diff < 86_400_000) return `(${Math.floor(diff / 3_600_000)}h ago)`;
+    return `(${Math.floor(diff / 86_400_000)}d ago)`;
   }
 
   // [需求@2026-06-11 §4] 清除 thread.metadata.has_pending_question(user 已回答 → 黄灯熄)
