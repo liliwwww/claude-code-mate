@@ -5,15 +5,19 @@
 ## [Unreleased]
 
 ### 进行中
-- **Phase 2D:池化 H 架构 + 任务跟踪 + 仪表盘 4 tab**(2026-06-12 大讨论后合并定型)
-  - 详细决策见 [docs/discussions/2026-06-12-pooled-h-task-tracking.md](docs/discussions/2026-06-12-pooled-h-task-tracking.md)(覆盖原 mate-dashboard.md)
-  - **架构**:1 个全局 H + 1 R per thread + 池化 execB/testC(默认各 2 个,长期存活,不 kill/disconnect/clear context)
-  - **专长机制**:**砍掉工程化的专长摘要**,改用 claude auto-memory 替代(per-cwd 共享,自然累积约定/禁止/反复问题)
-  - **Marker 协议升级**:`<mate:handoff target="execB-2" />` 支持具体 instance,泛型 `target="execB"` 也保留
-  - **稳定 slot 名**:`execB-1..N` 跨重启不变(`--resume` 续上 jsonl)
-  - **H 任务调度**:每次激活注入 task board snapshot(活跃线索 + 池子状态 + 最近决策),H request queue 串行化避免 stdin 串味
-  - **仪表盘 4 tab**:终端实时 / 任务队列 / H 派工时序 / NL 控制面板(白名单 action + 二次确认)
-  - 实施预估 6-8 天(原 5-7 天扩张到含池化改造)
+- **Phase 2D:池化 H 架构 + 任务跟踪 + 仪表盘 4 tab**(2026-06-12 大讨论 + audit 后冻结)
+  - 详细决策见 [docs/discussions/2026-06-12-pooled-h-task-tracking.md](docs/discussions/2026-06-12-pooled-h-task-tracking.md)(§1-§8 全冻结)
+  - **架构**:1 个全局 H + 1 R per thread + 池化 execB/testC(默认各 2,长期存活,不 kill/disconnect/clear)
+  - **专长机制**:claude auto-memory 替代,**砍工程化专长摘要**
+  - **Marker 协议升级**:支持具体 instance(`target="execB-2"`)+ 泛型(`target="execB"`);优先级 `done > blocked > handoff`
+  - **execB/testC 砍掉 `<mate:blocked />`**:决策统一 handoff to H,H 判断能否自答
+  - **稳定 slot 名**:`pool_slot` 字段,跨重启不变(`--resume` 续 jsonl)
+  - **H 任务调度**:task board snapshot 注入 + request queue 串行化(user > auto-handoff)
+  - **inst 状态拆分**:`threadSlug`(R 1:1 绑定)+ `currentTaskSlug`(pooled 角色 per-task 动态)
+  - **仪表盘 4 tab**:终端实时(含 memory 状况)/ 任务队列 / H 派工时序 / NL 控制面板(白名单 action + 二次确认)
+  - **System thread (singleton)**:hidden system project (id=0) + 固定 slug `mate-self` + 新角色 mateBot,承载 user 跟 mate 自己的对话,持久化
+  - **全局 cap soft**:超 16 实例 queue + banner,不硬拒
+  - 实施 ~8 天(详细工时表见 sediment doc §8)
 
 ### 砍掉
 - ~~**Phase 3:H 自驱 `/loop`**~~(2026-06-12 决定砍)
