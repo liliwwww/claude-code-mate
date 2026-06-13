@@ -19,10 +19,67 @@ const path = require('node:path');
 const matter = require('gray-matter');
 const config = require('../config');
 
-const REQUIRED_FIELDS = ['name', 'type', 'parallelism_limit'];
-// [需求@2026-06-12] 加 'advisor' type 给 mateBot — 它是 mate self-talk 角色,
-//   不参与 R/H/B/C 业务流转,只在 System project 的 mate-self 线索里跟 user 对话。
-const ALLOWED_TYPES = ['orchestrator', 'requirements', 'executor', 'validator', 'advisor'];
+// [arch-debt §7 ✅ 2026-06-13] role frontmatter schema
+//   每个字段:type / required / 范围(若适用)/ 默认值
+//   - 已知字段类型不对 → warn,字段不进 def(沿用默认)
+//   - 未知字段(schema 里没有的)→ warn(silent ignore 不再)
+//   - required 缺失 → 整 role skip(原行为)
+const ROLE_SCHEMA = {
+  // [需求@2026-06-12] 'advisor' type 给 mateBot — 不参与 R/H/B/C 业务流转,
+  //   只在 System project 的 mate-self 线索里跟 user 对话。
+  name:              { type: 'string', required: true },
+  type:              { type: 'string', required: true, enum: ['orchestrator', 'requirements', 'executor', 'validator', 'advisor'] },
+  parallelism_limit: { type: 'integer', required: true, min: 1, max: 50 },
+  is_central:        { type: 'boolean', default: false },
+  session_ttl_hours: { type: 'number', min: 0.1, max: 168, default: null },  // null = 用 config.defaultSessionTtlHours
+  display_color:     { type: 'string', default: '#ccc' },
+  allowed_tools:     { type: 'array', default: [] },
+  allow_rules:       { type: 'array', default: [] },
+  permission_mode:   { type: 'string', default: 'dontAsk', enum: ['dontAsk', 'ask', 'denyAll'] },
+  skill_command:     { type: 'string', default: null },  // null = fallback to name
+  peer_visibility:   { type: 'array', default: [] },
+};
+
+const REQUIRED_FIELDS = Object.entries(ROLE_SCHEMA).filter(([, s]) => s.required).map(([k]) => k);
+
+function validateField(file, key, value, schema) {
+  // type check
+  if (schema.type === 'integer' && !(Number.isInteger(value))) {
+    console.warn(`[roles] ${file}: field "${key}" must be integer, got ${typeof value} (${value}) — using default`);
+    return { ok: false };
+  }
+  if (schema.type === 'number' && typeof value !== 'number') {
+    console.warn(`[roles] ${file}: field "${key}" must be number, got ${typeof value} — using default`);
+    return { ok: false };
+  }
+  if (schema.type === 'string' && typeof value !== 'string') {
+    console.warn(`[roles] ${file}: field "${key}" must be string, got ${typeof value} — using default`);
+    return { ok: false };
+  }
+  if (schema.type === 'boolean' && typeof value !== 'boolean') {
+    console.warn(`[roles] ${file}: field "${key}" must be boolean, got ${typeof value} — using default`);
+    return { ok: false };
+  }
+  if (schema.type === 'array' && !Array.isArray(value)) {
+    console.warn(`[roles] ${file}: field "${key}" must be array, got ${typeof value} — using default`);
+    return { ok: false };
+  }
+  // enum
+  if (schema.enum && !schema.enum.includes(value)) {
+    console.warn(`[roles] ${file}: field "${key}"="${value}" not in allowed: [${schema.enum.join(', ')}] — using default`);
+    return { ok: false };
+  }
+  // range
+  if (schema.min != null && value < schema.min) {
+    console.warn(`[roles] ${file}: field "${key}"=${value} below min ${schema.min} — using default`);
+    return { ok: false };
+  }
+  if (schema.max != null && value > schema.max) {
+    console.warn(`[roles] ${file}: field "${key}"=${value} above max ${schema.max} — using default`);
+    return { ok: false };
+  }
+  return { ok: true };
+}
 
 class RoleCatalog {
   constructor() {
@@ -40,28 +97,52 @@ class RoleCatalog {
       const raw = fs.readFileSync(full, 'utf8');
       const parsed = matter(raw);
       const fm = parsed.data || {};
+
+      // 1) required 字段检查 — 缺失 → 整 role skip
+      let missing = false;
       for (const r of REQUIRED_FIELDS) {
         if (!(r in fm)) {
-          console.warn(`[roles] ${file}: missing required frontmatter field "${r}", skipping`);
-          continue;
+          console.warn(`[roles] ${file}: missing required frontmatter field "${r}", skipping role`);
+          missing = true;
+          break;
         }
       }
-      if (!ALLOWED_TYPES.includes(fm.type)) {
-        console.warn(`[roles] ${file}: invalid type "${fm.type}", skipping`);
+      if (missing) continue;
+
+      // 2) 未知字段警告(schema 里没有的)
+      for (const k of Object.keys(fm)) {
+        if (!(k in ROLE_SCHEMA)) {
+          console.warn(`[roles] ${file}: unknown frontmatter field "${k}" — ignored. (Check spelling? Or update ROLE_SCHEMA in RoleCatalog.js)`);
+        }
+      }
+
+      // 3) 已知字段类型 + 范围校验
+      const validated = {};
+      for (const [k, schema] of Object.entries(ROLE_SCHEMA)) {
+        if (k in fm) {
+          const res = validateField(file, k, fm[k], schema);
+          if (res.ok) validated[k] = fm[k];
+        }
+      }
+
+      // required 已通过,直接 throw 不该再发生 — 但加 defensive 检查
+      if (!validated.name || !validated.type || validated.parallelism_limit == null) {
+        console.warn(`[roles] ${file}: required field invalid after validation, skipping role`);
         continue;
       }
+
       const def = {
-        name: fm.name,
-        type: fm.type,
-        parallelismLimit: fm.parallelism_limit,
-        isCentral: !!fm.is_central,
-        sessionTtlHours: fm.session_ttl_hours ?? config.defaultSessionTtlHours,
-        displayColor: fm.display_color || '#ccc',
-        allowedTools: fm.allowed_tools || [],
-        allowRules: fm.allow_rules || [],
-        permissionMode: fm.permission_mode || 'dontAsk',
-        skillCommand: fm.skill_command || fm.name,
-        peerVisibility: fm.peer_visibility || [],
+        name: validated.name,
+        type: validated.type,
+        parallelismLimit: validated.parallelism_limit,
+        isCentral: validated.is_central ?? ROLE_SCHEMA.is_central.default,
+        sessionTtlHours: validated.session_ttl_hours ?? config.defaultSessionTtlHours,
+        displayColor: validated.display_color ?? ROLE_SCHEMA.display_color.default,
+        allowedTools: validated.allowed_tools ?? ROLE_SCHEMA.allowed_tools.default,
+        allowRules: validated.allow_rules ?? ROLE_SCHEMA.allow_rules.default,
+        permissionMode: validated.permission_mode ?? ROLE_SCHEMA.permission_mode.default,
+        skillCommand: validated.skill_command ?? validated.name,
+        peerVisibility: validated.peer_visibility ?? ROLE_SCHEMA.peer_visibility.default,
         body: parsed.content.trim(),
         sourcePath: full,
       };
@@ -89,3 +170,6 @@ class RoleCatalog {
 }
 
 module.exports = new RoleCatalog();
+// 供单测 import
+module.exports.ROLE_SCHEMA = ROLE_SCHEMA;
+module.exports.validateField = validateField;
