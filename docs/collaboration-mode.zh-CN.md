@@ -1,5 +1,24 @@
 # 多终端协作模式说明 — planA-R / planA-H / execB / testC
 
+> ⚠ **DEPRECATED · 2026-06-13**
+>
+> 本文描述的是**早期 file-based 协作模式**(`doc/queue/*.md`、
+> `doc/WORK_HANDOFF_*.md`、`doc/_dispatch/*.md`、`doc/terminal_status/*.md`)。
+> 该协议在 **Phase 2C(2026-06-10)** 已被 `claude-code-mate` 的
+> **in-memory marker 协议**取代:R/H/B/C 在 stdout 末尾输出
+> `<mate:handoff target="..." reason="..." />` 等 marker,mate 后端解析并
+> 在 SQLite 中维护 thread 状态,**不再读不再写任何 queue / handoff 文件**。
+>
+> 最新协议详见:
+> - `docs/discussions/2026-06-12-pooled-h-task-tracking.md`
+> - `docs/discussions/2026-06-12-phase-2E-spec.md`
+> - `roles/planA-R.md` / `planA-H.md` / `execB.md` / `testC.md`
+>
+> 本文保留为**历史档案**,**不要**按这套术语跟 user 沟通,**不要**生成
+> `WORK_HANDOFF` / `queue` 文件 — mate 已经接管派工。
+
+---
+
 > **生效日期**:2026-06-08 拆 planA → R/H 起,2026-06-09 整理本文档
 > **作用**:把当前 4 类终端的协作模式 / 工作原则 / 边界 / skill 定义集中写下,避免散落在 7+ memory + 5 skill 文件里
 > **版本基准**:`.claude/commands/planA-R.md` / `planA-H.md` / `execB.md` / `testC.md` + 关键 memory(见末尾"必读 memory")
