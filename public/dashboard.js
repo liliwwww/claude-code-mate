@@ -66,6 +66,7 @@ function renderTerminalsList(instances) {
       <div>名字</div>
       <div>Slot</div>
       <div>Project</div>
+      <div>Model</div>
       <div>PID</div>
       <div>当前活动</div>
       <div>Memory</div>
@@ -74,8 +75,14 @@ function renderTerminalsList(instances) {
   `;
   const rows = instances.map((i) => {
     const canKill = !['dead', 'disconnected'].includes(i.status);
+    const canSkill = !['dead', 'disconnected'].includes(i.status);
     const slotText = i.poolSlot != null ? String(i.poolSlot) : '-';
     const activity = i.latestActivity || '(no data)';
+    // [需求@2026-06-14 B] 模型列 — currentModel 后端已有,extract short name
+    const modelFull = i.currentModel || '';
+    const modelShort = modelFull
+      ? modelFull.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-\d{4}$/, '')
+      : '—';
     const memoryText = i.memory && i.memory.fileCount > 0
       ? `${i.memory.fileCount} files${i.memory.latestMtime ? ' · ' + relTime(i.memory.latestMtime) : ''}`
       : '—';
@@ -85,10 +92,13 @@ function renderTerminalsList(instances) {
         <div title="${escapeHtml(i.id)} · session ${i.sessionId || '-'}">${escapeHtml(i.displayName || i.id)}</div>
         <div>${slotText}</div>
         <div>${escapeHtml(i.projectName || '?')}</div>
+        <div title="${escapeHtml(modelFull || '(unknown)')}">${escapeHtml(modelShort)}</div>
         <div>${i.pid ?? '-'}</div>
         <div title="${escapeHtml(activity)}">${escapeHtml(activity)}</div>
         <div title="${i.memory ? 'latest: ' + (i.memory.latestMtime ? new Date(i.memory.latestMtime).toLocaleString() : '-') : ''}">${escapeHtml(memoryText)}</div>
-        <div>${canKill
+        <div class="term-actions">${canSkill
+          ? `<button class="term-skill" data-id="${escapeHtml(i.id)}" data-name="${escapeHtml(i.displayName || i.id)}" title="发 slash 指令(/clear, /help, etc.)">skill</button>`
+          : ''}${canKill
           ? `<button class="term-kill" data-id="${escapeHtml(i.id)}">kill</button>`
           : `<button class="term-kill" disabled>-</button>`}
         </div>
@@ -110,6 +120,83 @@ function renderTerminalsList(instances) {
         alert('kill failed: ' + err.message);
       }
     });
+  });
+
+  // [需求@2026-06-14 D] skill 指令对话框 — 下拉常用 slash + 自由输入
+  listEl.querySelectorAll('.term-skill[data-id]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      openSkillDialog(btn.dataset.id, btn.dataset.name);
+    });
+  });
+}
+
+// [需求@2026-06-14 D] skill 指令对话框
+const COMMON_SLASH = [
+  { cmd: '/clear',   desc: '清空当前 session 上下文' },
+  { cmd: '/resume',  desc: '恢复上次 session' },
+  { cmd: '/compact', desc: '让 claude 压缩当前对话' },
+  { cmd: '/memory',  desc: '查看/编辑 claude memory' },
+  { cmd: '/status',  desc: '看当前 session 状态' },
+  { cmd: '/help',    desc: '看所有 slash 命令' },
+  { cmd: '/cost',    desc: '查看当前 token 消耗' },
+  { cmd: '/model',   desc: '查看/切换当前 model' },
+];
+
+function openSkillDialog(instanceId, displayName) {
+  // 已开过的对话框先关
+  document.querySelector('#skill-dialog')?.remove();
+  const dlg = document.createElement('dialog');
+  dlg.id = 'skill-dialog';
+  dlg.innerHTML = `
+    <form method="dialog" id="skill-form">
+      <h3>对 <code>${escapeHtml(displayName)}</code> 发指令</h3>
+      <label>常用 slash:
+        <select id="skill-preset">
+          <option value="">— 选一个 —</option>
+          ${COMMON_SLASH.map((s) => `<option value="${escapeHtml(s.cmd)}">${escapeHtml(s.cmd)} · ${escapeHtml(s.desc)}</option>`).join('')}
+        </select>
+      </label>
+      <label>或自由输入(slash / 自然语言都可):
+        <textarea id="skill-text" rows="3" placeholder="/clear\n或: 把当前 todos 全标 done" autofocus></textarea>
+      </label>
+      <div class="muted" style="font-size:12px;margin:6px 0">
+        指令会作为 user 消息写入 ${escapeHtml(displayName)} 的 stdin。注意:slash 命令是否生效取决于 claude headless 的支持。
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="skill-cancel">取消</button>
+        <button type="submit" id="skill-send">发送</button>
+      </div>
+      <div id="skill-error" class="error" style="color:#d44;margin-top:6px"></div>
+    </form>
+  `;
+  document.body.appendChild(dlg);
+  dlg.showModal();
+  const preset = dlg.querySelector('#skill-preset');
+  const text = dlg.querySelector('#skill-text');
+  preset.addEventListener('change', () => { if (preset.value) text.value = preset.value; });
+  dlg.querySelector('#skill-cancel').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#skill-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const cmd = text.value.trim();
+    if (!cmd) return;
+    const errEl = dlg.querySelector('#skill-error');
+    errEl.textContent = '';
+    try {
+      const r = await fetch(`/api/instances/${encodeURIComponent(instanceId)}/slash`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: cmd }),
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({ error: r.statusText }));
+        throw new Error(e.error || r.statusText);
+      }
+      dlg.close();
+      await refreshTerminalsList();
+    } catch (e) {
+      errEl.textContent = e.message;
+    }
   });
 }
 

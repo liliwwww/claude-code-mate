@@ -63,7 +63,10 @@ const config = {
   logLevel: (process.env.LOG_LEVEL || 'info').toLowerCase(),
 
   // Default session TTL — overridden per-role via role frontmatter
-  defaultSessionTtlHours: 4,
+  // [需求@2026-06-14 user] 日常使用发现 claude session 不需要自动过期 —
+  //   2h/4h TTL 反复 kill+lazy-resurrect 反而打断上下文。提到 720h(30 天)实际等价
+  //   "永不过期"。需要 per-role 短 TTL 仍在 frontmatter 写 session_ttl_hours 覆盖。
+  defaultSessionTtlHours: int(process.env.DEFAULT_SESSION_TTL_HOURS, 720),
 
   // [需求@2026-06-12 §8.10 + Phase 2E §13] 全局并发软上限 — 超出 emit cap_warn,前端红条 banner,不硬拒
   //   口径:**只算 idle/busy/spawning 真活实例**(disconnected 不算 — 它们没 child process,资源消耗 0)

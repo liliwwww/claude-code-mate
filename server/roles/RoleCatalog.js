@@ -31,7 +31,7 @@ const ROLE_SCHEMA = {
   type:              { type: 'string', required: true, enum: ['orchestrator', 'requirements', 'executor', 'validator', 'advisor'] },
   parallelism_limit: { type: 'integer', required: true, min: 1, max: 50 },
   is_central:        { type: 'boolean', default: false },
-  session_ttl_hours: { type: 'number', min: 0.1, max: 168, default: null },  // null = 用 config.defaultSessionTtlHours
+  session_ttl_hours: { type: 'number', min: 0.1, max: 8760, default: null },  // null = 用 config.defaultSessionTtlHours;max 8760 = 1 年(实质 never)
   display_color:     { type: 'string', default: '#ccc' },
   allowed_tools:     { type: 'array', default: [] },
   allow_rules:       { type: 'array', default: [] },

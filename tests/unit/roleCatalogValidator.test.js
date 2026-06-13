@@ -142,9 +142,15 @@ describe('validateField range checks', () => {
     expect(validateField('test.md', 'session_ttl_hours', 24, ROLE_SCHEMA.session_ttl_hours).ok).toBe(true);
   });
 
-  it('session_ttl_hours=500 above max', () => {
+  it('session_ttl_hours=500 within new range', () => {
+    // [需求@2026-06-14] max 168 → 8760(1 年),user 反馈日常不需要 TTL,
+    //   留 max 是为 catch typo(.05 → 5h);500h(~21d)在合理范围
     reset();
-    expect(validateField('test.md', 'session_ttl_hours', 500, ROLE_SCHEMA.session_ttl_hours).ok).toBe(false);
+    expect(validateField('test.md', 'session_ttl_hours', 500, ROLE_SCHEMA.session_ttl_hours).ok).toBe(true);
+  });
+  it('session_ttl_hours=10000 above new max(8760=1y)', () => {
+    reset();
+    expect(validateField('test.md', 'session_ttl_hours', 10000, ROLE_SCHEMA.session_ttl_hours).ok).toBe(false);
   });
 });
 

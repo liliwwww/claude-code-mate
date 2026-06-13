@@ -173,7 +173,19 @@ body { display: flex; flex-direction: column; }
 #terminals-list { max-height: 56vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
 
 /* [需求@2026-06-12 §8.6] tab 1 行布局加 displayName/活动/memory 列 */
-.term-row { display: grid; grid-template-columns: 28px minmax(100px, 1fr) 60px 0.6fr 70px minmax(120px, 1.5fr) 0.8fr 50px; gap: 8px; padding: 6px 8px; border-top: 1px solid var(--border); align-items: center; font-size: 11px; font-family: ui-monospace, Consolas, monospace; }
+/* [需求@2026-06-14 B] 9 列:status / 名字 / slot / project / model / pid / 活动 / memory / actions */
+.term-row { display: grid; grid-template-columns: 28px minmax(100px, 1fr) 50px 0.6fr 0.7fr 70px minmax(120px, 1.5fr) 0.8fr 90px; gap: 8px; padding: 6px 8px; border-top: 1px solid var(--border); align-items: center; font-size: 11px; font-family: ui-monospace, Consolas, monospace; }
+.term-row .term-actions { display: flex; gap: 4px; }
+.term-row .term-skill { background: var(--bg-card); color: var(--accent); border: 1px solid var(--accent); border-radius: 3px; padding: 2px 8px; font-size: 10px; cursor: pointer; }
+.term-row .term-skill:hover { background: var(--accent); color: #fff; }
+#skill-dialog { background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; padding: 18px 22px; min-width: 380px; max-width: 540px; }
+#skill-dialog h3 { margin: 0 0 12px; font-size: 14px; }
+#skill-dialog code { background: var(--bg-card); padding: 1px 6px; border-radius: 3px; color: var(--accent); }
+#skill-dialog label { display: block; margin: 8px 0; font-size: 12px; color: var(--text-secondary); }
+#skill-dialog select, #skill-dialog textarea { width: 100%; box-sizing: border-box; margin-top: 4px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-light); border-radius: 3px; padding: 6px 8px; font-family: inherit; font-size: 12px; }
+#skill-dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+#skill-dialog button { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-light); padding: 5px 14px; border-radius: 3px; font-size: 12px; cursor: pointer; }
+#skill-dialog button#skill-send { background: var(--accent); color: #fff; border-color: var(--accent); }
 .term-row:first-child { border-top: none; }
 .term-row.head { background: var(--bg-card); color: var(--text-secondary); text-transform: uppercase; font-size: 10px; font-weight: 600; }
 .term-row .term-status { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; text-transform: uppercase; }

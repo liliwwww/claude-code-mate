@@ -334,6 +334,25 @@ function buildRouter() {
     }
   });
 
+  // [需求@2026-06-14 D] 系统监控 — 给具体 instance 发 slash / skill 指令
+  //   (/clear, /resume, /help 等 — 或自由文本)
+  //   语义上同 /message,但语义清晰、便于审计;走 sendUserText,绕过 thread 路由。
+  //   busy 实例也允许 — 这本身就是干预手段(claude 排队处理)。
+  r.post('/instances/:id/slash', (req, res) => {
+    const { command } = req.body || {};
+    if (typeof command !== 'string' || !command.trim()) {
+      return res.status(400).json({ error: 'command required' });
+    }
+    const inst = spawnManager.getInstance(req.params.id);
+    if (!inst) return res.status(404).json({ error: 'instance not found' });
+    try {
+      inst.sendUserText(command.trim());
+      res.json({ ok: true, sent: command.trim(), instanceId: req.params.id });
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
   // [需求@2026-06-12 §9 mateTerm] 直连模式 — user 直接对 instance 说话,无 thread。
   //   marker 不触发后端 side effect(显示给前端做灰色提示);消息持久化挂 instance (direct_target)。
   r.post('/instances/:id/direct-message', (req, res) => {
