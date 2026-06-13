@@ -1,3 +1,17 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L6 Frontend / 组件
+// 责任:顶栏实时运行态 chip + 4 列 swimlane popover(挂 #runtime-chip-mount)
+// 公共 API:window.RuntimeChip = { init({projectId}) / setProjectId(id) /
+//   refresh / showPopover / hidePopover }
+// 允许依赖:仅浏览器 API + fetch(/api/runtime/...) + WebSocket /ws
+// 禁止:
+//   - 直接 require/import server 模块(违反 L6 → L4 only)
+//   - 修改 mate 业务状态(只展示;quota override 也走 POST endpoint)
+//   - 跨页面共享 state(每个挂载点独立 init)
+// ============================================================================
+//
 // [需求@2026-06-12 Phase 2E §14] 顶栏实时运行态 chip + popover
 //
 // 自包含组件。挂载点 #runtime-chip-mount。

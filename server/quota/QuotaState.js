@@ -1,3 +1,17 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L2 Process Control
+// 责任:5h / 7d quota 双轨状态机 + 持久化 + setTimer + cron 兜底
+// 公共 API:单例 + `start / stop / ingest / isPaused / getPausedTypes /
+//   manualOverride / snapshot`
+// 允许依赖:db / messageBus
+// 禁止:
+//   - 直接读 stdin(只接受 ingest 的 payload)
+//   - 派工逻辑(只 publish 事件,SpawnManager 监听后决定怎么做)
+//   - 业务降级判断(自动 Haiku 等留下轮 phase)
+// ============================================================================
+//
 // [需求@2026-06-12 Phase 2E §6] 全局 quota 状态机
 //   5h / 7d 双轨独立,任一进 PAUSED 整个 mate 暂停派工/send
 //   两个都 OK 才回正常态

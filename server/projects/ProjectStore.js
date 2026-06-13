@@ -1,3 +1,16 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L1 Domain Stores
+// 责任:Project 实体 CRUD + 路径探针(inspectDir)
+// 公共 API:list / get / getByName / create / archive / inspectDir
+// 允许依赖:db / config / fs
+// 禁止:
+//   - 调 SpawnManager / RoleInstance / Thread
+//   - 直接发 bus 事件
+//   - 读 claude stream
+// ============================================================================
+//
 // [需求@2026-06-10] 多 project first-class (user Q1 + Q4) — ProjectStore 是
 // projects 表的 CRUD 封装。Phase 2A 起 mate 可同时管理多个 sibling project
 // (D:\dev\kb_backend, D:\dev\web_gmail, ..., 也包括 mate 自己).

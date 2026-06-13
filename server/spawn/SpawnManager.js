@@ -1,5 +1,32 @@
-// Manages the pool of RoleInstances. Phase 1: minimal — explicit spawn / kill,
-// no pool reuse, no session-TTL recycler (those land in Phase 2C).
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L2 Process Control
+// 责任(单一职责?— **目前 9 个,见 arch-debt §1,god class 待拆**):
+//   1. 实例池管理(per-(project, role) 双组,acquire / release / restoreFromDisk)
+//   2. RoleInstance lifecycle wiring(event 桥接 + 持久化 + bus.publish)
+//   3. marker dispatch(MarkerDetector → _performHandoff/Done/Blocked)
+//   4. handoff 进度状态机(_pendingHandoffReady Map → spawning/ready/failed)
+//   5. clientMessageId FIFO(乐观 UI dedup)
+//   6. TTL scanner(ttl_soon/expired + stuck busy unstick + disconnected 老化)
+//   7. global cap warn(_checkGlobalCap,新口径只算 idle/busy/spawning)
+//   8. QuotaState wire(rate_limit_event 透传)
+//   9. pending sends queue(预留,本轮未启用)
+// 公共 API:单例 + spawnInstance / sendToThread / sendDirectToInstance /
+//   killInstance / restoreFromDisk / startTtlScanner / stopTtlScanner / shutdown /
+//   getInstance / listInstances
+// 允许依赖(自下而上):config / db / messageBus / RoleInstance / streamParser /
+//   roleCatalog / ThreadStore / ThreadHooks / MarkerDetector / QuotaState
+//   注:ThreadHooks/MarkerDetector 当前挂 L3 system-agent,见 arch-debt §4 §5
+// 禁止:
+//   - 替 LLM 决策(选哪个 instance、handoff target 写啥)
+//   - 写任何 file-based handoff(WORK_HANDOFF / doc/queue / doc/_dispatch)
+//   - hardcode 角色名(stageByTargetType 那种 type 映射例外,因为 type 是契约)
+//   - 改 stream-json raw event 字段(只读)
+// ============================================================================
+//
+// Phase 1: minimal — explicit spawn / kill, no pool reuse, no session-TTL recycler
+//   (those land in Phase 2C).
 // However, the seams are here so Phase 2 just adds policy on top.
 //
 // [需求@2026-06-10] 重启数据不丢 — restoreFromDisk() 在 boot 时从 SQLite 重水化

@@ -1,3 +1,16 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L4 API Surface
+// 责任:bus.publish 事件 → 所有连接的 WS client(client 自己过滤)
+// 公共 API:attach(httpServer)
+// 允许依赖:messageBus / ws
+// 禁止:
+//   - 后端过滤(client 自己决定要不要渲染)
+//   - 缓存(消息丢就丢,前端 30s 兜底 fetch)
+//   - 双向 RPC(只 fan-out,不接收 client 指令)
+// ============================================================================
+//
 // WebSocket push. Server-side fan-out from messageBus to all connected clients.
 // Phase 1: no subscriptions/filtering — every client gets every event.
 

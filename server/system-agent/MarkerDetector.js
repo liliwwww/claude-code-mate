@@ -1,3 +1,17 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L3 Business Hooks(位置存在争议,见 arch-debt §4 — 应该在 L2)
+// 责任:正则解析 <mate:handoff/done/blocked /> marker(纯函数)
+// 公共 API:detect(text) → markers[]
+// 允许依赖:无(纯)
+// 禁止:
+//   - 任何 IO
+//   - 决策(只解析,谁触发什么是 SpawnManager 的事)
+//   - 副作用
+// 新增 marker 类型 → 先改 architecture.md + arch-debt.md 再加
+// ============================================================================
+//
 // [需求@2026-06-10 §6] mate handoff marker detector
 //   R/H/B/C 的 system prompt 教它们在每轮末尾输出 <mate:...> marker。
 //   这个模块负责从 assistant 文本里识别 marker,供 SpawnManager 自动派工。

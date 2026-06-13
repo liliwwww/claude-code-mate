@@ -1,3 +1,17 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L3 Business Hooks
+// 责任:Haiku 短命 LLM runner(标题摘要 / reply template / has_question 等
+//   metadata 自动化任务;成本受控,**绝不用于业务决策**)
+// 公共 API:runStructured / runOnce / 等(详见 SystemAgent.js export)
+// 允许依赖:config + child_process(spawn claude `--bare`)
+// 禁止:
+//   - 替业务角色做决策(不能让它选 handoff target、不能写代码)
+//   - 用 Opus 跑 micro-task(force Haiku 省钱)
+//   - 持久化对话历史(每次 fresh `--no-session-persistence`)
+// ============================================================================
+//
 // [需求@2026-06-10 §5] System Agent — mate 自己的 LLM 服务
 //   见 docs/discussions/2026-06-10-phase-2c-needs.md §5
 //

@@ -1,3 +1,16 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L1 Domain Stores
+// 责任:`roles/*.md` 解析 + frontmatter 校验 + 角色定义查询
+// 公共 API:load / list / get(name) / central
+// 允许依赖:config / fs / gray-matter
+// 禁止:
+//   - 持久化(roles/*.md 即真理,SQLite 不存角色)
+//   - 动态创建 / 修改角色定义(只读)
+//   - 在别处 hardcode 角色名(本模块以外用 catalog.get / list)
+// ============================================================================
+//
 // Reads `roles/*.md` files, parses frontmatter via gray-matter, exposes lookup.
 // Phase 5 will add chokidar hot-reload; Phase 1 just does a one-shot load.
 

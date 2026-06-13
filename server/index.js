@@ -1,3 +1,17 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L5 Bootstrap
+// 责任:纯 wiring — 加载 config / db / catalog,构造 express + ws + 启动
+//   scanner / lifecycle 钩子(SIGINT/SIGTERM)
+// 公共 API:无 export(entry point)
+// 允许依赖:所有 L0-L4
+// 禁止:
+//   - 业务逻辑(只装配)
+//   - 阻塞性 await(except 协调 shutdown)
+//   - 持久化 (L0 干)
+// ============================================================================
+//
 // Backend entrypoint. Bootstraps config, db, role catalog, spawn manager,
 // HTTP server, REST router, WebSocket attach, and graceful shutdown.
 

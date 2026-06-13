@@ -1,3 +1,18 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L0 Infrastructure
+// 责任:加载 .env + 暴露 typed config 单例(所有 env 入口)
+// 公共 API:export const config = { port, paths, httpProxy, claudeBin,
+//   globalMaxClaudeProcesses, defaultSessionTtlHours, stuckBusyThresholdMin,
+//   disconnectedKeepPerGroup, ttlScanIntervalMin, ttlWarnBeforeMin, ... }
+// 允许依赖:dotenv / path / fs(boot 期 mkdir 副作用 OK)
+// 禁止:
+//   - 任何业务逻辑
+//   - 动态修改 config(只读 + 启动期校验)
+//   - 在别处直接读 process.env(全部走 config)
+// ============================================================================
+//
 // Loads .env and exposes a typed config object to the rest of the backend.
 // All env access goes through here — never read process.env elsewhere.
 

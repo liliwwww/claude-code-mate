@@ -1,3 +1,17 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L0 Infrastructure
+// 责任:SQLite 连接 + schema + migrations + prepared statements + 通用 helper
+// 公共 API:export { db, stmts, recordMessage, recordEvent }
+// 允许依赖:仅 config(L0 内部)
+// 禁止:
+//   - 业务 store(那是 L1 — ProjectStore/ThreadStore 等;**recordMessage /
+//     recordEvent 是历史包袱**,见 arch-debt §3,新加业务函数去 L1)
+//   - 调任何 L1+ 模块(单向依赖)
+//   - 处理 stream-json event(L2 spawn 的责任)
+// ============================================================================
+//
 // SQLite layer using better-sqlite3 (synchronous, single-process app).
 // Owns the schema, migrations, and exposes a singleton `db` connection.
 //

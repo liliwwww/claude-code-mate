@@ -1,3 +1,19 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L2 Process Control
+// 责任:claude stdout NDJSON 容错解析 + 通用 event helpers(纯函数)
+// 公共 API:class StreamParser + 解析 helpers(isResultError /
+//   extractAssistantText / extractToolUses / extractToolResults /
+//   extractTextDelta)
+// 允许依赖:无(纯)
+// 禁止:
+//   - 任何 IO(文件 / 网络 / db)
+//   - 业务判断
+//   - 解析 mate marker(那是 MarkerDetector,只对 result.result 文本应用)
+//   - 修改 raw event 字段(只读)
+// ============================================================================
+//
 // Line-buffered NDJSON parser for claude headless stdout.
 // Tolerant of partial chunks, multi-line bursts, and oversized lines.
 // Emits a uniform shape: { eventType, raw, ts }.

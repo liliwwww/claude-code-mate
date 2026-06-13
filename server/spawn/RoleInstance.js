@@ -1,3 +1,20 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L2 Process Control
+// 责任:**单个** claude 子进程 lifecycle(spawn 启动 / sendUserText 写 stdin /
+//   kill 关闭 / 通过 EventEmitter 暴露事件)
+// 公共 API:class RoleInstance + spawn / sendUserText / kill / on(event,
+//   handler) / snapshot
+// 允许依赖:config / streamParser / uuid
+// 禁止:
+//   - 池管理(SpawnManager 的事)
+//   - 解析 mate marker(MarkerDetector 的事)
+//   - 直接 publish bus 事件(只 _emit 给自己的 listeners,SpawnManager 桥接 bus)
+//   - 直接持久化到 db(SpawnManager 桥接 recordMessage)
+//   - 替 LLM 决策
+// ============================================================================
+//
 // One live claude child process bound to a RoleDefinition.
 // Owns: spawn argv construction, stdin write, stdout/stderr parsing, lifecycle events.
 //

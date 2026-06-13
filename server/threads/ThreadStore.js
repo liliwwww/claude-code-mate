@@ -1,3 +1,16 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L1 Domain Stores
+// 责任:Thread 实体 CRUD + stage state machine + role-instance binding metadata
+// 公共 API:list / get / create / setStage / setTitle / touch / bindInstance
+// 允许依赖:db
+// 禁止:
+//   - 调 SpawnManager(thread 不知道 instance lifecycle)
+//   - 直接发 bus 事件(调用方决定)
+//   - 跨 project 操作(scope 严格 per project_id)
+// ============================================================================
+//
 // [需求@2026-06-10] 线索 = user 需求(一等公民),Phase 2B 主视图就是线索看板。
 //   线索的生命周期:discussing → designing → executing → testing → verified → closed
 //   每条线索绑定 0..N 个角色实例(metadata.current_role_instances[roleType] = instanceId)

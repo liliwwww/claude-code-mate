@@ -1,215 +1,281 @@
-# 架构设计
+# Claude Code Mate — 架构设计
 
-> 本文档解释 Claude Code Mate 的**核心架构原则、关键抽象、关键风险**,以及为什么选这样而不是那样。
+> 本文档是**架构 SSOT**(Single Source of Truth)。约束代码组织、模块边界、依赖方向、禁止条目。
+> 任何后续 Phase 改动必须先回到本文档对齐;若与本文档冲突,优先改本文档说服 reviewer,再动代码。
 
-## 核心原则:升维不再造
+---
 
-Mate 不是新角色,**不替代** R / H / execB / testC 任何一个角色的工作。它干 3 件事:
+## §1 核心原则:升维不再造
 
-1. **接入(Input)** — user 单一输入框,识别意图 + 匹配线索 + 路由到对应角色实例
-2. **聚合(View)** — 把多个角色的状态/事件/对话聚合成单一视图
-3. **协调(Coord)** — BLOCKED / AWAITING_VERIFY 等关键节点主动通知 user,user 拍板后回写信号
+Mate 不是新 agent,**不替代** R / H / execB / testC 任何一个角色的工作。它干 3 件事:
 
-底层 claude 子进程之间的"通讯"——即原"协作模式"里靠 `doc/queue/`、`doc/_dispatch/`、`doc/terminal_status/` 文件协议传递的消息——升级为 **mate 内部内存消息总线**(`messageBus.js`)。文件可作为单向人类可读快照保留,但不再是 SSOT。
+1. **接入(Input)** — user 单一输入框 / 多线索切换 / 派工进度可见
+2. **聚合(View)** — 多 project 视图 / 顶栏实时 chip / 仪表盘 swimlane
+3. **协调(Coord)** — marker → dispatch / quota 暂停 + 恢复 / 卡死 unstick
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                       USER                                │
-│   单一输入框 / 多线索切换 / 验收 / 偶尔看 BLOCKED         │
-└──────────────────────────────────────────────────────────┘
-                      │
-                      │  自然语言 / 验收信号
-                      ▼
-┌──────────────────────────────────────────────────────────┐
-│            Mate(路由 + 视图 + 协调)                     │
-│   Project Switcher / Thread Board / Conversation Stream │
-└──────────────────────────────────────────────────────────┘
-        │           │                │               │
-        ▼           ▼                ▼               ▼
-┌──────────┬──────────┬────────────────┬─────────────────┐
-│  R x N    │  H x 1   │   execB x M    │   testC x K     │
-│ (需求)    │ (中枢)   │   (实施)       │   (验证)        │
-└──────────┴──────────┴────────────────┴─────────────────┘
-```
+**关键约束**(违者 = 架构退化):
 
-**H 是中枢**:系统设计、串/并/文件冲突判定、派工权全在 H。Mate 不绕过 H 直接派工。
+- mate **绝不替 LLM 做业务判断** — 选哪个 execB / handoff reason 写啥 / 派 testC 还是 execB,全部由 LLM(role 实例)决定;mate 只解析 marker,机械执行
+- mate **不写不读** sibling project 的 `doc/queue/`、`doc/_dispatch/`、`WORK_HANDOFF_*.md`、`doc/terminal_status/*.md`(file-based 协议已 retired,Phase 2C 起 marker → in-memory dispatch)
+- mate **不缓存业务结论** — thread state 在 SQLite,quota state 在 SQLite,但 mate 不存 "execB-2 擅长 auth 模块" 这种业务判断(那是 H 的认知,放 H 自己 session/auto-memory)
+- mate **child claude 之间不共享 RAM 状态** — instance 之间通信只通过 marker(role→role 唯一通道)
 
-## 维度区分
+详细禁止条目见 §6 模块边界规约。
 
-Mate 里有两个语义维度,**不能混淆**:
+---
 
-| 维度        | 谁感知       | 在 UI 哪里              |
-|-------------|--------------|-------------------------|
-| **线索**    | user 一等公民 | 主视图(线索看板)      |
-| **terminal/instance** | 系统调度,user 透明 | 系统监控视图(独立模块)|
+## §2 维度区分(UI/Domain 模型)
 
-user 想多讨论一个问题 = 新建线索(系统自动 spawn R),**不是** spawn 多一个角色实例。
+| 维度        | 谁感知       | 在哪里展示              | 标识符 |
+|-------------|--------------|-------------------------|--------|
+| **Project** | user 主动 | 顶栏 picker            | `project.id` (int) |
+| **Thread(线索)** | user 一等公民 | 主视图线索板 | `thread.slug` (text, project 内唯一) |
+| **RoleInstance(终端)** | user 透明,系统调度 | 仪表盘 + chip popover | `instance.id`(internal)+ `displayName`(`execB-2` 池槽名)|
+| **Role(角色定义)** | user 不感知 | mate `roles/*.md` | `role.name`(`planA-R` 等)|
 
-## 关键抽象
+→ user 想多讨论一个问题 = **新建线索**(系统自动 spawn R),**不是** spawn 新角色实例。
+→ user 看到 "execB-2 在干活" = pool slot 名,跟 thread 关系是动态的(同一 execB-2 可服务多 thread,**不绑死**)。
 
-| 抽象              | 文件                                  | 职责                                                                         |
-|-------------------|---------------------------------------|------------------------------------------------------------------------------|
-| `RoleDefinition`  | `roles/*.md` + `RoleCatalog.js`       | 角色 frontmatter 元数据(type / parallelism / is_central / TTL / 工具白名单) |
-| `Project`         | `projects` 表 + `ProjectStore.js`     | 一个被管理的 sibling 项目(name / root_dir / settings)                       |
-| `RoleInstance`    | `server/spawn/RoleInstance.js`        | 一个活的 claude 子进程,绑定 (project, role, [thread])                       |
-| `Thread`(线索)   | `threads` 表(Phase 2B 使能)        | user 的需求实体,slug + 阶段状态机 + 元数据                                  |
-| `SpawnManager`    | `server/spawn/SpawnManager.js`        | per-(project, role) 实例池,acquire / release / recycle / kill              |
-| `StreamParser`    | `server/spawn/streamParser.js`        | claude stdout NDJSON 容错解析                                                |
-| `MessageBus`      | `server/messageBus.js`                | 进程内 pub/sub,topics `instance.*` / `thread.*` / `dispatch.*` / `block.*` |
-| `IntentRouter`    | (Phase 2C+)                          | user 输入意图识别 + 线索匹配 + 路由                                          |
+---
 
-## 进程模型
-
-每个 claude 子进程通过 **`child_process.spawn` 数组参数**启动(永远不用 shell 拼字符串,避开 PS 转义陷阱):
-
-```js
-spawn('claude', [
-  '-p',
-  '--input-format',   'stream-json',
-  '--output-format',  'stream-json',
-  '--verbose',
-  '--include-partial-messages',
-  '--replay-user-messages',
-  '--include-hook-events',
-  '--permission-mode', 'dontAsk',
-  '--tools',           role.allowedTools.join(' '),
-  '--settings',        JSON.stringify({permissions:{allow: role.allowRules}}),
-  '--session-id',      preallocatedUuid,
-  '--name',            `${roleName}#${shortId}`,
-  '--add-dir',         project.root_dir,
-  '--append-system-prompt', composedRolePrompt,
-], {
-  cwd: project.root_dir,
-  env: { ...process.env, HTTP_PROXY, HTTPS_PROXY, NO_PROXY: 'localhost,127.0.0.1' },
-  windowsHide: true,
-  stdio: ['pipe', 'pipe', 'pipe'],
-});
-```
-
-**几条铁律**(全是 Phase 0 探针实证得出):
-
-1. **spawn 后立即写第一条 stdin**(claude ~3s 没拿到 stdin 就静默退出,exit 0,stdout 0 字节)
-2. **错误判定看 `result.is_error`,不信 `subtype === "success"`**(代理失败时 subtype 仍是 success 但 is_error: true)
-3. **工具收紧用 `--tools` 白名单,绝不用 `--disallowedTools` 黑名单**(Windows 上有 Bash + PowerShell 两个 shell 工具,黑名单总有遗漏)
-4. **kill 渐进升级**:`stdin.end()` → wait 2s → `child.kill('SIGTERM')` → wait 2s → `taskkill /F /T /PID`
-
-完整协议细节见 [stream-json-protocol.md](./stream-json-protocol.md)。
-
-## 跨进程线索接续 / 重启恢复
-
-**线索的真理在 SQLite,不在 claude 进程内**。这是 mate 抵御 claude 进程崩溃 / mate 重启 / session 生锈的核心。
-
-### 线索一生
+## §3 模块拓扑(7 层)
 
 ```
-thread.slug          (logical entity in mate)
-   │
-   ├── messages: [m1, m2, m3, ...]    (持久化在 sqlite messages 表)
-   └── claudeSessionId: "abc-..."     (claude 在 ~/.claude/projects/<cwd>/<id>.jsonl 自己也存)
-              │
-              └── child process pid 12345   (短命资源,死了不丢失上下文)
+┌──────────────────────────────────────────────────────────────────┐
+│  L6 Frontend          public/                                   │
+│   - index.html / dashboard.html(挂载点)                         │
+│   - app.js(主视图)/ dashboard.js(仪表盘)                       │
+│   - components/runtime-chip.js(顶栏 chip 组件)                  │
+│   - style.css                                                   │
+└──────────────────────────────────────────────────────────────────┘
+                            ↑ HTTP/WS only(不直读 SQLite)
+┌──────────────────────────────────────────────────────────────────┐
+│  L5 Bootstrap         server/index.js                           │
+│   组装 express + WS + lifecycle,纯 wiring,不含业务              │
+└──────────────────────────────────────────────────────────────────┘
+                            ↑
+┌──────────────────────────────────────────────────────────────────┐
+│  L4 API Surface       server/api/                               │
+│   - http.js — REST router(无状态,所有状态去 L2/L1)             │
+│   - ws.js   — WebSocket fanout(转发 messageBus 给所有 client)   │
+└──────────────────────────────────────────────────────────────────┘
+                            ↑
+┌──────────────────────────────────────────────────────────────────┐
+│  L3 Business Hooks    server/system-agent/                      │
+│   - SystemAgent.js   — Haiku 短命 LLM runner(摘要/模板)         │
+│   - MarkerDetector.js — 正则解析 mate marker(纯函数)            │
+│   - ThreadHooks.js   — 自动摘要 / reply template / has_question  │
+│   - envCheck.js      — env 探针                                 │
+└──────────────────────────────────────────────────────────────────┘
+                            ↑
+┌──────────────────────────────────────────────────────────────────┐
+│  L2 Process Control   server/spawn/ + server/quota/             │
+│   - RoleInstance.js  — 单个 claude 子进程 lifecycle              │
+│   - SpawnManager.js  — 实例池 + marker dispatch + handoff 状态机 │
+│   - streamParser.js  — stdout NDJSON 解析(纯函数 + helpers)     │
+│   - PendingSends.js  — mate_pending_sends 表 helper             │
+│   - QuotaState.js    — 5h/7d quota 状态机 + setTimer + cron     │
+└──────────────────────────────────────────────────────────────────┘
+                            ↑
+┌──────────────────────────────────────────────────────────────────┐
+│  L1 Domain Stores                                               │
+│   - projects/ProjectStore.js  — Project CRUD                    │
+│   - threads/ThreadStore.js    — Thread CRUD + stage state       │
+│   - roles/RoleCatalog.js      — roles/*.md md 解析 + 验证        │
+└──────────────────────────────────────────────────────────────────┘
+                            ↑
+┌──────────────────────────────────────────────────────────────────┐
+│  L0 Infrastructure                                              │
+│   - config.js       — env + paths(纯 export,无副作用)          │
+│   - db.js           — SQLite connection + schema + migrations   │
+│                       + prepared statements + recordMessage 等   │
+│   - messageBus.js   — 进程内 EventEmitter pub/sub                │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### Mate 重启时
+**依赖方向**:**自下而上 only**,即:
+- L0 不依赖任何更高层
+- Lⁿ 可以 `require` L0 ~ L(n-1) 的任何模块
+- **同层之间允许互相依赖**(扁平),但要避免循环
+- L6 frontend **只通过 L4 接口**与后端对话,**绝不直接 `import`/`require` 任何 server 模块**
 
-- 启动期 `SpawnManager.restoreFromDisk()` 扫 SQLite 非 dead 实例
-- 每条记录构造一个**没有 child 的** `RoleInstance`,status = `disconnected`
-- UI 看到这些 disconnected 实例(💤),user 视角"对话还在,可以继续"
-- user 给 disconnected 实例发消息 → 自动 spawn 新 claude + `--resume <sessionId> --fork-session` 续上
+---
 
-### Claude 进程 crash
+## §4 各模块责任声明(SSOT)
 
-- `child.on('exit')` 触发,实例 status → `dead`
-- 但 `claudeSessionId` 还在 mate 数据库 + claude 自己的 jsonl
-- 下次 user 通过线索(Phase 2C 起)发消息时,SpawnManager 自动 acquire 一个新 RoleInstance + resume
+> 每个 server/ 模块顶部都有 `MODULE CONTRACT` 注释块,内容与本节保持同步。Linter 等价物:grep 比对。
 
-### Session TTL(防生锈,Phase 2C 实施)
+### L0 Infrastructure
 
-代码改动 → 旧 session 里读过的文件内容、grep 结果在新代码下**事实错误**。所以 session 4h 没动过就该让它过期:
+| 模块 | 责任 | 公共 API | 禁止 |
+|---|---|---|---|
+| `config.js` | 读 `.env` + 提供 `config` 单例 | export `{ port, httpProxy, paths, globalMaxClaudeProcesses, ... }` | 不在这里跑业务逻辑;不动态修改 |
+| `db.js` | SQLite 连接 + schema + migrations + 通用 helpers | export `{ db, stmts, recordMessage, recordEvent }` | 不绑定具体业务实体(那是 L1 的事) |
+| `messageBus.js` | 进程内 pub/sub | export 单例 `bus` with `publish(topic, payload)` + `on(topic, handler)` | 不存状态;不持久化(只是 fan-out)|
 
-- 每角色独立 TTL(role frontmatter `session_ttl_hours`,默认 4h,R/H 8h,B/C 2h)
-- rolling 计时:每条 user/assistant message reset 计时
-- acquire 时 lazy check;background recycler 主动扫描即将到期
-- 过期后:thread 不动,但**不**走 `--resume` —— 全新 session,让 claude 重新读最新 queue/handoff/代码
+### L1 Domain Stores
 
-## 多 project 模型
+| 模块 | 责任 | 公共 API | 禁止 |
+|---|---|---|---|
+| `projects/ProjectStore.js` | Project 实体 CRUD | `list / get / create / archive / inspectDir / getByName` | 不调 SpawnManager;不读 stream |
+| `threads/ThreadStore.js` | Thread 实体 CRUD + stage state machine | `list / get / create / setStage / setTitle / touch / bindInstance` | 不调 child process;不发 WS |
+| `roles/RoleCatalog.js` | `roles/*.md` 解析 + frontmatter 验证 | `load / list / get / central` | 不持久化(`roles/*.md` 即真理);不动态创建角色 |
 
-**每个 project 是 first-class 资源**:
+### L2 Process Control
 
-- `projects` 表:id / name / root_dir / settings_json / created_at / archived_at
-- 所有 threads/role_instances/messages/dispatches/events 通过 `project_id` 外键归属
-- 同一 mate 可以同时管:Mate 自己 + sibling kb_backend + web_gmail + ...
-- 每个 project 一个独立 (role, instance) 池子(parallelism limit 按 project 算)
-- (Phase 2D)全局并发 cap 防 5 project × 4 execB → 20 claude 进程压垮机器
+| 模块 | 责任 | 公共 API | 禁止 |
+|---|---|---|---|
+| `spawn/streamParser.js` | stdout NDJSON 解析 + 通用 helpers | `class StreamParser` + `extractAssistantText / isResultError / extractToolUses` | 不修改 raw event;不管业务(MarkerDetector 在 L3 不在这) |
+| `spawn/RoleInstance.js` | 单个 claude child 的 spawn / send / kill / event 暴露 | class `RoleInstance` + `spawn / sendUserText / kill / on(event)` | 不管池子;不发 bus 事件(SpawnManager 接管);不解析 marker |
+| `spawn/SpawnManager.js` | **实例池** + **marker dispatch** + **handoff 状态机** + **TTL/unstick/老化 scanner** + **clientMessageId FIFO** | 单例 + `spawnInstance / sendToThread / sendDirectToInstance / killInstance / restoreFromDisk / startTtlScanner` 等 | 不持久化业务实体(L1);**绝不**替 LLM 决策派工目标 |
+| `spawn/PendingSends.js` | `mate_pending_sends` 表薄包装 | `enqueue / listForTarget / remove / count*` | 纯 CRUD,不解释队列语义 |
+| `quota/QuotaState.js` | 5h/7d quota 状态机 + setTimer + cron | 单例 + `start / stop / ingest / isPaused / manualOverride / snapshot` | 不读 claude stdin;不管派工(只 publish event)|
 
-UI 顶栏 project 切换器 + "+ 添加项目" 对话框(可路径输入,inspect 自动识别 `.claude/`、`.git/`、`package.json`、`CLAUDE.md`)。
+### L3 Business Hooks
 
-## 角色定义集中化
+| 模块 | 责任 | 公共 API | 禁止 |
+|---|---|---|---|
+| `system-agent/SystemAgent.js` | Haiku 短命 LLM 调用(标题摘要 / reply template / 黄灯判断) | `runStructured(prompt, schema, opts)` | 不替业务角色做决策;成本受控($ cap) |
+| `system-agent/MarkerDetector.js` | 正则解析 `<mate:handoff/done/blocked />` | `detect(text) → markers[]` | 纯函数,无 IO;新增 marker 类型先改本文档再加 |
+| `system-agent/ThreadHooks.js` | result event 后跑 SystemAgent 做 metadata 自动化 | `onResultEvent({ projectId, threadSlug, instanceId })` | 不调 SpawnManager;不持久化 message(只更 thread.metadata) |
+| `system-agent/envCheck.js` | env 探针(代理 / claude bin / DB) | `runAllChecks()` | 不阻塞 boot |
 
-**角色 markdown 定义集中在 mate `roles/<role>.md`**(对 sibling 项目透明):
+### L4 API Surface
 
-- Mate 通过 `--append-system-prompt <role.body>` 注入角色身份
-- sibling 项目 **不需要**装 `.claude/commands/<role>.md`
-- 加新角色 = 加 markdown 文件 = 重启 mate(Phase 5 可热加载)
+| 模块 | 责任 | 公共 API | 禁止 |
+|---|---|---|---|
+| `api/http.js` | REST router 构造 | `buildRouter() → express.Router` | 无内部状态;不直接调 stream(经 SpawnManager) |
+| `api/ws.js` | bus → 所有 ws client fan-out | `attach(httpServer)` | 不过滤事件(client 自行过滤);不缓存 |
 
-frontmatter schema 见 [role-authoring.md](./role-authoring.md)。
+### L5 Bootstrap
 
-## 数据流(典型一轮)
+| 模块 | 责任 | 公共 API | 禁止 |
+|---|---|---|---|
+| `index.js` | 装配 + lifecycle | 无 export(entry point) | 不含业务逻辑;只装配 |
+
+### L6 Frontend
+
+| 模块 | 责任 | 禁止 |
+|---|---|---|
+| `index.html` / `dashboard.html` | 挂载点 + script 加载 | 不内联业务 JS |
+| `app.js` | 主视图(state + WS + render) | 不直接读 SQLite |
+| `dashboard.js` | 仪表盘 4 tab + mateTerm | 同上 |
+| `components/runtime-chip.js` | 顶栏 chip 组件 | 自包含;不依赖 app.js / dashboard.js |
+
+---
+
+## §5 数据流(典型一轮)
 
 ```
-user types "<some text>" in input
+user types "..." in input  + clientMessageId (uuid 即时生成,乐观 UI)
    │
    ▼
-[browser] WS send: {type:'user_input', text, projectId, threadSlug?}
+[browser] POST /api/threads/:slug/message  body={text, clientMessageId}
    │
    ▼
-[backend] IntentRouter (Phase 2C+) — match text to thread, decide role
+[L4 http]  →  [L2 SpawnManager.sendToThread(...)]
+   │             │
+   │             ├─ ThreadStore.get → 找 thread
+   │             ├─ _enqueueClientId(inst, clientMessageId) FIFO 队列
+   │             └─ inst.sendUserText(text)
+   │                   │
+   │                   ▼
+   │             [L2 RoleInstance] child.stdin.write({type:"user",...}\n)
+   │                   │
+   │                   ▼
+   │             [claude headless] processes → stdout NDJSON
+   │                   │
+   │                   ▼
+   │             [L2 StreamParser] line-buffered parse → events
+   │                   │
+   │                   ▼
+   │             [L2 RoleInstance.on('event')] emit per event
+   │                   │
+   │                   ▼
+   │             [L2 SpawnManager._wireListeners]
+   │                   ├─ rate_limit_event  → QuotaState.ingest
+   │                   ├─ user echo         → 取队首 clientMessageId → recordMessage(返 serverId)
+   │                   ├─ assistant         → recordMessage + bus.publish('instance.event', {clientMessageId, serverMessageId})
+   │                   └─ result            → ThreadHooks.onResultEvent + MarkerDetector.detect + _handleMarkers
    │
-   ▼
-[backend] SpawnManager.acquire(projectId, role, threadSlug)
-            ├─ idle instance available?     → reuse
-            ├─ disconnected with this slug? → lazy spawn + resume
-            └─ none under cap?              → spawn fresh
-   │
-   ▼
-[RoleInstance] child.stdin.write({type:"user", message:{role:"user", content:[{type:"text", text}]}}\n)
-   │
-   ▼
-[claude headless] processes → stdout stream-json events
-   │
-   ▼
-[StreamParser] line-buffered NDJSON parse
-   │
-   ▼
-[messageBus] publish('instance.event', {projectId, instanceId, eventType, raw})
-   │           publish('message.append', {threadSlug, projectId, ...})
-   │
-   ├─→ [db] recordMessage(...)        持久化
-   │
-   └─→ [WebSocket fanout] push to browsers
-              │
-              ▼
-        [browser] render in conversation stream + update board state
+   ▼ ws fanout
+[browser]  收到 WS → app.js handleWsMsg
+              ├─ user echo + clientMessageId 命中临时 bubble → 不重复渲染
+              └─ assistant → renderEventInStream
 ```
 
-## Phase 0 影响架构的关键发现
+派工(marker → dispatch)子链:
 
-| 发现                                                | 架构含义                                                         |
-|-----------------------------------------------------|------------------------------------------------------------------|
-| stdin 必须 spawn 后立即写入                          | RoleInstance.spawn 同步阶段构造首条 stdin,不等 init             |
-| stdin schema 是 Anthropic Messages API envelope     | `buildUserMessage()` 工具函数统一构造                            |
-| `--resume + stream-json + --fork-session` 完全兼容  | 跨进程线索接续直接走 resume,无需 history-replay fallback        |
-| `result.is_error` 才是真错误信号                    | `streamParser.isResultError(ev)` 严格走这个判断                  |
-| `rate_limit_event` / `system/thinking_tokens` 等新事件 | StreamParser 设计成默认透传 + 已知类型显式处理                |
-| 工具白名单严格,黑名单不可靠                         | RoleInstance 的 `--tools` 永远从 role.allowedTools 白名单出      |
-| `--permission-mode dontAsk` + `--settings` allow 必须配套 | RoleInstance 同时给两者,缺一会拒                            |
-| 进程树 kill 需要 `taskkill /F /T` 兜底              | RoleInstance.kill() 实现三级升级                                  |
+```
+[SpawnManager._handleMarkers] detect handoff
+   │
+   ▼
+_performHandoff:
+   ├─ resolve target(_parseMarkerTarget)
+   ├─ sendToThread(targetRole)  →  acquire pool slot / spawn
+   ├─ bus.publish('thread.handoff', { handoffKey, ... })          ← 黄卡片
+   ├─ if inst.status === 'busy' → 立即 publish('thread.handoff.ready')
+   └─ else 记入 _pendingHandoffReady Map,等 status_change to busy
+                  ↓
+              publish('thread.handoff.spawning' / '.ready' / '.failed')
+                  ↓
+              前端 renderHandoffCard(payload, stage) 更新同一张卡片
+```
 
-## 当前未实现的限制
+---
 
-- **无 H 自驱 `/loop` 集成**(Phase 3 计划)
-- **无线索看板**(Phase 2B 计划)
-- **无智能意图路由**(Phase 2C 计划)
-- **无系统监控独立视图**(Phase 2D 计划)
-- **无认证 / 多 user**(本工具仅设计单机使用)
-- **仅 Windows 原生测试**(macOS / Linux 欢迎适配 PR)
+## §6 禁止条目(架构红线 · grep 可查)
+
+| # | 规则 | 违例 grep |
+|---|---|---|
+| 1 | **No file-based handoff** | `fs.write*.*doc/queue` / `fs.write*.*WORK_HANDOFF` / `fs.write*.*doc/_dispatch` / `fs.write*.*terminal_status` |
+| 2 | **角色名 / type 不 hardcode** | `=== 'planA-R'` / `=== 'execB'` / `roleName.includes('H')` 等(除 RoleCatalog + stageByTargetType 映射) |
+| 3 | **L6 frontend 不直接 require server 模块** | `public/.*require.*server/` |
+| 4 | **stream-json raw event 不 mutate** | `raw\.\w+\s*=` in L2 spawn/(读 raw 字段允许,**写** raw 字段禁止) |
+| 5 | **markers 是 role→role 唯一通道** | 跨 role instance 直接写 `inst.threadSlug = ...` / `inst._foo = ...` 跨实例数据交换 = 退化(仅 SpawnManager 内部 acquire 时设 threadSlug 允许)|
+| 6 | **不缓存业务结论** | mate 数据库里出现 "execB-2 擅长 auth"这种判断字段 = 退化(那是 H 的认知)|
+| 7 | **不阻塞 boot** | `await` 在 server/index.js 的 startup 路径 = 退化(改 fire-and-forget + lazy)|
+| 8 | **SpawnManager 不调 SystemAgent 直接**(L2 不依赖 L3) | server/spawn/.*require.*system-agent — 应该反过来 |
+| 9 | **不在 db.js 写业务语义函数** | `recordMessage` 已经在那是历史包袱(见 arch-debt §4),新加业务 store **必须**去 L1 |
+| 10 | **角色定义只能在 roles/*.md** | 别处 `new RoleDefinition` / hardcoded role frontmatter = 退化 |
+
+---
+
+## §7 关键技术铁律(Phase 0 探针实证)
+
+- spawn 后**立即写第一条 stdin**(claude 3s 无 stdin auto-exit)
+- 错误判定看 `result.is_error`,**不**信 subtype
+- 工具收紧用 `--tools` 白名单,**不**用 `--disallowedTools` 黑名单
+- kill 渐进:`stdin.end()` → SIGTERM → `taskkill /F /T`
+- session TTL 防生锈(代码改后旧 session 文件认知错位)
+- `--resume + stream-json + --fork-session` 兼容,直接续
+
+---
+
+## §8 演进规则
+
+1. 新加模块 → 先回本文档 §3 §4 §6 加位置 + 责任 + 禁止条目;再写代码
+2. 修改模块边界 → 先改本文档 + 各 module CONTRACT 注释 → 跑 grep 找受影响处 → 才修代码
+3. 新 phase 开始 → 把 phase spec 跟本文档对齐(spec 受本文档约束,不反过来)
+4. 完整退化检测(grep + 手工) → `docs/discussions/2026-06-13-arch-debt.md`(技术债清单,不主动消;每 phase 路过相关代码顺手补)
+
+---
+
+## §9 当前架构债务
+
+详见 [`docs/discussions/2026-06-13-arch-debt.md`](./discussions/2026-06-13-arch-debt.md)。
+
+简要:
+1. `SpawnManager.js` 1080 行 god class(9 职责)
+2. `public/app.js` 954 行 / `dashboard.js` 759 行 单文件巨石
+3. L0 `db.js` 含 `recordMessage` / `recordEvent` 业务函数(应去 L1)
+4. L2 `spawn/MarkerDetector` 的拓扑位置应该在 L2(纯 stream 应用),目前挂在 L3 system-agent
+5. L3 `ThreadHooks` 反向 require L2 `SpawnManager`(循环依赖风险)
+6. 缺统一 `EventStore` L1 模块(events 表写散在 db.js,读散在 http.js)
+7. role frontmatter 缺 validator(加新字段 silent ignore)
+
+均不阻塞功能,留作 Phase 2F+ 路过时补。
+
+---
+
+**Architecture SSOT · 2026-06-13 锁定 · Phase 2E 完工后**

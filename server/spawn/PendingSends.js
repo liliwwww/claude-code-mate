@@ -1,3 +1,16 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L2 Process Control
+// 责任:mate_pending_sends 表的薄包装(CRUD only)
+// 公共 API:enqueue / listForTarget / listAll / listByProject / remove /
+//   count / countByProject / countByReason
+// 允许依赖:db(L0)
+// 禁止:
+//   - 解释队列语义(SpawnManager / QuotaState 调用方决定何时入队/何时 flush)
+//   - 自己 publish bus 事件(让调用方决定)
+// ============================================================================
+//
 // [需求@2026-06-12 Phase 2E §1.5 §3 §6] mate_pending_sends 表的薄包装
 //
 // 用途两面:

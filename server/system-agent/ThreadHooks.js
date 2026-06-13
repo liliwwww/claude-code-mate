@@ -1,3 +1,18 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L3 Business Hooks
+// 责任:result event 后触发的 metadata 自动化(标题摘要 / reply-template /
+//   has_pending_question)— 所有调用 fire-and-forget,不阻塞 result 主流程
+// 公共 API:onResultEvent({ projectId, threadSlug, instanceId })
+// 允许依赖:db / SystemAgent / ThreadStore / messageBus
+// 禁止:
+//   - 阻塞主流程(必须 async fire-and-forget)
+//   - **反向 require** spawn/SpawnManager(L3 → L2 循环依赖)
+//     当前可能有违例,见 arch-debt §5
+//   - 持久化 message(只更 thread.metadata)
+// ============================================================================
+//
 // [需求@2026-06-10 §1.4, §1.6] Thread 级 hook,在每轮 (result event) 结束后:
 //   1. 自增 metadata.assistant_turn_count
 //   2. 首轮(count==1)或 count in [6,11,16,...] → 异步触发 title 摘要

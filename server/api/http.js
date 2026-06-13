@@ -1,3 +1,16 @@
+// ============================================================================
+// MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
+// ----------------------------------------------------------------------------
+// 层:L4 API Surface
+// 责任:REST 路由 + 请求验证 + 调 L1/L2/L3 完成业务
+// 公共 API:buildRouter() → express.Router
+// 允许依赖:所有 L1/L2/L3 + db / config
+// 禁止:
+//   - 内部状态(stateless;状态全在 L1/L2/L3)
+//   - 直接读 stream(经 SpawnManager)
+//   - 业务判断(只编排)
+// ============================================================================
+//
 // REST endpoints. Phase 2A: project-aware.
 //
 // [需求@2026-06-10] 多 project 支持:list/spawn/etc 都按 ?projectId=N 隔离。
