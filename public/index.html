@@ -115,6 +115,11 @@
           <option value="verified">verified</option>
           <option value="closed">closed</option>
         </select>
+        <!-- [需求@2026-06-13 §17] 流式渲染开关 — off 时不渲染 partial,等 final 一次性显示 -->
+        <label class="streaming-toggle" title="实时显示 LLM 生成过程(关闭可减少噪声 & 性能开销)">
+          <input type="checkbox" id="streaming-toggle-input" checked />
+          <span>📺 实时</span>
+        </label>
       </header>
       <div id="stream"></div>
       <form id="send-form">

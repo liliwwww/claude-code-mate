@@ -129,7 +129,14 @@
             i.currentActivity ? `近活: ${i.currentActivity}` : '',
             `${fmtAgo(i.lastActiveAt)}`,
           ].filter(Boolean).join('\n');
-          return `<span class="rc-term rc-term-${i._kind}" title="${escapeHtml(titleParts)}">${escapeHtml(i.displayName)}</span>`;
+          // [需求@2026-06-13 §14] chip inline 显近活提示 — busy 实例后面带 "· 🔧 Grep" 之类,
+          //   让 user 不 hover 也能看到此刻 term 在干什么。截 ~20 字防 chip 撑爆。
+          let actInline = '';
+          if (i.currentActivity) {
+            const a = i.currentActivity.length > 20 ? i.currentActivity.slice(0, 20) + '…' : i.currentActivity;
+            actInline = ` · ${a}`;
+          }
+          return `<span class="rc-term rc-term-${i._kind}" title="${escapeHtml(titleParts)}">${escapeHtml(i.displayName)}<span class="rc-term-act">${escapeHtml(actInline)}</span></span>`;
         }).join('')
       : '<span class="rc-no-busy">(无)</span>';
 

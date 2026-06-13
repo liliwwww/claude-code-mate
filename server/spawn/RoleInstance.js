@@ -309,6 +309,12 @@ class RoleInstance {
     this._setStatus('busy');
   }
 
+  // [需求@2026-06-13 §18] thread stop 用 — 软中断:发 SIGINT 让 child 自然终止当前 turn,
+  //   不等待 exit。child 自己写完 result 后会被外层 exit 监听翻 idle/dead。
+  //   Note: Windows Node.js 把 SIGINT 等价于 TerminateProcess — 实际行为更接近硬 kill,
+  //   但 stdin.end 路径已被 L1 占;这里只是先发个信号。仍走 kill() 才是 deterministic。
+  //   §18 stop 路径直接调 kill() 走完整升级链(L1 stdin.end → L2 SIGTERM → L3 taskkill /F /T)
+  //   就够 — 进程退出后 lazy resurrection 下次 user send 自动起新 session。
   async kill() {
     if (this.status === 'dead' || !this._child) return 'already-dead';
     const child = this._child;

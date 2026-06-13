@@ -527,6 +527,42 @@ function buildRouter() {
     }
   });
 
+  // [需求@2026-06-13 §18] 停止线索 — busy 的 instance(s) 走完整 kill 升级链
+  //   (L1 stdin.end → L2 SIGTERM → L3 taskkill /F /T)。
+  //   不删 thread,不删 messages;下次 user send 通过 lazy resurrection 起新 session。
+  //   返回 killed list 让前端 ticker 提示具体翻了哪些 term。
+  r.post('/threads/:slug/stop', requireProjectId, async (req, res) => {
+    try {
+      const thread = ThreadStore.get(req.project.id, req.params.slug);
+      if (!thread) return res.status(404).json({ error: 'thread not found' });
+      const bound = thread.metadata?.current_role_instances || {};
+      const ids = [bound.requirements, bound.orchestrator, bound.executor, bound.validator].filter(Boolean);
+      const killed = [];
+      const skipped = [];
+      for (const id of ids) {
+        const inst = spawnManager.getInstance(id);
+        if (!inst) { skipped.push({ id, reason: 'not-in-memory' }); continue; }
+        if (inst.status === 'dead' || inst.status === 'disconnected') {
+          skipped.push({ id, displayName: inst.displayName, reason: inst.status });
+          continue;
+        }
+        if (inst.status !== 'busy' && inst.status !== 'spawning') {
+          skipped.push({ id, displayName: inst.displayName, reason: 'idle' });
+          continue;
+        }
+        try {
+          const out = await spawnManager.killInstance(id);
+          killed.push({ id, displayName: inst.displayName, level: out.level });
+        } catch (e) {
+          skipped.push({ id, displayName: inst.displayName, error: e.message });
+        }
+      }
+      res.json({ ok: true, killed, skipped });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // [需求@2026-06-13] 重试派工 — 当 H 输出里包含 marker 但 MarkerDetector
   //   未识别(或老版本 mate bug)时,user 通过这个 endpoint 触发"事后重 parse + dispatch"。
   //   流程:

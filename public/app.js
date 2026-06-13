@@ -18,6 +18,10 @@ const state = {
   focusedSlug: null,
   streamingAssistants: new Map(),
   theme: 'dark',  // 'dark' | 'light',  initialized in initTheme()
+  // [需求@2026-06-13 §17] 流式渲染开关 — off 时不渲染 stream_event 增量(降低 noise + 减负担)
+  streamingEnabled: localStorage.getItem('mate.streaming') !== 'off',
+  // [需求@2026-06-13 §19] LLM 等待 indicator(每个对话流末尾一个)
+  waitIndicator: null,  // { el, startedAt, intervalId } 或 null
 };
 
 const el = (sel) => document.querySelector(sel);
@@ -57,6 +61,8 @@ const els = {
   msgInput: el('#msg-input'),
   sendForm: el('#send-form'),
   sendBtn: el('#send-btn'),
+  // [需求@2026-06-13 §17] 流式渲染开关
+  streamingToggle: el('#streaming-toggle-input'),
 };
 
 // [需求@2026-06-11 §3] 事件流配置
@@ -344,11 +350,50 @@ function renderConvHeader() {
   els.stagePicker.hidden = false;
   els.stagePicker.value = t.stage;
   els.sendBtn.disabled = false;
+  applyBusyUiState();
+}
+
+// [需求@2026-06-13 §18] 焦点 thread 是否 busy(任一绑定实例处于 busy/spawning)
+function isFocusedThreadBusy() {
+  if (!state.focusedSlug) return false;
+  const t = state.threads.get(state.focusedSlug);
+  if (!t) return false;
+  const bound = t.metadata?.current_role_instances || {};
+  for (const id of Object.values(bound)) {
+    if (!id) continue;
+    const inst = state.instances.get(id);
+    if (inst && (inst.status === 'busy' || inst.status === 'spawning')) return true;
+  }
+  return false;
+}
+
+// [需求@2026-06-13 §18] 输入框 + 发送按钮根据 thread busy 状态切换形态
+//   - busy:输入框 disable + 提示走 "+新线索";发送按钮变红 "■ 停止"(点击 = stop)
+//   - idle:正常 "发送" 按钮
+//   sendBtn 在 busy 下不 disable — 形态切到 stop,form submit 时按 busy 分支
+function applyBusyUiState() {
+  const busy = isFocusedThreadBusy();
+  if (!state.focusedSlug) {
+    els.msgInput.disabled = true;
+    els.sendBtn.classList.remove('stop-mode');
+    els.sendBtn.textContent = '发送';
+    return;
+  }
+  els.msgInput.disabled = busy;
+  els.msgInput.placeholder = busy
+    ? '线索执行中… 用顶栏「+ 新线索」开新输入,或点 ■ 停止'
+    : '输入消息发送...(Ctrl+Enter 发送)';
+  els.sendBtn.classList.toggle('stop-mode', busy);
+  els.sendBtn.textContent = busy ? '■ 停止' : '发送';
+  // sendBtn 始终 enabled — busy 时点击 = stop;idle 时点击 = submit
+  els.sendBtn.disabled = false;
 }
 
 async function focusThread(slug) {
   state.focusedSlug = slug;
   localStorage.setItem(`${LS_FOCUSED_THREAD}.${state.activeProjectId}`, slug);
+  // [需求@2026-06-13 §19] 切线索清干净 indicator(防泄漏到新流)
+  stopWaitIndicator();
   renderThreads();
   renderConvHeader();
   els.stream.innerHTML = '';
@@ -382,6 +427,12 @@ function makeMsg(cls, role, text, asMarkdown = false) {
 
 function renderEventInStream(eventType, raw, autoscroll = true) {
   let node = null;
+  // [需求@2026-06-13 §19] 系统 noise 静音 — hook_started/hook_response/status 等不进主流
+  //   只保留 system/init(有 session 信息)、system/api_retry(可观察 API 重试压力)
+  if (typeof eventType === 'string' && eventType.startsWith('system/')
+      && eventType !== 'system/init' && eventType !== 'system/api_retry') {
+    return;
+  }
   if (eventType === 'system/init') {
     node = makeMsg('system', 'system / init', `session: ${raw.session_id} · model: ${raw.model}`);
   } else if (eventType === 'system/api_retry') {
@@ -400,21 +451,29 @@ function renderEventInStream(eventType, raw, autoscroll = true) {
         const trnode = makeToolResultBlock(tr);
         els.stream.appendChild(trnode);
       }
+      // [需求@2026-06-13 §19] tool_result 一进来,LLM 又开始下一轮 API 调用 → 显示等待
+      if (autoscroll) startWaitIndicator('tool_result');
     } else {
       const txt = userEventToText(raw);
       if (txt) node = makeMsg('user', 'user', txt);
+      // user 发文字 → 等 LLM 响应
+      if (autoscroll && txt) startWaitIndicator('user');
     }
   } else if (eventType === 'assistant') {
+    // [需求@2026-06-13 §19] 收到 assistant final → LLM 已响应,清等待
+    stopWaitIndicator();
     const text = (raw.message?.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
     const tools = (raw.message?.content || []).filter((c) => c.type === 'tool_use');
     if (text) {
       const existing = state.streamingAssistants.get(state.focusedSlug);
       if (existing && existing.el && existing.el.isConnected) {
         // [需求@2026-06-10 §1.5] 流式完成后用 markdown 渲染替换
+        // [需求@2026-06-13 §16] 终态 = 拆掉 <details>,直接展示完整 markdown(默认可见)
+        existing.el.className = 'msg assistant';
+        existing.el.innerHTML = '<div class="role">assistant</div><div class="body"></div>';
         const body = existing.el.querySelector('.body');
         body.innerHTML = renderMarkdown(text);
         attachCopyHandlers(body);
-        existing.el.classList.remove('streaming');
         state.streamingAssistants.delete(state.focusedSlug);
         node = null;
       } else {
@@ -427,20 +486,42 @@ function renderEventInStream(eventType, raw, autoscroll = true) {
       els.stream.appendChild(tnode);
     }
   } else if (eventType === 'stream_event') {
+    // [需求@2026-06-13 §17] 流式关 → 不渲染 partial(等 final assistant 一次性显示)
+    if (!state.streamingEnabled) return;
     const sub = raw.event;
     if (sub?.type === 'content_block_delta' && sub.delta?.type === 'text_delta') {
+      // [需求@2026-06-13 §19] 第一个 token 进来 → LLM 已开始生成,清等待
+      stopWaitIndicator();
       let s = state.streamingAssistants.get(state.focusedSlug);
       if (!s) {
-        const elNode = makeMsg('assistant streaming', 'assistant…', '');
+        // [需求@2026-06-13 §16] 流式气泡默认折叠 — 用 <details> 包裹,只露 "streaming…N 字" 摘要
+        const elNode = document.createElement('div');
+        elNode.className = 'msg assistant streaming';
+        elNode.innerHTML = `
+          <details class="streaming-details">
+            <summary class="streaming-summary">
+              <span class="role">assistant…</span>
+              <span class="streaming-meta">streaming · <span class="streaming-chars">0</span> 字</span>
+            </summary>
+            <div class="body streaming-body"></div>
+          </details>
+        `;
         els.stream.appendChild(elNode);
         s = { text: '', el: elNode };
         state.streamingAssistants.set(state.focusedSlug, s);
       }
       s.text += sub.delta.text;
-      // [需求@2026-06-10 §1.5] 流式期间用纯文本(快速渲染),完成后才 markdown
-      s.el.querySelector('.body').textContent = s.text;
+      // 流式期间纯文本(快渲染),完成后 markdown
+      const body = s.el.querySelector('.streaming-body');
+      if (body) body.textContent = s.text;
+      const chars = s.el.querySelector('.streaming-chars');
+      if (chars) chars.textContent = String(s.text.length);
     }
-  } else if (eventType === 'result') {
+  } else if (typeof eventType === 'string' && eventType.startsWith('result')) {
+    // [bug@2026-06-13] streamParser 把 type+subtype 拼成 'result/success' / 'result/error',
+    //   原 `=== 'result'` 不匹配 → result bubble 不渲染 + waitIndicator 漏清。
+    //   用 startsWith('result') 匹配所有 result 子类型(同 streamParser.isResult 谓词逻辑)。
+    stopWaitIndicator();
     const ok = raw.is_error !== true;
     node = makeMsg(ok ? 'result_ok' : 'error',
       ok ? 'result · success' : 'result · ERROR',
@@ -451,6 +532,40 @@ function renderEventInStream(eventType, raw, autoscroll = true) {
   }
   if (node) els.stream.appendChild(node);
   if (autoscroll) els.stream.scrollTop = els.stream.scrollHeight;
+}
+
+// [需求@2026-06-13 §19] LLM 等待 indicator — 解决"为什么半天没反应"的感知问题
+//   触发:user 发文字、tool_result 返回(下一轮 API 已发出)
+//   清除:assistant final 到达、第一个 stream_event 增量、result/* 到达、focus 切换、stop
+//   只一个全局 indicator(focused thread 的 stream 末尾);切 thread 自动清。
+function startWaitIndicator(source) {
+  if (state.waitIndicator) return;  // 已有,别叠
+  els.stream.querySelectorAll('.waiting-indicator').forEach((n) => n.remove());  // 防泄漏
+  const div = document.createElement('div');
+  div.className = 'waiting-indicator';
+  div.dataset.source = source || '';
+  div.innerHTML = `<span class="wi-icon">⌛</span> 等待 LLM 响应… <span class="wi-timer">0s</span>`;
+  els.stream.appendChild(div);
+  els.stream.scrollTop = els.stream.scrollHeight;
+  const startedAt = Date.now();
+  const intervalId = setInterval(() => {
+    if (!div.isConnected) { clearInterval(intervalId); return; }
+    const sec = Math.floor((Date.now() - startedAt) / 1000);
+    const t = div.querySelector('.wi-timer');
+    if (t) t.textContent = sec + 's';
+  }, 500);
+  state.waitIndicator = { el: div, startedAt, intervalId };
+}
+
+function stopWaitIndicator() {
+  if (!state.waitIndicator) {
+    // 兜底:DOM 上若还有泄漏的(focus 切换前残留)也清
+    els.stream.querySelectorAll('.waiting-indicator').forEach((n) => n.remove());
+    return;
+  }
+  clearInterval(state.waitIndicator.intervalId);
+  if (state.waitIndicator.el.parentNode) state.waitIndicator.el.remove();
+  state.waitIndicator = null;
 }
 
 function userEventToText(raw) {
@@ -600,6 +715,8 @@ function handleWsMsg({ type, payload }) {
     if (inst.projectId !== state.activeProjectId) return;
     state.instances.set(inst.id, inst);
     renderThreads();
+    // [需求@2026-06-13 §18] 实例状态变化 → 重算焦点 thread 是否 busy
+    applyBusyUiState();
   } else if (type === 'instance.event') {
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug === state.focusedSlug) {
@@ -955,6 +1072,26 @@ function wireInputs() {
   els.sendForm.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     if (!state.focusedSlug) return;
+    // [需求@2026-06-13 §18] busy 状态下 sendBtn 是 ■ 停止 — 点击触发 stop 而非 send
+    if (isFocusedThreadBusy()) {
+      if (!confirm('确认停止当前线索的执行?\n会 kill 绑定的 busy 实例,下次发消息自动起新 session。')) return;
+      els.sendBtn.disabled = true;
+      try {
+        const out = await api(`/threads/${encodeURIComponent(state.focusedSlug)}/stop?projectId=${state.activeProjectId}`, { method: 'POST' });
+        const n = (out.killed || []).length;
+        const names = (out.killed || []).map((k) => k.displayName || k.id).join(', ');
+        pushTickerEvent('kill', `■ 停止 ${state.focusedSlug}: ${n} 实例${names ? ' (' + names + ')' : ''}`);
+        const sys = makeMsg('system', '■ 已停止', n > 0 ? `kill: ${names}` : 'no busy instances to stop');
+        els.stream.appendChild(sys);
+        els.stream.scrollTop = els.stream.scrollHeight;
+        stopWaitIndicator();
+      } catch (e) {
+        alert('停止失败: ' + e.message);
+      } finally {
+        els.sendBtn.disabled = false;
+      }
+      return;
+    }
     const text = els.msgInput.value.trim();
     if (!text) return;
     // [需求@2026-06-12 Phase 2E §12] 乐观 UI:立即渲染 bubble,带 sending 标志;后端 echo back 时 dedup
@@ -968,9 +1105,12 @@ function wireInputs() {
       });
       bubble.classList.remove('msg-sending');
       bubble.classList.add('msg-sent');
+      // [需求@2026-06-13 §19] 发完 user → 立即显 LLM 等待 indicator
+      startWaitIndicator('user-send');
       const t = await api(`/threads/${encodeURIComponent(state.focusedSlug)}?projectId=${state.activeProjectId}`);
       state.threads.set(t.slug, t);
       renderThreads();
+      applyBusyUiState();
     } catch (e) {
       bubble.classList.remove('msg-sending');
       bubble.classList.add('msg-failed');
@@ -989,6 +1129,22 @@ function wireInputs() {
       els.sendForm.requestSubmit();
     }
   });
+
+  // [需求@2026-06-13 §17] 流式渲染开关
+  if (els.streamingToggle) {
+    els.streamingToggle.checked = state.streamingEnabled;
+    els.streamingToggle.addEventListener('change', () => {
+      state.streamingEnabled = els.streamingToggle.checked;
+      localStorage.setItem('mate.streaming', state.streamingEnabled ? 'on' : 'off');
+      // 切到 off 时清理任何活的 streaming bubble(没 final 收尾就清了)
+      if (!state.streamingEnabled) {
+        for (const [slug, s] of state.streamingAssistants) {
+          if (s.el && s.el.isConnected) s.el.remove();
+        }
+        state.streamingAssistants.clear();
+      }
+    });
+  }
 }
 
 init().catch((e) => {
