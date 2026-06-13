@@ -44,7 +44,6 @@
   const state = {
     projectId: null,    // null = 全局视图(dashboard 用),number = 当前 project
     snapshot: null,
-    ws: null,
     pollTimer: null,
     popoverOpen: false,
     mountEl: null,
@@ -312,26 +311,22 @@
     }
   }
 
+  // [arch §9 ✅] 通过 MateWS 单例订阅;不再自建 WebSocket
   function setupWS() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/ws`;
-    const ws = new WebSocket(url);
-    state.ws = ws;
-    ws.addEventListener('message', (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      // 这些事件触发 chip 重算(节流:200ms 防抖)
-      const interesting = new Set([
-        'instance.spawned', 'instance.status_change', 'instance.exited',
-        'system.cap_warn', 'system.quota_update', 'system.quota_paused', 'system.quota_resumed',
-        'instance.ttl_soon', 'instance.ttl_expired',
-      ]);
-      if (interesting.has(msg.type)) {
-        scheduleRefresh();
-      }
-    });
-    ws.addEventListener('close', () => setTimeout(setupWS, 2000));
-    ws.addEventListener('error', () => {});
+    if (!window.MateWS) {
+      console.warn('[runtime-chip] MateWS not loaded — check script order in HTML');
+      return;
+    }
+    const INTERESTING = [
+      'instance.spawned', 'instance.status_change', 'instance.exited',
+      'system.cap_warn', 'system.quota_update', 'system.quota_paused', 'system.quota_resumed',
+      'instance.ttl_soon', 'instance.ttl_expired',
+    ];
+    for (const topic of INTERESTING) {
+      window.MateWS.subscribe(topic, () => scheduleRefresh());
+    }
+    // 重连成功后强制刷一次(可能错过事件)
+    window.MateWS.onConnected(() => scheduleRefresh());
   }
 
   let refreshDebounce = null;

@@ -527,15 +527,13 @@ function renderHealthcheck(result) {
 }
 
 // ---------------- WebSocket ----------------
+// [arch §9 ✅] 走 MateWS 单例,不再自建 WebSocket
 function connectWs() {
-  const ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onmessage = (ev) => {
-    let msg;
-    try { msg = JSON.parse(ev.data); } catch { return; }
-    handleWsMsg(msg);
-  };
-  ws.onclose = () => setTimeout(connectWs, 1000);
-  ws.onerror = (e) => console.warn('ws error:', e);
+  if (!window.MateWS) {
+    console.warn('[app] MateWS not loaded — check script order in index.html');
+    return;
+  }
+  window.MateWS.subscribeAll(handleWsMsg);
 }
 
 function handleWsMsg({ type, payload }) {

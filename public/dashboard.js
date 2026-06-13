@@ -565,34 +565,31 @@ async function sendMatetermMessage() {
   }
 }
 
-// WebSocket: 监听 instance.event,过滤当前选中 instance + 当前模式匹配
+// [arch §9 ✅] 通过 MateWS 单例订阅;不再自建 WebSocket
+//   关心两类 topic:system.cap_warn(显红条)和 instance.event(渲染 mateTerm)
 function setupMatetermWS() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.addEventListener('message', (ev) => {
-    let msg = null;
-    try { msg = JSON.parse(ev.data); } catch { return; }
-    // [需求@2026-06-12 §8.10] 全局 cap warn 顶栏红条
-    if (msg.type === 'system.cap_warn') {
-      const b = el('#db-cap-banner');
-      if (b) {
-        b.hidden = false;
-        b.textContent = `⚠ 实例数 ${msg.payload.alive}/${msg.payload.cap} — 软上限,清理空闲`;
-        b.onclick = () => { b.hidden = true; };
-      }
-      return;
+  if (!window.MateWS) {
+    console.warn('[dashboard] MateWS not loaded — check script order in dashboard.html');
+    return;
+  }
+  window.MateWS.subscribe('system.cap_warn', (msg) => {
+    const b = el('#db-cap-banner');
+    if (b) {
+      b.hidden = false;
+      b.textContent = `⚠ 实例数 ${msg.payload.alive}/${msg.payload.cap} — 软上限,清理空闲`;
+      b.onclick = () => { b.hidden = true; };
     }
-    if (msg.type !== 'instance.event') return;
+  });
+  window.MateWS.subscribe('instance.event', (msg) => {
     const p = msg.payload;
     if (!p || p.instanceId !== MT_STATE.selectedInstanceId) return;
-    // 模式过滤:direct 模式只看 directTarget 非 null 的事件;intervention 模式只看挂 thread 的
+    // 模式过滤:direct 模式只看 directTarget 非 null;intervention 只看挂 thread 的
     if (MT_STATE.selectedMode === 'direct' && !p.directTarget) return;
     if (MT_STATE.selectedMode === 'intervention') {
       if (p.directTarget) return;
       if (MT_STATE.selectedThreadSlug && p.threadSlug && p.threadSlug !== MT_STATE.selectedThreadSlug) return;
     }
-    // 跳过高频 partial
-    if (p.eventType === 'stream_event') return;
+    if (p.eventType === 'stream_event') return;  // 跳过高频 partial
     const streamEl = el('#mt-stream');
     // [需求@2026-06-12 Phase 2E §12] user echo dedup
     if (p.eventType === 'user' && p.clientMessageId) {
@@ -602,7 +599,6 @@ function setupMatetermWS() {
         return;
       }
     }
-    // 渲染单条
     const m = {
       direction: p.eventType === 'user' ? 'user_to_role' : p.eventType === 'assistant' ? 'role_to_user' : 'system',
       eventType: p.eventType,
@@ -617,7 +613,6 @@ function setupMatetermWS() {
     streamEl.insertAdjacentHTML('beforeend', html);
     if (wasAtBottom) streamEl.scrollTop = streamEl.scrollHeight;
   });
-  ws.addEventListener('close', () => setTimeout(setupMatetermWS, 2000));
 }
 
 function wireMatetermUI() {
