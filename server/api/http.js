@@ -527,6 +527,80 @@ function buildRouter() {
     }
   });
 
+  // [需求@2026-06-13] 重试派工 — 当 H 输出里包含 marker 但 MarkerDetector
+  //   未识别(或老版本 mate bug)时,user 通过这个 endpoint 触发"事后重 parse + dispatch"。
+  //   流程:
+  //     1. 拿 thread 最近一条 result/* 事件
+  //     2. 跑新版 MarkerDetector
+  //     3. 找到 unrouted marker → 调用 SpawnManager._handleMarkers
+  //   guard:不重复触发(若 thread.metadata.current_role_instances 已绑了 marker 的 target,跳过)
+  r.post('/threads/:slug/retry-handoff', requireProjectId, async (req, res) => {
+    try {
+      const ThreadStore = require('../threads/ThreadStore');
+      const MarkerDetector = require('../spawn/MarkerDetector');
+      const thread = ThreadStore.get(req.project.id, req.params.slug);
+      if (!thread) return res.status(404).json({ error: 'thread not found' });
+      // 找最近 H 实例(designing/executing/testing 阶段都可能)
+      const bound = thread.metadata?.current_role_instances || {};
+      const candidateRoleIds = [bound.orchestrator, bound.executor, bound.validator, bound.requirements].filter(Boolean);
+      if (!candidateRoleIds.length) return res.status(400).json({ error: 'no bound instances on this thread' });
+
+      // 找最近一条 result event payload(从这些 instance 里挑最新的)
+      const placeholders = candidateRoleIds.map(() => '?').join(',');
+      const row = db.prepare(`
+        SELECT ts, instance_id, payload_json FROM messages
+        WHERE instance_id IN (${placeholders}) AND event_type LIKE 'result%'
+        ORDER BY ts DESC LIMIT 1
+      `).get(...candidateRoleIds);
+      if (!row) return res.status(400).json({ error: 'no recent result event found for bound instances' });
+
+      let payload;
+      try { payload = JSON.parse(row.payload_json); } catch {
+        return res.status(500).json({ error: 'payload parse failed' });
+      }
+      const text = payload.result || '';
+      const markers = MarkerDetector.detect(text);
+      if (!markers.length) {
+        return res.status(400).json({ error: 'no markers detected in last result text', text_preview: text.slice(0, 200) });
+      }
+
+      // guard:如果 marker target 已经被 bind(派工已成功过),不重复触发
+      const handoff = markers.find((m) => m.kind === 'handoff');
+      if (handoff) {
+        const { roleName: targetRoleName } = (() => {
+          const m = String(handoff.target).match(/^([a-zA-Z][a-zA-Z0-9_-]*?)-(\d+)$/);
+          const roleCatalog = require('../roles/RoleCatalog');
+          if (m && roleCatalog.get(m[1])) return { roleName: m[1] };
+          return { roleName: handoff.target };
+        })();
+        const roleCatalog = require('../roles/RoleCatalog');
+        const targetRole = roleCatalog.get(targetRoleName);
+        if (targetRole && bound[targetRole.type]) {
+          return res.status(409).json({
+            error: `marker target ${handoff.target} already routed — current_role_instances.${targetRole.type} = ${bound[targetRole.type]}`,
+            hint: '该 marker 已被消费过;如果你想重新派工,请 user 在 thread 输入新需求让 H 重发',
+          });
+        }
+      }
+
+      // 找 fromInst:result event 来源
+      const fromInst = spawnManager.getInstance(row.instance_id);
+      if (!fromInst) return res.status(400).json({ error: `from instance ${row.instance_id} not found in memory` });
+
+      // 异步触发,不阻塞 response
+      setImmediate(() => spawnManager._handleMarkers(fromInst, markers));
+
+      res.json({
+        ok: true,
+        replayedFrom: row.instance_id,
+        markers: markers.map((m) => ({ kind: m.kind, target: m.target, reasonPreview: (m.reason || '').slice(0, 100) })),
+        message: 'markers re-dispatched async',
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message, stack: e.stack });
+    }
+  });
+
   return r;
 }
 

@@ -17,9 +17,13 @@
 //   R/H/B/C 的 system prompt 教它们在每轮末尾输出 <mate:...> marker。
 //   这个模块负责从 assistant 文本里识别 marker,供 SpawnManager 自动派工。
 
-const HANDOFF_RE = /<mate:handoff\s+target="([^"]+)"(?:\s+reason="([^"]*)")?\s*\/>/i;
-const DONE_RE = /<mate:done(?:\s+summary="([^"]*)")?\s*\/>/i;
-const BLOCKED_RE = /<mate:blocked\s+question="([^"]+)"(?:\s+severity="([^"]*)")?\s*\/>/i;
+// [bug@2026-06-13] H 写 reason 时可能内联 JSON snippet,reason 字段含 `"` 字符。
+//   原正则 reason="([^"]*)" 在第一个 `"` 处截断 → 整个 marker 不匹配。
+//   修复:用非贪婪 `.*?` + s 标志(. 匹配换行),终止条件改成"最后一个 `"`后跟 `\s*\/>`"。
+//   这样能 robust 处理任何包含 `"` / 换行的 reason / summary / question。
+const HANDOFF_RE = /<mate:handoff\s+target="([^"]+)"(?:\s+reason="(.*?)")?\s*\/>/is;
+const DONE_RE = /<mate:done(?:\s+summary="(.*?)")?\s*\/>/is;
+const BLOCKED_RE = /<mate:blocked\s+question="(.*?)"(?:\s+severity="([^"]*)")?\s*\/>/is;
 
 const MarkerDetector = {
   /**
