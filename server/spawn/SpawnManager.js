@@ -46,6 +46,7 @@ const ThreadStore = require('../threads/ThreadStore');
 const ThreadHooks = require('../system-agent/ThreadHooks');
 const MarkerDetector = require('./MarkerDetector');
 const QuotaState = require('../quota/QuotaState');
+const EventStore = require('../events/EventStore');
 
 class SpawnManager {
   constructor() {
@@ -906,13 +907,10 @@ class SpawnManager {
     }
 
     // Recent decisions (last 5 thread.handoff events)
+    // [arch §3+§6 ✅] 走 EventStore.listRecentHandoffsForProject
     lines.push('', '## Recent dispatch decisions (last 5)');
     try {
-      const events = db.prepare(`
-        SELECT ts, thread_slug, payload_json FROM events
-        WHERE project_id = ? AND kind = 'thread.handoff'
-        ORDER BY ts DESC LIMIT 5
-      `).all(projectId);
+      const events = EventStore.listRecentHandoffsForProject(projectId, 5);
       if (events.length === 0) {
         lines.push('(no handoffs yet)');
       } else {

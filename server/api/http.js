@@ -24,6 +24,7 @@ const ThreadStore = require('../threads/ThreadStore');
 const envCheck = require('../system-agent/envCheck');
 const QuotaState = require('../quota/QuotaState');
 const PendingSends = require('../spawn/PendingSends');
+const EventStore = require('../events/EventStore');
 const config = require('../config');
 const { db } = require('../db');
 
@@ -399,31 +400,16 @@ function buildRouter() {
 
   // [需求@2026-06-12 §8.8] 派工时序事件 — 仪表盘 tab 3 用
   //   返回 thread.handoff / thread.done / thread.blocked 三类事件(跨 project)
-  //   payload 已 parse,projectName 附上
+  // [arch §3+§6 ✅] 走 EventStore.listDispatchHistory,不再裸 SQL
   r.get('/dispatches/history', (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
-    const rows = db.prepare(`
-      SELECT id, project_id, ts, kind, thread_slug, instance_id, payload_json
-      FROM events
-      WHERE kind IN ('thread.handoff', 'thread.done', 'thread.blocked')
-      ORDER BY ts DESC LIMIT ?
-    `).all(limit);
+    const limit = parseInt(req.query.limit, 10) || 200;
+    const events = EventStore.listDispatchHistory({ limit });
     const projects = require('../db').stmts.listAllProjects.all();
     const projById = new Map(projects.map((p) => [p.id, p]));
-    res.json(rows.map((e) => {
-      let payload = {};
-      try { payload = JSON.parse(e.payload_json || '{}'); } catch {}
-      return {
-        id: e.id,
-        projectId: e.project_id,
-        projectName: projById.get(e.project_id)?.name || '?',
-        ts: e.ts,
-        kind: e.kind,
-        threadSlug: e.thread_slug,
-        instanceId: e.instance_id,
-        payload,
-      };
-    }));
+    res.json(events.map((e) => ({
+      ...e,
+      projectName: projById.get(e.projectId)?.name || '?',
+    })));
   });
 
   // [需求@2026-06-12 §8.7] 跨 project 列所有线索 — 仪表盘 tab 2 用

@@ -82,6 +82,7 @@ Mate 不是新 agent,**不替代** R / H / execB / testC 任何一个角色的�
 │   - projects/ProjectStore.js  — Project CRUD                    │
 │   - threads/ThreadStore.js    — Thread CRUD + stage state       │
 │   - roles/RoleCatalog.js      — roles/*.md md 解析 + 验证        │
+│   - events/EventStore.js      — events 表读路径 + 业务查询       │
 └──────────────────────────────────────────────────────────────────┘
                             ↑
 ┌──────────────────────────────────────────────────────────────────┐
@@ -120,6 +121,7 @@ Mate 不是新 agent,**不替代** R / H / execB / testC 任何一个角色的�
 | `projects/ProjectStore.js` | Project 实体 CRUD | `list / get / create / archive / inspectDir / getByName` | 不调 SpawnManager;不读 stream |
 | `threads/ThreadStore.js` | Thread 实体 CRUD + stage state machine | `list / get / create / setStage / setTitle / touch / bindInstance` | 不调 child process;不发 WS |
 | `roles/RoleCatalog.js` | `roles/*.md` 解析 + frontmatter 验证 | `load / list / get / central` | 不持久化(`roles/*.md` 即真理);不动态创建角色 |
+| `events/EventStore.js` | events 表读路径 + 业务查询(派工时序 / 最近 handoff) | `record / list / listByKind / listDispatchHistory / listRecentHandoffsForProject / countByKind` | 不调 SpawnManager;调用方决定何时 publish bus |
 
 ### L2 Process Control
 
