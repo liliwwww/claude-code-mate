@@ -48,6 +48,7 @@ const MarkerDetector = require('./MarkerDetector');
 const QuotaState = require('../quota/QuotaState');
 const EventStore = require('../events/EventStore');
 const ScanRecycler = require('./ScanRecycler');
+const PoolAllocator = require('./PoolAllocator');
 
 class SpawnManager {
   constructor() {
@@ -130,58 +131,11 @@ class SpawnManager {
     return { restored, skipped, backfilled };
   }
 
-  // [需求@2026-06-12 §8.3] legacy 实例无 pool_slot 时按 createdAt 顺序分配 1..N。
-  //   只动 pooled 角色(非 requirements)。超过 pool 上限的 excess 实例标 dead。
+  // [arch §1.2 ✅] 已抽到 PoolAllocator.backfillFromDisk
   _backfillPoolSlots() {
-    const groups = new Map(); // `${projectId}|${roleName}` → [insts sorted createdAt]
-    for (const inst of this.instances.values()) {
-      if (inst.role.type === 'requirements') continue;  // R 不池化
-      if (inst.poolSlot != null) continue;  // 已有 slot
-      const key = `${inst.projectId}|${inst.role.name}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(inst);
-    }
-
-    let backfilled = 0;
-    for (const [key, insts] of groups) {
-      insts.sort((a, b) => a.createdAt - b.createdAt);
-      const [projectIdStr, roleName] = key.split('|');
-      const projectId = parseInt(projectIdStr, 10);
-      const role = roleCatalog.get(roleName);
-      if (!role) continue;
-
-      // Slots already used by other non-dead instances in this (project, role)
-      const used = new Set();
-      for (const i of this.instances.values()) {
-        if (i.projectId === projectId && i.role.name === roleName && i.poolSlot != null && i.status !== 'dead') {
-          used.add(i.poolSlot);
-        }
-      }
-
-      for (const inst of insts) {
-        let assigned = null;
-        for (let s = 1; s <= role.parallelismLimit; s++) {
-          if (!used.has(s)) { assigned = s; used.add(s); break; }
-        }
-        if (assigned != null) {
-          inst.poolSlot = assigned;
-          try {
-            db.prepare(`UPDATE role_instances SET pool_slot = ? WHERE id = ?`).run(assigned, inst.id);
-            backfilled++;
-          } catch (e) {
-            console.warn(`[SpawnManager] backfill pool_slot for ${inst.id} failed:`, e.message);
-          }
-        } else {
-          // Pool 满了,这条 excess 实例标 dead(从 in-memory pool 也清掉)
-          console.warn(`[SpawnManager] excess ${roleName} instance ${inst.id} — no free slot (pool ${role.parallelismLimit} full), marking dead`);
-          inst._setStatus('dead');
-          inst.diedAt = Date.now();
-          try { stmts.setInstanceDied.run(Date.now(), inst.id); } catch {}
-          this.instances.delete(inst.id);
-        }
-      }
-    }
-    return backfilled;
+    return PoolAllocator.backfillFromDisk({
+      instances: this.instances, roleCatalog, stmts, db,
+    });
   }
 
   // [需求@2026-06-10] spawn per-project — parallelism limit is per (project, role) tuple.
@@ -769,70 +723,32 @@ class SpawnManager {
     return inst;
   }
 
-  // [需求@2026-06-12 §8.3] 池子 acquire 逻辑
+  // [arch §1.2 ✅] 池子 acquire / find / create 都已抽到 PoolAllocator。
+  //   SpawnManager 这里仅做 wiring(注入 instances Map + 三个 wire callback)。
   _acquirePoolInstance({ projectId, projectRootDir, role, requestedSlot, threadSlug }) {
-    // 指定 slot
-    if (requestedSlot != null) {
-      if (requestedSlot < 1 || requestedSlot > role.parallelismLimit) {
-        throw new Error(`slot ${requestedSlot} out of range 1..${role.parallelismLimit} for ${role.name}`);
-      }
-      const existing = this._findPoolInstance(projectId, role.name, requestedSlot);
-      if (existing) return existing;
-      return this._createPoolInstance({ projectId, projectRootDir, role, poolSlot: requestedSlot, threadSlug });
-    }
-
-    // 泛型:优先用现有 idle → disconnected(lazy resurrect) → 新分配 slot → 任意 busy(由 §8.5 queue)
-    const idle = [...this.instances.values()].find(
-      (i) => i.projectId === projectId && i.role.name === role.name && i.status === 'idle' && i.poolSlot != null
-    );
-    if (idle) return idle;
-
-    const disconnected = [...this.instances.values()].find(
-      (i) => i.projectId === projectId && i.role.name === role.name && i.status === 'disconnected' && i.poolSlot != null
-    );
-    if (disconnected) return disconnected;
-
-    const freeSlot = this._findNextFreePoolSlot(projectId, role.name, role.parallelismLimit);
-    if (freeSlot != null) {
-      return this._createPoolInstance({ projectId, projectRootDir, role, poolSlot: freeSlot, threadSlug });
-    }
-
-    // Pool 满 — 返回任意 busy(caller / queue 后续处理)
-    const anyBusy = [...this.instances.values()].find(
-      (i) => i.projectId === projectId && i.role.name === role.name && i.status === 'busy'
-    );
-    return anyBusy || null;
+    return PoolAllocator.acquire({
+      instances: this.instances,
+      projectId, projectRootDir, role, requestedSlot, threadSlug,
+      createPoolInstance: (args) => this._createPoolInstance(args),
+    });
   }
 
   _findPoolInstance(projectId, roleName, slot) {
-    return [...this.instances.values()].find(
-      (i) => i.projectId === projectId && i.role.name === roleName && i.poolSlot === slot && i.status !== 'dead'
-    );
+    return PoolAllocator.findPoolInstance(this.instances, projectId, roleName, slot);
   }
 
   _findNextFreePoolSlot(projectId, roleName, maxSlot) {
-    const used = new Set();
-    for (const i of this.instances.values()) {
-      if (i.projectId === projectId && i.role.name === roleName && i.poolSlot != null && i.status !== 'dead') {
-        used.add(i.poolSlot);
-      }
-    }
-    for (let s = 1; s <= maxSlot; s++) if (!used.has(s)) return s;
-    return null;
+    return PoolAllocator.findNextFreePoolSlot(this.instances, projectId, roleName, maxSlot);
   }
 
   _createPoolInstance({ projectId, projectRootDir, role, poolSlot, threadSlug }) {
-    this._checkGlobalCap();  // [需求@2026-06-12 §8.10] soft cap warn
-    const inst = new RoleInstance({
-      role, projectId, projectRootDir, threadSlug, poolSlot,
+    return PoolAllocator.create({
+      instances: this.instances,
+      projectId, projectRootDir, role, poolSlot, threadSlug,
+      checkGlobalCap: () => this._checkGlobalCap(),
+      wireListeners: (inst) => this._wireListeners(inst),
+      persistInstance: (inst) => this._persistInstanceUpsert(inst),
     });
-    this.instances.set(inst.id, inst);
-    this._wireListeners(inst);
-    this._persistInstanceUpsert(inst);
-    bus.publish('instance.spawned', inst.snapshot());
-    recordEvent('pool.allocated', { roleName: role.name, poolSlot, instanceId: inst.id },
-                { projectId, threadSlug, instanceId: inst.id });
-    return inst;
   }
 
   // [需求@2026-06-12 §6 + 8.3] Parse marker target:
