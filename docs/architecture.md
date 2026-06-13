@@ -244,6 +244,27 @@ _performHandoff:
 | 8 | **SpawnManager 不调 SystemAgent 直接**(L2 不依赖 L3) | server/spawn/.*require.*system-agent — 应该反过来 |
 | 9 | **不在 db.js 写业务语义函数** | `recordMessage` 已经在那是历史包袱(见 arch-debt §4),新加业务 store **必须**去 L1 |
 | 10 | **角色定义只能在 roles/*.md** | 别处 `new RoleDefinition` / hardcoded role frontmatter = 退化 |
+| 11 | **mate 过程文件不许写到 sibling project 里** | mate 后端 `fs.write` / `mkdir` 路径必须在 mate 自己控制的目录(`config.paths.dataDir` / `mate root` 等),**不能**用 `projectRootDir` 或 `project.root_dir` 作为写入路径前缀。child claude 在 sibling cwd 里写代码 = 它干 sibling 的活,不算 mate 侵入 — 但 mate **自己的状态 / 协调记号 / 队列 / 日志 / 临时文件**绝不能落到 sibling 项目里。grep:`fs\.write.*projectRootDir` / `fs\.write.*project\.root_dir` / `path\.join\(.*projectRootDir` 等 |
+
+**§6 #11 详解 — 边界**:
+
+| 谁写 | 写到哪 | 算 mate 侵入? |
+|---|---|---|
+| mate 后端(server/*.js) | `D:\dev\claude_code_mate\data\*`(mate dataDir) | ❌ OK |
+| mate 后端 | `~\.claude\projects\<encoded-cwd>\*`(claude CLI 自己存,user home 下) | ❌ OK(也根本不是 mate 写) |
+| mate 后端 | `C:\dev\ai_code\code_claude\anywhere` | ✅ **侵入,违例** |
+| child claude(mate spawn 的) | sibling 项目源码 / 文档(Read/Write/Edit 工具)| ❌ OK(它干 sibling 的活)|
+| child claude | sibling 项目 `doc/_dispatch/` / `WORK_HANDOFF_*.md` / `terminal_status/` | ⚠ 不 **算 mate 侵入**,但 role markdown 已经禁了(因为污染语义)|
+
+**mate 自己的过程文件位置清单**(SSOT):
+- mate.sqlite + WAL + SHM:`config.paths.sqlite`(`<mate root>/data/mate.sqlite`)
+- 配置:`<mate root>/.env`,`config.paths.dataDir/`
+- snapshots / runlog:`config.paths.snapshotsDir` / `config.paths.runlogDir`
+- envCheck 探针:`config.paths.dataDir/.envcheck.tmp`
+- 角色定义:`<mate root>/roles/*.md`
+- 测试 fixture:`<mate root>/tests/`
+
+**0 文件可以写到 sibling 项目根目录里**。
 
 ---
 
