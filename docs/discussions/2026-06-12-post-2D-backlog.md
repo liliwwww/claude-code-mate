@@ -871,3 +871,86 @@ s.el.querySelector('.body').textContent = s.text;  // 累积更新
 - 是否也影响 mateTerm tab 4?(理论上一样的渲染管线,顺手做)
 
 **预估影响**:`renderEventInStream` 改 ~20 行 + 开关 UI ~30 行 + localStorage 偏好 ~10 行 = 总 60 行
+
+---
+
+## §18. thread 输入框 busy 时 disable + 红色停止按钮(2026-06-13 user 拍板)
+
+**状态**:**已细化**(直接可实施)
+
+**user 原话**:
+> "如果某个线索在执行任务,就不要允许在当前线索再输入信息。可以提示在新线索输入信息。"
+>
+> "如果考虑 user 急的时候,把执行中的按钮改成红色的停止。这时,把正在执行的 term 拉住。"
+
+**主视图输入区 3 状态**:
+
+| 状态 | 触发 | 输入框 | 主按钮 | 辅助按钮 |
+|---|---|---|---|---|
+| 1 普通 | R 等用户说话 / has_pending_question 黄灯 / 无 busy | enabled | 🟦 发送 | (无) |
+| 2 线索处理中 | 任何 H/B/C bound on this thread = busy 或 spawning | disabled,灰色,placeholder 改 | 🟥 停止 | [+ 新线索] [⚡ 干预] |
+| 3 卡死警告 | busy > stuckBusyThresholdMin(5min)+ ScanRecycler 尚未救 | disabled | 🟥 立刻停止 | [+ 新线索] |
+
+**🟥 停止 的行为**:
+- 点击 → confirm dialog 列出会被杀的 instance(s):"mate-H-1 / 已运行 N 分钟 / thinking 丢失"
+- 确认 → 后端:
+  1. `inst.kill()` 三级升级(stdin.end → SIGTERM → taskkill /F /T)
+  2. `thread.metadata.current_role_instances.<type> = null`(H/B/C 对应 entry 清掉)
+  3. `thread.stage` 回滚到 `discussing`(R 接管)
+  4. emit `instance.exited` event + bus.publish 派工失败给前端
+  5. 对话流插一条系统卡片 "🛑 mate-H-1 已被 user 停止"
+- 不动:mate-R(per-thread session 保留)、messages 历史、session jsonl
+
+**杀 scope 规则**:
+- 只杀该 thread bound 的 H/B/C 实例
+- 不杀 R(R 是 per-thread durable;杀 R = 丢整个 thread session)
+- 若 R 正 busy → **不显示停止按钮**(R 任务一般 5-30 秒,等它)
+
+**3 个 escape hatch 破坏性递增**:
+
+| 操作 | 破坏性 | user 心智 |
+|---|---|---|
+| + 新线索 | 无 | 想换个话题,当前 thread 继续 |
+| ⚡ 干预 | 中 | 想插队补一句,不打断 H 当前 turn |
+| 🟥 停止 | 高 | 不要它做了 / 觉得它错了 |
+
+**边角已拍**:
+
+| Q | 答 |
+|---|---|
+| H 输出末尾问 user 问题(has_pending_question)| **不 block**,优先于 busy 判断,user 必须能回答 |
+| R 永远 idle 等说话 | enabled |
+| mateTerm tab 4 干预模式 | **不受 thread-level block 影响** |
+| 卡死 busy fallback | ScanRecycler 5min auto-unstick + 状态 3 加 "立刻停止" 按钮 |
+| 同 thread 多个 busy(H + B) | 全杀(不动 R),confirm dialog 列出 |
+| R 正 busy | 不显示停止,等它 |
+| race(刚翻 idle 时点停止)| 后端 noop + 返回成功 |
+| 停止后 user 立刻输入 | 走默认路由(R),R 不知道 H 之前在干啥,user 可能要重新解释 |
+
+**实施清单**(直接可动手):
+
+后端(server/):
+- 新 endpoint `POST /api/threads/:slug/stop`:杀该 thread bound 的 H/B/C 实例 + 回滚 stage + 清 metadata
+- 复用 inst.kill() / ThreadStore.setStage / 已有 metadata update 工具
+- bus.publish 'thread.stopped' event
+
+前端(public/):
+- `public/app.js`:
+  - 新 helper `getThreadBusyState(slug)` 算当前 thread 是否有 H/B/C busy
+  - WS event `instance.status_change` / `instance.exited` / `instance.unstuck` 触发 input 区状态切换
+  - send-form 加 3 状态 render
+  - "+ 新线索" 按钮跳已有 dialog
+  - "⚡ 干预" 按钮跳 `/dashboard.html#tab=control&thread=<slug>`
+  - 🟥 停止 按钮 → confirm dialog → POST endpoint
+- `public/style.css`:disabled 灰、停止红、卡片样式
+
+测试:
+- 单测:thread.stop endpoint kill 逻辑、stage 回滚
+- 浏览器烟雾:input 3 状态切换正常
+
+**预估** **~210 行**(80 前端 + 60 后端 + 30 CSS + 40 单测)。
+
+**关联**:
+- 跟 §15 user bubble dedup / §16 折叠 / §17 流式开关 一起做(主视图集中改动一次性)
+- 跟 §15(操作约束:不要 mid-task kill mate)同源思想,这条把约束**给 user 也用上**
+- §11(角色重命名)语义影响:disabled 提示文案用新名 mate-R/H/B/C
