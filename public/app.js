@@ -116,20 +116,34 @@ function configureMarked() {
 
   // Custom renderer for code blocks with copy button + highlight.js + KaTeX
   const renderer = new marked.Renderer();
-  const origCode = renderer.code.bind(renderer);
-  renderer.code = function (code, lang) {
+  renderer.code = function (codeOrToken, langArg) {
+    // [bug@2026-06-12 §9] marked v14 把 renderer.code 改成接 Token 对象({text, lang, raw}),
+    //   老签名是 (codeString, lang)。同时支持两种,避免 code 实际为空时 pre 框空白。
+    let code, lang;
+    if (codeOrToken && typeof codeOrToken === 'object' && 'text' in codeOrToken) {
+      code = codeOrToken.text || '';
+      lang = codeOrToken.lang || langArg || '';
+    } else {
+      code = String(codeOrToken ?? '');
+      lang = langArg || '';
+    }
+
     let body;
     if (lang && window.hljs && hljs.getLanguage(lang)) {
       try {
         body = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
       } catch {
-        body = origCode(code, lang);
+        body = escapeHtml(code);
       }
-    } else if (window.hljs) {
+    } else if (window.hljs && code) {
       try { body = hljs.highlightAuto(code).value; } catch { body = escapeHtml(code); }
     } else {
       body = escapeHtml(code);
     }
+    // [bug@2026-06-12 §9] 兜底:无论上面哪条分支,body 空 = fallback 到 escapeHtml,
+    //   防止 highlight.js 在边界 case 吞 content
+    if (!body) body = escapeHtml(code);
+
     const langTag = lang ? ` class="language-${lang} hljs"` : ' class="hljs"';
     return `<pre><code${langTag}>${body}</code><button class="copy-btn" data-code="${escapeAttr(code)}">copy</button></pre>`;
   };
@@ -396,7 +410,8 @@ function renderEventInStream(eventType, raw, autoscroll = true) {
       }
     }
     for (const t of tools) {
-      const tnode = makeMsg('tool_use', `tool_use: ${t.name}`, JSON.stringify(t.input || {}, null, 2));
+      // [需求@2026-06-12 Phase 2E §1] tool block 默认折叠成一行摘要
+      const tnode = makeToolBlock(t);
       els.stream.appendChild(tnode);
     }
   } else if (eventType === 'stream_event') {
@@ -444,6 +459,38 @@ function userEventToText(raw) {
     return content;
   }
   return null;
+}
+
+// [需求@2026-06-12 Phase 2E §1] tool_use 折叠展示
+//   默认折叠成一行 `🔧 Grep "pattern" · 展开▾`
+//   TodoWrite / TaskCreate 默认展开(结构化任务,user 要看)
+const TOOL_DEFAULT_OPEN = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate']);
+function makeToolBlock(toolUse) {
+  const div = document.createElement('div');
+  div.className = 'msg tool_use tool-block';
+  const open = TOOL_DEFAULT_OPEN.has(toolUse.name);
+  div.innerHTML = `
+    <details ${open ? 'open' : ''}>
+      <summary class="tool-summary">
+        <span class="tool-icon">🔧</span>
+        <span class="tool-name">${escapeHtml(toolUse.name || 'tool')}</span>
+        <span class="tool-hint">${escapeHtml(toolHintFor(toolUse))}</span>
+      </summary>
+      <pre class="tool-detail">${escapeHtml(JSON.stringify(toolUse.input || {}, null, 2))}</pre>
+    </details>
+  `;
+  return div;
+}
+function toolHintFor(t) {
+  const inp = t.input || {};
+  if (t.name === 'Read' || t.name === 'Write') return inp.file_path || '';
+  if (t.name === 'Edit') return inp.file_path || '';
+  if (t.name === 'Glob') return inp.pattern || '';
+  if (t.name === 'Grep') return `"${inp.pattern || ''}"${inp.path ? ' in ' + inp.path : ''}`;
+  if (t.name === 'Bash') return (inp.command || '').slice(0, 80);
+  if (t.name === 'WebFetch') return inp.url || '';
+  if (t.name === 'TodoWrite' && Array.isArray(inp.todos)) return `${inp.todos.length} 项`;
+  return '';
 }
 
 // ---------------- Environment check (§1.1) ----------------

@@ -519,3 +519,43 @@ main { flex: 1; display: flex; min-height: 0; }
 .mt-msg.user.mt-msg-failed .mt-msg-status { color: #ff7878; }
 .mt-msg.user.mt-msg-failed .mt-msg-status::before { content: '✗ 发送失败 · 点击重填'; }
 .mt-msg.user.mt-msg-failed .mt-msg-status { font-size: 10px; }
+
+/* [需求@2026-06-12 Phase 2E §1] tool block 默认折叠 */
+.msg.tool-block { padding: 0; background: var(--bg-msg-tooluse); border-left-color: var(--accent-yellow); }
+.msg.tool-block details { padding: 6px 10px; }
+.msg.tool-block summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  user-select: none;
+}
+.msg.tool-block summary::-webkit-details-marker { display: none; }
+.msg.tool-block summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 12px;
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+.msg.tool-block details[open] summary::before { transform: rotate(90deg); }
+.msg.tool-block .tool-icon { font-size: 11px; }
+.msg.tool-block .tool-name { color: var(--accent-yellow); font-weight: 600; }
+.msg.tool-block .tool-hint { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.msg.tool-block .tool-detail {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--bg-code);
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-primary);
+  max-height: 400px;
+  overflow-y: auto;
+}

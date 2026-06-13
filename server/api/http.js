@@ -332,14 +332,15 @@ function buildRouter() {
     }
   });
 
-  // [需求@2026-06-12 §9] 直连历史:按 direct_target = instance.id 拉
+  // [需求@2026-06-12 §9 + Phase 2E §8] 直连历史:按 direct_target = instance.id 拉
+  //   按 (ts ASC, id ASC) 排序:防止同毫秒事件顺序不确定(§8 mateTerm 顺序倒置 bug)
   r.get('/instances/:id/direct-history', (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
     const rows = db.prepare(`
       SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json, direct_target
       FROM messages
       WHERE direct_target = ?
-      ORDER BY ts ASC
+      ORDER BY ts ASC, id ASC
       LIMIT ?
     `).all(req.params.id, limit);
     res.json(rows.map((m) => ({
@@ -361,7 +362,7 @@ function buildRouter() {
       SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json
       FROM messages
       WHERE instance_id = ?
-      ORDER BY ts ASC
+      ORDER BY ts ASC, id ASC
       LIMIT ?
     `).all(req.params.id, limit);
     res.json(rows.map((m) => ({
@@ -467,7 +468,7 @@ function buildRouter() {
       SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json
       FROM messages
       WHERE project_id = ? AND thread_slug = ?
-      ORDER BY ts ASC
+      ORDER BY ts ASC, id ASC
       LIMIT ?
     `).all(req.project.id, req.params.slug, limit);
     res.json(rows.map((m) => ({
