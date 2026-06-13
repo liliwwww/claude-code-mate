@@ -32,6 +32,8 @@
       <button id="add-project-btn" title="Add or import a project">+</button>
     </div>
     <div class="banners" id="banners"></div>
+    <!-- [需求@2026-06-12 Phase 2E §14] 实时运行态 chip -->
+    <div id="runtime-chip-mount"></div>
     <div class="actions">
       <!-- [需求@2026-06-10 §1.1] 环境检测 -->
       <button id="healthcheck-btn" title="环境检测(手动触发,失败不阻塞)">环境检测</button>
@@ -122,6 +124,7 @@
     </section>
   </main>
 
+  <script src="/components/runtime-chip.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

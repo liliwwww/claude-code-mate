@@ -85,6 +85,7 @@ function buildRouter() {
         displayName: i.displayName || i.id,
         roleName: i.roleName,
         roleType: i.roleType,
+        status: i.status,  // [bug@2026-06-13] popover 按 status 分 live/disc 必需
         poolSlot: i.poolSlot,
         threadSlug: i.threadSlug,
         currentModel: i.currentModel,

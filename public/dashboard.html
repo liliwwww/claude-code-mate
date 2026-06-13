@@ -15,6 +15,8 @@
       <!-- [需求@2026-06-12 §8.10] cap warn 红条;隐藏直到 system.cap_warn 事件 -->
       <span class="banner" id="db-cap-banner" hidden style="background:#5a1f1f;color:#ffaaaa;cursor:pointer" title="点击关闭"></span>
     </div>
+    <!-- [需求@2026-06-12 Phase 2E §14] 实时运行态 chip(dashboard 也挂一份)-->
+    <div id="runtime-chip-mount"></div>
     <div class="actions">
       <label style="font-size:11px;color:var(--text-secondary)">
         <input type="checkbox" id="db-autorefresh" checked /> 10s 自动刷新
@@ -84,6 +86,7 @@
     </div>
   </main>
 
+  <script src="/components/runtime-chip.js"></script>
   <script src="/dashboard.js"></script>
 </body>
 </html>

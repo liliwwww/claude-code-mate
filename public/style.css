@@ -350,3 +350,140 @@ main { flex: 1; display: flex; min-height: 0; }
 .mateterm-form textarea { flex: 1; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-light); border-radius: 4px; padding: 6px 8px; font-family: inherit; font-size: 13px; resize: vertical; }
 .mateterm-form button { padding: 6px 16px; background: var(--accent-green); color: #fff; border: none; border-radius: 4px; cursor: pointer; }
 .mateterm-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* [需求@2026-06-12 Phase 2E §14] runtime chip + popover */
+#runtime-chip-mount { display: flex; align-items: center; }
+.runtime-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  background: var(--bg-card, #1a1a1a);
+  border: 1px solid var(--border, #333);
+  border-radius: 14px;
+  font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background-color 0.15s;
+}
+.runtime-chip:hover { background: var(--bg-card-hover, #252525); }
+.runtime-chip .rc-loading { color: var(--text-muted); }
+.runtime-chip .rc-counts { color: var(--text-primary, #eee); font-weight: 600; }
+.runtime-chip .rc-sep { color: var(--text-muted, #666); }
+.runtime-chip .rc-busy-label { color: var(--text-muted, #888); }
+.runtime-chip .rc-no-busy { color: var(--text-muted, #666); font-style: italic; }
+.runtime-chip .rc-term {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-weight: 600;
+  color: #fff;
+  cursor: help;
+  white-space: pre-line;
+}
+.runtime-chip .rc-term-busy {
+  background: linear-gradient(135deg, #f5a623 0%, #e8740c 100%);
+  border: 1px solid #ffb84d;
+  animation: rc-busy-blink 0.5s ease-in-out infinite alternate;
+  box-shadow: 0 0 4px rgba(245, 166, 35, 0.4);
+}
+.runtime-chip .rc-term-spawning {
+  background: linear-gradient(135deg, #4a90e2 0%, #2a6db8 100%);
+  border: 1px solid #6ab0f0;
+  animation: rc-spawn-pulse 0.8s ease-in-out infinite alternate;
+}
+@keyframes rc-busy-blink {
+  from { background: #e8740c; box-shadow: 0 0 4px rgba(245, 166, 35, 0.3); }
+  to   { background: #ffb84d; box-shadow: 0 0 12px rgba(255, 184, 77, 0.8); }
+}
+@keyframes rc-spawn-pulse {
+  from { opacity: 0.7; }
+  to   { opacity: 1.0; }
+}
+.runtime-chip .rc-pending {
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.runtime-chip .rc-pending-none { color: var(--text-muted, #666); }
+.runtime-chip .rc-pending-has  { background: #5a4a1f; color: #ffd88a; font-weight: 600; }
+.runtime-chip .rc-quota { padding: 1px 7px; border-radius: 3px; font-size: 11px; }
+.runtime-chip .rc-quota.quota-ok { color: var(--accent-green, #88dd88); background: rgba(40, 80, 40, 0.3); }
+.runtime-chip .rc-quota.quota-warn { color: #ffd88a; background: rgba(80, 60, 30, 0.4); }
+.runtime-chip .rc-quota.quota-danger {
+  color: #ff7878; background: rgba(120, 30, 30, 0.5); font-weight: 700;
+  animation: rc-quota-pulse 1s ease-in-out infinite alternate;
+}
+@keyframes rc-quota-pulse {
+  from { opacity: 0.7; }
+  to   { opacity: 1.0; box-shadow: inset 0 0 8px rgba(255, 80, 80, 0.4); }
+}
+.runtime-chip .rc-cap {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  color: var(--text-muted, #888);
+  background: rgba(60, 60, 60, 0.3);
+}
+.runtime-chip .rc-cap-warn { color: #ff7878; background: rgba(120, 30, 30, 0.5); font-weight: 700; }
+
+/* popover */
+.runtime-popover {
+  position: fixed;
+  z-index: 9999;
+  min-width: 700px;
+  max-width: 900px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--bg-card, #1e1e1e);
+  border: 1px solid var(--border-light, #444);
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--text-primary, #eee);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s, visibility 0.15s;
+}
+.runtime-popover.open { opacity: 1; visibility: visible; }
+.runtime-popover .rp-loading { padding: 20px; text-align: center; color: var(--text-muted); }
+.runtime-popover .rp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.runtime-popover .rp-quota-override { background: #aa3333; color: #fff; border: none; padding: 4px 10px; border-radius: 3px; font-size: 10px; cursor: pointer; }
+.runtime-popover .rp-quota-override:hover { background: #cc3333; }
+.runtime-popover .rp-cols { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; }
+.runtime-popover .rp-col h4 { margin: 0 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--text-secondary); }
+.runtime-popover .rp-empty { color: var(--text-muted); font-style: italic; padding: 4px; }
+.runtime-popover .rp-inst {
+  background: var(--bg-input, #252525);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 5px;
+  font-size: 11px;
+}
+.runtime-popover .rp-inst-disc { opacity: 0.6; background: transparent; border-style: dashed; }
+.runtime-popover .rp-inst.rp-blink {
+  border-color: #ffb84d;
+  animation: rc-busy-blink 0.5s ease-in-out infinite alternate;
+}
+.runtime-popover .rp-inst-head { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; }
+.runtime-popover .rp-status { display: inline-block; padding: 1px 5px; border-radius: 2px; font-size: 9px; text-transform: uppercase; font-weight: 600; }
+.runtime-popover .rp-status-idle { background: #2a5a2a; color: #88dd88; }
+.runtime-popover .rp-status-busy { background: #5a4520; color: #ffb84d; }
+.runtime-popover .rp-status-spawning { background: #2a3a5a; color: #6ab0f0; }
+.runtime-popover .rp-status-disconnected { background: #3a3a3a; color: #888; }
+.runtime-popover .rp-name { font-weight: 600; color: var(--text-primary); }
+.runtime-popover .rp-task { color: var(--accent, #66ccff); }
+.runtime-popover .rp-act { color: var(--text-secondary); font-style: italic; font-size: 10px; }
+.runtime-popover .rp-model { color: var(--text-muted); font-size: 10px; }
+.runtime-popover .rp-ago { color: var(--text-muted); font-size: 10px; text-align: right; }
+.runtime-popover .rp-disc-header { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin: 8px 0 4px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.runtime-popover .rp-more { font-size: 10px; color: var(--text-muted); padding: 2px; text-align: center; }
+.runtime-popover .rp-pending-section { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.runtime-popover .rp-pending-section h4 { margin: 0 0 6px; color: #ffd88a; }
+.runtime-popover .rp-pending-item { padding: 3px 6px; background: var(--bg-input); border-radius: 3px; margin-bottom: 3px; }

@@ -713,6 +713,8 @@ function wireUI() {
   switchTab(tabFromHash());
   startAutoRefresh();
   setupMatetermWS();
+  // [需求@2026-06-12 Phase 2E §14] dashboard 顶栏挂 chip — 全局视图(projectId=null)
+  if (window.RuntimeChip) window.RuntimeChip.init({ projectId: null });
   // 首次 tab=control 时也要初始化下拉
   if (currentTab === 'control') refreshControl();
 })();

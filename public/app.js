@@ -210,6 +210,11 @@ async function init() {
   // [需求@2026-06-11 §2] 初始化终端计数
   updateTerminalsCount();
 
+  // [需求@2026-06-12 Phase 2E §14] 实时运行态 chip(顶栏右上角)
+  if (window.RuntimeChip) {
+    window.RuntimeChip.init({ projectId: state.activeProjectId });
+  }
+
   connectWs();
   wireInputs();
 }
@@ -646,6 +651,8 @@ function wireInputs() {
     if (newId === state.activeProjectId) return;
     state.activeProjectId = newId;
     localStorage.setItem(LS_KEY, String(newId));
+    // [需求@2026-06-12 Phase 2E §14] chip 跟随 active project
+    if (window.RuntimeChip) window.RuntimeChip.setProjectId(newId);
     await reloadProjectScopedData();
   });
 
