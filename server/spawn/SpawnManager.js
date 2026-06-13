@@ -22,6 +22,10 @@ const QuotaState = require('../quota/QuotaState');
 class SpawnManager {
   constructor() {
     this.instances = new Map(); // instance.id -> RoleInstance
+    // [需求@2026-06-12 Phase 2E §10] 派工进度状态机:track instance.id → handoff key,
+    //   wait for target 进入 busy 后 emit 'thread.handoff.ready'。
+    //   key 格式:`${projectId}::${threadSlug}::${toInstanceId}::${enqueuedAt}`
+    this._pendingHandoffReady = new Map();
   }
 
   // [需求@2026-06-10] lazy resurrection: on boot, restore non-dead instances
@@ -180,6 +184,25 @@ class SpawnManager {
     inst.on('status_change', (chg) => {
       this._persistInstanceUpsert(inst);
       bus.publish('instance.status_change', { instance: inst.snapshot(), ...chg });
+      // [需求@2026-06-12 Phase 2E §10] 派工 ready/spawning 检测
+      const pending = this._pendingHandoffReady.get(inst.id);
+      if (pending) {
+        // 第一次进 spawning → emit spawning(若派工时还没 emit 过)
+        if (chg.to === 'spawning' && !pending.emittedSpawning) {
+          pending.emittedSpawning = true;
+          bus.publish('thread.handoff.spawning', { ...pending.basePayload });
+        }
+        // 进 busy → target 真正开始处理 stdin → ready,清掉
+        if (chg.to === 'busy') {
+          bus.publish('thread.handoff.ready', { ...pending.basePayload });
+          this._pendingHandoffReady.delete(inst.id);
+        }
+        // 进 dead → 派工失败
+        if (chg.to === 'dead') {
+          bus.publish('thread.handoff.failed', { ...pending.basePayload, error: 'target died before processing' });
+          this._pendingHandoffReady.delete(inst.id);
+        }
+      }
     });
 
     inst.on('event', ({ eventType, raw }) => {
@@ -365,8 +388,21 @@ class SpawnManager {
     }
     const handoff = markers.find((m) => m.kind === 'handoff');
     if (handoff) {
-      try { await this._performHandoff(inst, handoff.target, handoff.reason); }
-      catch (e) { console.warn(`[SpawnManager] handoff marker failed (${inst.id}):`, e.message); }
+      try {
+        await this._performHandoff(inst, handoff.target, handoff.reason);
+      } catch (e) {
+        console.warn(`[SpawnManager] handoff marker failed (${inst.id}):`, e.message);
+        // [需求@2026-06-12 Phase 2E §10] 派工失败 → 通知前端红色卡片
+        bus.publish('thread.handoff.failed', {
+          projectId: inst.projectId,
+          threadSlug: inst.threadSlug,
+          from: inst.role.name,
+          target: handoff.target,
+          reason: handoff.reason,
+          error: e.message,
+          handoffKey: `${inst.projectId}::${inst.threadSlug}::FAILED::${Date.now()}`,
+        });
+      }
     }
   }
 
@@ -440,13 +476,35 @@ class SpawnManager {
       resolvedSlot: targetSlot, reason,
       fromInstanceId: fromInst.id, toInstanceId: inst.id,
     }, { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
-    bus.publish('thread.handoff', {
+
+    // [需求@2026-06-12 Phase 2E §10] 派工进度三阶段:
+    //   pending → spawning(若 target 正在 spawn)→ ready(target status='busy' 收到 stdin)
+    //   handoffKey 唯一关联 4 段事件(.handoff / .spawning / .ready / .failed),前端按 key 更新同一张卡片
+    const handoffKey = `${fromInst.projectId}::${fromInst.threadSlug}::${inst.id}::${Date.now()}`;
+    const basePayload = {
       projectId: fromInst.projectId,
       threadSlug: fromInst.threadSlug,
       from: fromInst.role.name,
       target: targetSpec,
       reason,
-    });
+      handoffKey,
+      toInstanceId: inst.id,
+      toDisplayName: inst.displayName,
+    };
+    bus.publish('thread.handoff', basePayload);
+
+    // 派工瞬间 target inst 可能已是 busy(idle → sendUserText → busy 同步翻),也可能仍 spawning
+    if (inst.status === 'busy') {
+      // 直接 ready,无需 spawn 等待
+      setImmediate(() => bus.publish('thread.handoff.ready', { ...basePayload }));
+    } else {
+      // 记入 pending,等 status_change to busy 时 emit ready
+      // 如果已是 spawning,先 emit 一次 spawning 让 UI 切色
+      if (inst.status === 'spawning') {
+        setImmediate(() => bus.publish('thread.handoff.spawning', { ...basePayload }));
+      }
+      this._pendingHandoffReady.set(inst.id, { handoffKey, basePayload, emittedSpawning: inst.status === 'spawning' });
+    }
   }
 
   _performDone(fromInst, summary) {

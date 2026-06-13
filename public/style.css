@@ -257,6 +257,21 @@ main { flex: 1; display: flex; min-height: 0; }
 .msg.blocked-card .role { color: var(--accent-yellow); font-weight: 700; }
 .msg.handoff-card { background: var(--bg-msg-system); border-left-color: var(--accent-purple); color: var(--text-secondary); font-size: 11px; }
 .msg.handoff-card .role { color: var(--accent-purple); }
+/* [需求@2026-06-12 Phase 2E §10] 派工进度状态机卡片 4 阶段 */
+.msg.handoff-card { padding: 6px 10px; transition: background-color 0.3s, border-color 0.3s; }
+.msg.handoff-card .hf-line { display: flex; align-items: center; gap: 6px; font-family: ui-monospace, Consolas, monospace; }
+.msg.handoff-card .hf-line-1 { font-size: 12px; }
+.msg.handoff-card .hf-line-2 { font-size: 11px; color: var(--text-muted); margin-top: 2px; padding-left: 16px; }
+.msg.handoff-card .hf-icon { display: inline-block; width: 14px; text-align: center; font-weight: 700; }
+.msg.handoff-card.hf-pending { background: rgba(180, 130, 40, 0.18); border-left-color: #d8a142; }
+.msg.handoff-card.hf-pending .hf-icon { color: #d8a142; }
+.msg.handoff-card.hf-spawning { background: rgba(70, 130, 200, 0.22); border-left-color: #4a90e2; }
+.msg.handoff-card.hf-spawning .hf-icon { color: #4a90e2; animation: hf-spin 1s linear infinite; }
+@keyframes hf-spin { 0% { opacity: 0.3; } 100% { opacity: 1; } }
+.msg.handoff-card.hf-ready { background: rgba(60, 140, 60, 0.18); border-left-color: var(--accent-green, #4caf50); }
+.msg.handoff-card.hf-ready .hf-icon { color: var(--accent-green, #4caf50); }
+.msg.handoff-card.hf-failed { background: rgba(180, 60, 60, 0.22); border-left-color: #d44a4a; }
+.msg.handoff-card.hf-failed .hf-icon { color: #d44a4a; font-weight: 800; }
 .msg.done-card { background: var(--bg-msg-ok); border-left-color: var(--accent-green); color: var(--accent-green); }
 .msg.done-card .role { color: var(--accent-green); }
 

@@ -543,18 +543,31 @@ function handleWsMsg({ type, payload }) {
     state.threads.set(payload.threadSlug, payload.thread);
     renderThreads();
   } else if (type === 'thread.handoff') {
-    // [需求@2026-06-10 §6.4] 角色切换:对话流加一条隐式分割条(small system msg)
+    // [需求@2026-06-10 §6.4 + 2026-06-12 §10] 派工进度状态机入口(pending 态)
     pushTickerEvent('handoff', `${payload.from} → ${payload.target}  ${payload.reason ? '· ' + payload.reason.slice(0, 30) : ''}`);
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug === state.focusedSlug) {
-      const node = makeMsg('system handoff-card', `→ ${payload.target}`,
-        `${payload.reason || ''}`);
-      els.stream.appendChild(node);
-      els.stream.scrollTop = els.stream.scrollHeight;
+      renderHandoffCard(payload, 'pending');
     }
     api(`/threads/${encodeURIComponent(payload.threadSlug)}?projectId=${state.activeProjectId}`)
       .then((t) => { state.threads.set(t.slug, t); renderThreads(); if (t.slug === state.focusedSlug) renderConvHeader(); })
       .catch(() => {});
+  } else if (type === 'thread.handoff.spawning') {
+    if (payload.projectId !== state.activeProjectId) return;
+    if (payload.threadSlug === state.focusedSlug) {
+      renderHandoffCard(payload, 'spawning');
+    }
+  } else if (type === 'thread.handoff.ready') {
+    if (payload.projectId !== state.activeProjectId) return;
+    if (payload.threadSlug === state.focusedSlug) {
+      renderHandoffCard(payload, 'ready');
+    }
+  } else if (type === 'thread.handoff.failed') {
+    pushTickerEvent('blocked', `✗ 派工失败 ${payload.target}: ${payload.error || ''}`.slice(0, 80));
+    if (payload.projectId !== state.activeProjectId) return;
+    if (payload.threadSlug === state.focusedSlug) {
+      renderHandoffCard(payload, 'failed');
+    }
   } else if (type === 'thread.done') {
     pushTickerEvent('done', `✓ ${payload.threadSlug} verified`);
     if (payload.projectId !== state.activeProjectId) return;
@@ -605,6 +618,41 @@ function showSystemBanner(kind, text) {
     els.banners.appendChild(node);
   }
   node.textContent = text;
+}
+
+// [需求@2026-06-12 Phase 2E §10] 派工进度状态机卡片
+//   pending → spawning → ready 或 → failed
+//   通过 handoffKey 关联;同 key 后续事件更新同一张卡片
+function renderHandoffCard(payload, stage) {
+  const key = payload.handoffKey || `${payload.from}-${payload.target}-${payload.threadSlug}`;
+  let card = els.stream.querySelector(`.handoff-card[data-handoff-key="${CSS.escape(key)}"]`);
+  if (!card) {
+    card = document.createElement('div');
+    card.className = 'msg system handoff-card';
+    card.dataset.handoffKey = key;
+    card.innerHTML = `
+      <div class="hf-line hf-line-1"><span class="hf-icon"></span><span class="hf-text"></span></div>
+      <div class="hf-line hf-line-2"><span class="hf-reason"></span></div>
+    `;
+    els.stream.appendChild(card);
+    els.stream.scrollTop = els.stream.scrollHeight;
+  }
+  card.classList.remove('hf-pending', 'hf-spawning', 'hf-ready', 'hf-failed');
+  card.classList.add(`hf-${stage}`);
+  const iconEl = card.querySelector('.hf-icon');
+  const textEl = card.querySelector('.hf-text');
+  const reasonEl = card.querySelector('.hf-reason');
+  const target = payload.toDisplayName || payload.target;
+  const map = {
+    pending:  { icon: '▸', text: `mate 已收到 · 派给 ${target}` },
+    spawning: { icon: '◌', text: `${target} 启动中…` },
+    ready:    { icon: '✓', text: `${target} 已响应` },
+    failed:   { icon: '✗', text: `派工失败: ${payload.error || '(unspecified)'}` },
+  };
+  const m = map[stage] || map.pending;
+  iconEl.textContent = m.icon;
+  textEl.textContent = m.text;
+  reasonEl.textContent = payload.reason || '';
 }
 
 // [需求@2026-06-11 §3] 顶栏事件流
