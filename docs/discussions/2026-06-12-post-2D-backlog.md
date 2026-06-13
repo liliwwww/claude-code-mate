@@ -1005,3 +1005,47 @@ L3 taskkill /F /T
 3. 如果不是 → 用 fallback("停止" = kill,原 §18 方案)
 4. 任何情况下 user 看到的"红色停止" UI 都不变,只是底层实现细节
 
+
+---
+
+## §19. 等待 LLM response 时显示 indicator(感知优化)
+
+**状态**:已细化(可直接实施)
+
+**触发**:2026-06-13 user 反馈"运行过程不平滑,中间总有几秒间隔"。数据分析(mate-B 1 分钟 50 个事件):
+
+| 间隔来源 | 占比 |
+|---|---|
+| Anthropic Opus API 调用延迟(等 LLM 思考 + 生成) | **70-80%** |
+| Claude 启动 + 本地工具 + Hook | 10-15% |
+| mate 内 / WS / 浏览器 | < 5% |
+
+**70% 的"卡感"在 LLM 响应本身**,mate 不能加速,但能让 user 在 gap 期间**看到 mate 在跑**(避免"以为卡死")。
+
+**具体加 3 个 indicator**:
+
+| # | indicator | 触发 / 位置 | 何时显示 |
+|---|---|---|---|
+| 1 | 主视图对话流末尾插一行小图标 `⌛ mate-X-N 思考中... (3s)`,带秒数 timer | 收到 `system/status:requesting` → 显示;收到下一个 `assistant` / `result` → 移除 | LLM API 等待期间 |
+| 2 | chip 上 busy term 旁加状态后缀:`busy:[H-1 · ⌛API 3s]` 或 `busy:[H-1 · 🔧 Grep]` | 后端 `currentActivity` 已经在算(latestActivity 是上次 tool_use 名),chip popover 已经显示;chip 主体加一个 tiny 状态 chip | 任何时候 instance busy |
+| 3 | 折叠 `thinking_tokens` 增量到一行:`思考中 116 tokens` 不停增长 | 收 thinking_tokens event,聚合更新同一个 DOM node 不新插 | 每 turn 中间 |
+
+**额外 noise 隐藏**:`system/hook_started` / `system/hook_response` / `system/status` 这种 mate 默认渲染但 user 不需要的 noise event,改成不进 conversation stream(只走 chip / dashboard)。
+
+**实施**:
+- `public/app.js renderEventInStream`:
+  - 加 `system/status` 分支:status='requesting' → 插或更新 `.waiting-indicator` 元素;收到 assistant / result 删除
+  - 加 `system/thinking_tokens` 分支:聚合到同一个 `.thinking-indicator` 元素,只更新数字
+  - 隐藏 hook_started / hook_response(直接 return)
+- CSS:`.waiting-indicator`(灰色脉动 `⌛ 思考中... <seconds>s`),`.thinking-indicator`(灰色 `🧠 116 tokens`)
+- chip:`runtime-chip.js` busy term chip 加 currentActivity hint(已有 backend 数据,加 client 渲染即可)
+
+**预估 ~60 行**(40 app.js + 20 chip + CSS)。
+
+**关联**:
+- §16 折叠流式 / §17 流式开关:都是"减少 noise + 让 LLM 跑的过程更舒服"。一起做。
+- §10 派工进度可见 / §18 input busy 状态:同源 — 让 user 时刻看清 mate 在干啥。
+
+**长期方向**(本条不做):
+- §5 改模型:reconnaissance 用 Haiku,设计上 Opus(快 5-10x)
+- prompt 优化让 LLM 一次决策多步,减少 API 往返(role markdown)
