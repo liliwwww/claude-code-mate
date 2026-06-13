@@ -49,14 +49,12 @@ const QuotaState = require('../quota/QuotaState');
 const EventStore = require('../events/EventStore');
 const ScanRecycler = require('./ScanRecycler');
 const PoolAllocator = require('./PoolAllocator');
+const HandoffTracker = require('./HandoffTracker');
 
 class SpawnManager {
   constructor() {
     this.instances = new Map(); // instance.id -> RoleInstance
-    // [需求@2026-06-12 Phase 2E §10] 派工进度状态机:track instance.id → handoff key,
-    //   wait for target 进入 busy 后 emit 'thread.handoff.ready'。
-    //   key 格式:`${projectId}::${threadSlug}::${toInstanceId}::${enqueuedAt}`
-    this._pendingHandoffReady = new Map();
+    // [arch §1.3 ✅] handoff 进度跟踪移到 HandoffTracker 模块
   }
 
   // [需求@2026-06-10] lazy resurrection: on boot, restore non-dead instances
@@ -168,25 +166,8 @@ class SpawnManager {
     inst.on('status_change', (chg) => {
       this._persistInstanceUpsert(inst);
       bus.publish('instance.status_change', { instance: inst.snapshot(), ...chg });
-      // [需求@2026-06-12 Phase 2E §10] 派工 ready/spawning 检测
-      const pending = this._pendingHandoffReady.get(inst.id);
-      if (pending) {
-        // 第一次进 spawning → emit spawning(若派工时还没 emit 过)
-        if (chg.to === 'spawning' && !pending.emittedSpawning) {
-          pending.emittedSpawning = true;
-          bus.publish('thread.handoff.spawning', { ...pending.basePayload });
-        }
-        // 进 busy → target 真正开始处理 stdin → ready,清掉
-        if (chg.to === 'busy') {
-          bus.publish('thread.handoff.ready', { ...pending.basePayload });
-          this._pendingHandoffReady.delete(inst.id);
-        }
-        // 进 dead → 派工失败
-        if (chg.to === 'dead') {
-          bus.publish('thread.handoff.failed', { ...pending.basePayload, error: 'target died before processing' });
-          this._pendingHandoffReady.delete(inst.id);
-        }
-      }
+      // [arch §1.3 ✅] 派工 ready/spawning/failed 检测移到 HandoffTracker
+      HandoffTracker.observeStatusChange(inst.id, chg.to);
     });
 
     inst.on('event', ({ eventType, raw }) => {
@@ -491,12 +472,12 @@ class SpawnManager {
       // 直接 ready,无需 spawn 等待
       setImmediate(() => bus.publish('thread.handoff.ready', { ...basePayload }));
     } else {
-      // 记入 pending,等 status_change to busy 时 emit ready
       // 如果已是 spawning,先 emit 一次 spawning 让 UI 切色
       if (inst.status === 'spawning') {
         setImmediate(() => bus.publish('thread.handoff.spawning', { ...basePayload }));
       }
-      this._pendingHandoffReady.set(inst.id, { handoffKey, basePayload, emittedSpawning: inst.status === 'spawning' });
+      // [arch §1.3 ✅] 入 HandoffTracker 等 status_change 路由
+      HandoffTracker.register(inst.id, basePayload, inst.status === 'spawning');
     }
   }
 
