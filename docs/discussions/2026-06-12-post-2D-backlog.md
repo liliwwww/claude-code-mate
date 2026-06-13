@@ -774,3 +774,100 @@ D. **WS push 替代轮询**:仪表盘 tab 1 改成 WS 实时推 → 不滞后,�
 预估工时:大致 **3-5 天**(主要是 §14 实时面板 + §6 quota 全链路 + 一堆状态语义清理)。改完打 Phase 2E。
 
 具体先后 / 拆分要不要细化,等 user 拍板再说。
+
+---
+
+# 2026-06-13 追加 — UI 对话流细节(架构治理 + 角色重命名后发现)
+
+## §15. user bubble dedup 验证(可能 §12 实现 bug)
+
+**状态**:待细化
+
+**user 提问**:"对话框中,有一个蓝色背景的 USER 标题的框,是干什么用的?"
+
+**初步判断**:那是 §12 乐观 UI 的 user message bubble — user 自己发的话。但 user 这个问法**可能**意味着他看到了:
+- 1 个乐观 bubble(`appendOptimisticUserBubble` 立刻渲染)
+- 1 个 echo bubble(WS `instance.event` 带 `eventType=user` 后 `renderEventInStream` 重渲)
+
+如果显示**两个**,说明 §12 dedup 没生效。要查:
+- `payload.clientMessageId` 在 WS event 里是否真的有
+- `appendOptimisticUserBubble` 设的 `data-client-id` 是否匹配
+- `CSS.escape(clientMessageId)` 查询是否能命中
+
+**待澄清**:跟 user 确认看到 1 个还是 2 个。1 个就只是认知问题(他不知道那是自己的发言),2 个就是 §12 dedup bug。
+
+**预估影响**:0(认知)~ 10 行(dedup 修复 + 单测)
+
+---
+
+## §16. 流式 assistant 气泡默认折叠
+
+**状态**:待细化
+
+**user 提议**:"过程中的 assistant... 也没有折叠,我认为,也可以默认折叠。"
+
+**当前行为**:`renderEventInStream` 收到 `stream_event` 的 `content_block_delta` 时:
+```js
+const elNode = makeMsg('assistant streaming', 'assistant…', '');
+els.stream.appendChild(elNode);
+// 每个 delta:
+s.el.querySelector('.body').textContent = s.text;  // 累积更新
+```
+
+**目标行为**:流式期间气泡默认折叠成一行 `▸ assistant 写中... (1.2 KB · 32s)`,user 想看再点开。result 到达时:
+- 选项 a:**继续折叠**(摘要 / 字数 / 耗时)
+- 选项 b:**自动展开**显示完整最终回复(默认 markdown render)
+- 选项 c:**结尾"展开看完整"按钮**让 user 主动决定
+
+**待细化**:
+- result 到达时的默认展开 vs 保持折叠 — user 拍一个
+- 摘要里显示什么:字数 / 字节 / 耗时 / tool calls 数?
+- 这个偏好持久化吗:每次新 page load 默认 / localStorage 记?
+
+**关联**:跟 §17 一起做(同一开关)
+
+**预估影响**:`renderEventInStream` stream_event + assistant 分支 + 新 CSS `.msg.assistant.collapsed` ~30 行
+
+---
+
+## §17. 流式渲染 vs 不显示的性能成本
+
+**状态**:待细化
+
+**user 提问**:"是不是流式输出要比不显示内容界面处理要慢?"
+
+**确认**:是。**浏览器端**慢,后端无差异。
+
+| 步骤 | 流式开 | 流式关 |
+|---|---|---|
+| WS 包数 | 每轮 ~50-200 个 stream_event delta + 1 assistant + 1 result | 1 assistant + 1 result |
+| DOM 更新 | 每 delta `body.textContent=...` 触发 reflow/repaint(50-200 次/轮)| 1 次(收到 final 时 markdown 一次性渲染)|
+| 浏览器 CPU | 高 | 低 |
+| 显示延迟感受 | 快(立刻看到字)| 慢(几秒静默后突然出完整文本)|
+| Server CPU | 一样(stream_event 不持久化,只 fan-out)| 一样 |
+| 网络带宽 | 每 delta JSON 包(MB 级 / 长回复)| 单 final 包 |
+
+**实施方向**(跟 §16 整合):
+
+**chip 旁边加小开关**:
+```
+[0 idle · busy:H-1] [排队:0] [quota:ok] [0/8]     [📺 实时 ☑]
+```
+
+或 settings dialog 里加一项 "assistant 流式渲染:实时 / 折叠"。
+
+- **实时**(默认):当前行为
+- **折叠**:`renderEventInStream` 的 `stream_event` 分支变成"只更新摘要标签 + 计数",不动 `textContent`。result 到达时按 §16 的 a/b/c 决定如何展开。
+
+预估收益:
+- 长回复(>2KB)时 browser CPU 下降明显
+- 多 thread 同时 streaming 时 UI 不卡
+- 多浏览器开 dashboard 不重 fanout 负担
+
+**待细化**:
+- 开关位置:chip 旁 / 顶栏 / settings dialog?
+- 默认值:实时(保现状)/ 折叠(用 user 偏好默认)?
+- 持久化:localStorage / per-project / per-thread?
+- 是否也影响 mateTerm tab 4?(理论上一样的渲染管线,顺手做)
+
+**预估影响**:`renderEventInStream` 改 ~20 行 + 开关 UI ~30 行 + localStorage 偏好 ~10 行 = 总 60 行
