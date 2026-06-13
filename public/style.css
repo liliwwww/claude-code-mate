@@ -296,6 +296,14 @@ main { flex: 1; display: flex; min-height: 0; }
 .msg .body { font-size: 13.5px; }
 .msg.user { background: var(--bg-msg-user); border-left-color: var(--user-accent); }
 .msg.user .body { font-family: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace; font-size: 12.5px; white-space: pre-wrap; }
+/* [需求@2026-06-12 Phase 2E §12] 乐观 UI 三态:sending / sent / failed */
+.msg.user.msg-sending { opacity: 0.6; }
+.msg.user.msg-sending .msg-status { display: inline-block; margin-left: 6px; font-size: 10px; color: var(--text-muted); animation: rc-spawn-pulse 0.8s ease-in-out infinite alternate; }
+.msg.user.msg-sent .msg-status { display: none; }
+.msg.user.msg-failed { background: rgba(180, 60, 60, 0.22); border-left-color: #d44a4a; cursor: pointer; }
+.msg.user.msg-failed .msg-status { color: #ff7878; }
+.msg.user.msg-failed .msg-status::before { content: '✗ 发送失败 · 点击重填'; display: block; }
+.msg.user.msg-failed .msg-status > * { display: none; }
 .msg.assistant { background: var(--bg-msg-assistant); border-left-color: var(--accent-green); }
 .msg.assistant.streaming { background: var(--bg-msg-stream); border-left-color: var(--accent-green); }
 .msg.tool_use { background: var(--bg-msg-tooluse); border-left-color: var(--accent-yellow); }
@@ -502,3 +510,12 @@ main { flex: 1; display: flex; min-height: 0; }
 .runtime-popover .rp-pending-section { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .runtime-popover .rp-pending-section h4 { margin: 0 0 6px; color: #ffd88a; }
 .runtime-popover .rp-pending-item { padding: 3px 6px; background: var(--bg-input); border-radius: 3px; margin-bottom: 3px; }
+
+/* [需求@2026-06-12 Phase 2E §12] mateTerm 乐观 UI 三态 */
+.mt-msg.user.mt-msg-sending { opacity: 0.6; }
+.mt-msg.user.mt-msg-sending .mt-msg-status { display: inline-block; margin-left: 6px; font-size: 10px; color: var(--text-muted); animation: rc-spawn-pulse 0.8s ease-in-out infinite alternate; }
+.mt-msg.user.mt-msg-sent .mt-msg-status { display: none; }
+.mt-msg.user.mt-msg-failed { background: rgba(180, 60, 60, 0.22); border-left-color: #d44a4a; cursor: pointer; }
+.mt-msg.user.mt-msg-failed .mt-msg-status { color: #ff7878; }
+.mt-msg.user.mt-msg-failed .mt-msg-status::before { content: '✗ 发送失败 · 点击重填'; }
+.mt-msg.user.mt-msg-failed .mt-msg-status { font-size: 10px; }

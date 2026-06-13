@@ -513,6 +513,14 @@ function handleWsMsg({ type, payload }) {
   } else if (type === 'instance.event') {
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug === state.focusedSlug) {
+      // [需求@2026-06-12 Phase 2E §12] 乐观 UI dedup:user echo back 时,如果存在临时 bubble 匹配 clientMessageId → 不重复渲染
+      if (payload.eventType === 'user' && payload.clientMessageId) {
+        const existing = els.stream.querySelector(`.msg.user[data-client-id="${CSS.escape(payload.clientMessageId)}"]`);
+        if (existing) {
+          existing.dataset.serverId = payload.serverMessageId || '';
+          return;  // 已有 bubble,跳过 echo 渲染
+        }
+      }
       renderEventInStream(payload.eventType, payload.raw, true);
     }
   } else if (type === 'thread.title_updated') {
@@ -618,6 +626,33 @@ function showSystemBanner(kind, text) {
     els.banners.appendChild(node);
   }
   node.textContent = text;
+}
+
+// [需求@2026-06-12 Phase 2E §12] 乐观 UI helpers
+function makeClientMessageId() {
+  return `c${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function appendOptimisticUserBubble(text, clientMessageId) {
+  const node = document.createElement('div');
+  node.className = 'msg user msg-sending';
+  node.dataset.clientId = clientMessageId;
+  // 使用既有 makeMsg 结构(role + body),但简化:user 自己的 bubble 直接放 text
+  const roleEl = document.createElement('span');
+  roleEl.className = 'role';
+  roleEl.textContent = 'you';
+  const bodyEl = document.createElement('div');
+  bodyEl.className = 'body';
+  bodyEl.textContent = text;
+  const statusEl = document.createElement('span');
+  statusEl.className = 'msg-status';
+  statusEl.textContent = '· sending';
+  node.appendChild(roleEl);
+  node.appendChild(bodyEl);
+  node.appendChild(statusEl);
+  els.stream.appendChild(node);
+  els.stream.scrollTop = els.stream.scrollHeight;
+  return node;
 }
 
 // [需求@2026-06-12 Phase 2E §10] 派工进度状态机卡片
@@ -814,16 +849,29 @@ function wireInputs() {
     if (!state.focusedSlug) return;
     const text = els.msgInput.value.trim();
     if (!text) return;
+    // [需求@2026-06-12 Phase 2E §12] 乐观 UI:立即渲染 bubble,带 sending 标志;后端 echo back 时 dedup
+    const clientMessageId = makeClientMessageId();
+    const bubble = appendOptimisticUserBubble(text, clientMessageId);
+    const sentText = text;
+    els.msgInput.value = '';
     try {
       await api(`/threads/${encodeURIComponent(state.focusedSlug)}/message?projectId=${state.activeProjectId}`, {
-        method: 'POST', body: { text },
+        method: 'POST', body: { text: sentText, clientMessageId },
       });
-      els.msgInput.value = '';
+      bubble.classList.remove('msg-sending');
+      bubble.classList.add('msg-sent');
       const t = await api(`/threads/${encodeURIComponent(state.focusedSlug)}?projectId=${state.activeProjectId}`);
       state.threads.set(t.slug, t);
       renderThreads();
     } catch (e) {
-      alert(`发送失败: ${e.message}`);
+      bubble.classList.remove('msg-sending');
+      bubble.classList.add('msg-failed');
+      bubble.title = `发送失败: ${e.message} · 点击复制原文重新发送`;
+      bubble.addEventListener('click', () => {
+        els.msgInput.value = sentText;
+        els.msgInput.focus();
+        bubble.remove();
+      }, { once: true });
     }
   });
 

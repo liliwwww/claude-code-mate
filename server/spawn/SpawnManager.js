@@ -222,9 +222,15 @@ class SpawnManager {
       // [需求@2026-06-12 §9] mateTerm 直连模式:消息挂 instance,不挂 thread。
       //   `inst._directMode` 在 sendDirectToInstance 时置 true,result 事件后清除。
       const isDirect = !!inst._directMode;
+      // [需求@2026-06-12 Phase 2E §12] user-direction event 拿出 FIFO 队首的 clientMessageId
+      let attachClientId = null;
+      if (eventType === 'user' && inst._pendingClientIds?.length) {
+        attachClientId = inst._pendingClientIds.shift();
+      }
+      let serverMessageId = null;
       if (!skip) {
         try {
-          recordMessage({
+          serverMessageId = recordMessage({
             projectId: inst.projectId,
             // 直连时 thread_slug = NULL(避免污染 thread 历史)
             threadSlug: isDirect ? null : inst.threadSlug,
@@ -267,6 +273,9 @@ class SpawnManager {
         ts: Date.now(),
         // [需求@2026-06-12 §9] mateTerm 直连事件标志
         directTarget: isDirect ? inst.id : null,
+        // [需求@2026-06-12 Phase 2E §12] 乐观 UI dedup keys
+        clientMessageId: attachClientId,
+        serverMessageId,
       });
 
       // [需求@2026-06-10 §1.4, §1.6] result 事件 = 一轮结束,触发 ThreadHooks
@@ -561,7 +570,7 @@ class SpawnManager {
   //   targetSlot:可选,marker `target="execB-2"` 解析后传进来。
   //   targetInstance:可选(§9 mateTerm 干预模式),user 直接指定具体 instance.id 时由 caller 注入;
   //     从中推导 roleType + targetSlot,覆盖默认 last_questioner 路由。
-  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null, targetInstance = null }) {
+  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null, targetInstance = null, clientMessageId = null }) {
     if (!projectId) throw new Error('sendToThread requires projectId');
     if (!projectRootDir) throw new Error('sendToThread requires projectRootDir');
     if (!threadSlug) throw new Error('sendToThread requires threadSlug');
@@ -585,9 +594,9 @@ class SpawnManager {
     if (!role) throw new Error(`no role found of type ${roleType}`);
 
     if (role.type === 'requirements') {
-      return this._sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType });
+      return this._sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType, clientMessageId });
     }
-    return this._sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot });
+    return this._sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot, clientMessageId });
   }
 
   // [需求@2026-06-12 §9 mateTerm] 直连模式 — user 直接对某个实例说话。
@@ -595,7 +604,7 @@ class SpawnManager {
   //   - 不加 [Thread: xxx] task tag
   //   - 不触发 marker side effect(_handleMarkers / ThreadHooks 都跳过)
   //   - busy / spawning 实例拒绝(409 by caller)
-  sendDirectToInstance(instanceId, text) {
+  sendDirectToInstance(instanceId, text, { clientMessageId = null } = {}) {
     if (!instanceId) throw new Error('sendDirectToInstance requires instanceId');
     if (!text || typeof text !== 'string') throw new Error('sendDirectToInstance requires text');
     const inst = this.instances.get(instanceId);
@@ -605,6 +614,8 @@ class SpawnManager {
     if (inst.status === 'spawning') throw new Error(`instance ${instanceId} is still spawning`);
 
     inst._directMode = true;  // event handler 看到这个就走直连持久化 + 跳 marker 派工
+    // [需求@2026-06-12 Phase 2E §12] enqueue clientMessageId
+    this._enqueueClientId(inst, clientMessageId);
     try {
       inst.sendUserText(text);
     } catch (e) {
@@ -624,7 +635,7 @@ class SpawnManager {
   }
 
   // R 走原 per-thread 路径
-  _sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType }) {
+  _sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType, clientMessageId = null }) {
     const thread = ThreadStore.get(projectId, threadSlug);
     const boundId = thread.metadata?.current_role_instances?.[roleType];
     let inst = boundId ? this.instances.get(boundId) : null;
@@ -636,6 +647,7 @@ class SpawnManager {
       }
       inst = new RoleInstance({ role, projectId, projectRootDir, threadSlug, poolSlot: null });
       inst._pendingUserText = text;
+      this._enqueueClientId(inst, clientMessageId);
       this.instances.set(inst.id, inst);
       this._wireListeners(inst);
       inst.spawn({ suppressGreeting: true });
@@ -649,15 +661,26 @@ class SpawnManager {
 
     if (inst.status === 'disconnected') {
       inst.threadSlug = threadSlug;
+      this._enqueueClientId(inst, clientMessageId);
       inst.sendUserText(text);
       ThreadStore.touch(projectId, threadSlug, roleType);
       return inst;
     }
 
+    this._enqueueClientId(inst, clientMessageId);
     inst.sendUserText(text);
     ThreadStore.touch(projectId, threadSlug, roleType);
     this._clearPendingQuestion(projectId, threadSlug);
     return inst;
+  }
+
+  // [需求@2026-06-12 Phase 2E §12] FIFO 队列存等待匹配的 clientMessageId
+  //   每次 sendUserText 前 enqueue,inst.on('event') 看到 eventType='user' 时 dequeue,
+  //   把 clientMessageId attach 到 bus event payload。前端按 clientMessageId 去重 echo。
+  _enqueueClientId(inst, clientMessageId) {
+    if (!clientMessageId) return;
+    if (!inst._pendingClientIds) inst._pendingClientIds = [];
+    inst._pendingClientIds.push(clientMessageId);
   }
 
   // [需求@2026-06-12 §8.3] Pooled 角色派工
@@ -667,7 +690,7 @@ class SpawnManager {
   //   4. [§8.5] H 还要前置 task board snapshot(活跃线索 + 池子状态 + 最近决策)
   //   5. 派工(idle → sendUserText / disconnected → resurrect / 新 → spawn with pending)
   //   6. 绑定到 thread.metadata + touch
-  _sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot }) {
+  _sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot, clientMessageId = null }) {
     const inst = this._acquirePoolInstance({ projectId, projectRootDir, role, requestedSlot: targetSlot, threadSlug });
     if (!inst) throw new Error(`could not acquire pool instance for ${role.name}`);
 
@@ -681,6 +704,8 @@ class SpawnManager {
       finalText = this._buildTaskBoardSnapshot(projectId, threadSlug) + text;
     }
     const taggedText = `[Thread: ${threadSlug}]\n\n${finalText}`;
+    // [需求@2026-06-12 Phase 2E §12] enqueue clientMessageId 等 echo back 时 attach
+    this._enqueueClientId(inst, clientMessageId);
 
     // Dispatch by status
     // [bug@2026-06-12] 派工沉默根因:_createPoolInstance 只分配 slot 不调 spawn(),

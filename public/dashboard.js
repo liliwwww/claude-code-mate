@@ -494,18 +494,43 @@ async function reloadMatetermHistory() {
   }
 }
 
+function makeMtClientId() {
+  return `c${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function appendMtOptimisticBubble(text, clientMessageId) {
+  const streamEl = el('#mt-stream');
+  if (streamEl.querySelector('.mt-empty')) streamEl.innerHTML = '';
+  const node = document.createElement('div');
+  node.className = 'mt-msg user mt-msg-sending';
+  node.dataset.clientId = clientMessageId;
+  node.innerHTML = `
+    <div class="mt-msg-head"><span class="who">you</span><span class="ts">…</span></div>
+    <div class="mt-msg-body"></div>
+    <span class="mt-msg-status">· sending</span>
+  `;
+  node.querySelector('.mt-msg-body').textContent = text;
+  streamEl.appendChild(node);
+  streamEl.scrollTop = streamEl.scrollHeight;
+  return node;
+}
+
 async function sendMatetermMessage() {
   const text = el('#mt-input').value.trim();
   if (!text) return;
   if (!MT_STATE.selectedInstanceId) return alert('请先选一个终端');
   const sendBtn = el('#mt-send');
   sendBtn.disabled = true;
+  // [需求@2026-06-12 Phase 2E §12] 乐观 UI:立即 bubble + clientMessageId dedup
+  const clientMessageId = makeMtClientId();
+  const bubble = appendMtOptimisticBubble(text, clientMessageId);
+  el('#mt-input').value = '';
   try {
     if (MT_STATE.selectedMode === 'direct') {
       const r = await fetch(`/api/instances/${encodeURIComponent(MT_STATE.selectedInstanceId)}/direct-message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, clientMessageId }),
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
@@ -517,18 +542,24 @@ async function sendMatetermMessage() {
       const r = await fetch(`/api/threads/${encodeURIComponent(MT_STATE.selectedThreadSlug)}/message?projectId=${inst.projectId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, targetInstance: MT_STATE.selectedInstanceId, projectId: inst.projectId }),
+        body: JSON.stringify({ text, targetInstance: MT_STATE.selectedInstanceId, projectId: inst.projectId, clientMessageId }),
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${r.status}`);
       }
     }
-    el('#mt-input').value = '';
-    // 不强制重载;WS 会推 user_to_role + assistant 增量。但首次 user 消息有时 ws 滞后,做一次 history 回拉。
-    setTimeout(reloadMatetermHistory, 300);
+    bubble.classList.remove('mt-msg-sending');
+    bubble.classList.add('mt-msg-sent');
   } catch (e) {
-    alert('发送失败: ' + e.message);
+    bubble.classList.remove('mt-msg-sending');
+    bubble.classList.add('mt-msg-failed');
+    bubble.title = `发送失败: ${e.message} · 点击重填`;
+    bubble.addEventListener('click', () => {
+      el('#mt-input').value = text;
+      el('#mt-input').focus();
+      bubble.remove();
+    }, { once: true });
   } finally {
     sendBtn.disabled = false;
   }
@@ -562,6 +593,15 @@ function setupMatetermWS() {
     }
     // 跳过高频 partial
     if (p.eventType === 'stream_event') return;
+    const streamEl = el('#mt-stream');
+    // [需求@2026-06-12 Phase 2E §12] user echo dedup
+    if (p.eventType === 'user' && p.clientMessageId) {
+      const existing = streamEl.querySelector(`.mt-msg.user[data-client-id="${CSS.escape(p.clientMessageId)}"]`);
+      if (existing) {
+        existing.dataset.serverId = p.serverMessageId || '';
+        return;
+      }
+    }
     // 渲染单条
     const m = {
       direction: p.eventType === 'user' ? 'user_to_role' : p.eventType === 'assistant' ? 'role_to_user' : 'system',
@@ -572,7 +612,6 @@ function setupMatetermWS() {
     };
     const html = renderMatetermMessage(m);
     if (!html) return;
-    const streamEl = el('#mt-stream');
     const wasAtBottom = streamEl.scrollTop + streamEl.clientHeight >= streamEl.scrollHeight - 50;
     if (streamEl.querySelector('.mt-empty')) streamEl.innerHTML = '';
     streamEl.insertAdjacentHTML('beforeend', html);

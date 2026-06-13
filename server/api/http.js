@@ -320,11 +320,11 @@ function buildRouter() {
   // [需求@2026-06-12 §9 mateTerm] 直连模式 — user 直接对 instance 说话,无 thread。
   //   marker 不触发后端 side effect(显示给前端做灰色提示);消息持久化挂 instance (direct_target)。
   r.post('/instances/:id/direct-message', (req, res) => {
-    const { text } = req.body || {};
+    const { text, clientMessageId } = req.body || {};
     if (typeof text !== 'string' || !text.length) return res.status(400).json({ error: 'text required' });
     try {
-      const inst = spawnManager.sendDirectToInstance(req.params.id, text);
-      res.json({ ok: true, instance: inst.snapshot(), mode: 'direct' });
+      const inst = spawnManager.sendDirectToInstance(req.params.id, text, { clientMessageId });
+      res.json({ ok: true, instance: inst.snapshot(), mode: 'direct', clientMessageId });
     } catch (e) {
       const code = /not found/i.test(e.message) ? 404
                  : /busy|spawning|dead/i.test(e.message) ? 409 : 400;
@@ -483,7 +483,7 @@ function buildRouter() {
   });
 
   r.post('/threads/:slug/message', requireProjectId, (req, res) => {
-    const { text, targetInstance } = req.body || {};
+    const { text, targetInstance, clientMessageId } = req.body || {};
     if (typeof text !== 'string' || !text.length) return res.status(400).json({ error: 'text required' });
     try {
       // [需求@2026-06-12 §9.2] mateTerm 干预模式:targetInstance 指定 → 走 sendToThread 的指定路径
@@ -494,8 +494,9 @@ function buildRouter() {
           threadSlug: req.params.slug,
           text,
           targetInstance,
+          clientMessageId,
         });
-        return res.json({ ok: true, instance: inst.snapshot(), routedTo: inst.role.name, mode: 'intervention' });
+        return res.json({ ok: true, instance: inst.snapshot(), routedTo: inst.role.name, mode: 'intervention', clientMessageId });
       }
       // [需求@2026-06-12 §6.2 Gap 1] 默认路由:依据 last_questioner_role_type(谁问送回谁)
       //   - has_pending_question 且 last_questioner_role_type='orchestrator' → 送给 H
@@ -518,8 +519,9 @@ function buildRouter() {
         threadSlug: req.params.slug,
         text,
         roleType,
+        clientMessageId,
       });
-      res.json({ ok: true, instance: inst.snapshot(), routedTo: roleType });
+      res.json({ ok: true, instance: inst.snapshot(), routedTo: roleType, clientMessageId });
     } catch (e) {
       res.status(400).json({ error: e.message });
     }
