@@ -35,7 +35,7 @@
 const { spawn, execSync } = require('node:child_process');
 const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
-const { StreamParser } = require('./streamParser');
+const { StreamParser, isResult, isUserEcho, isSystemInit } = require('./streamParser');
 
 function buildUserMessage(text) {
   return {
@@ -243,25 +243,19 @@ class RoleInstance {
   }
 
   _handleEvent(eventType, raw) {
-    if (eventType === 'system/init') {
-      // session_id is reported here — overrides the preallocated one
+    // [arch-debt §14 ✅] 不再 hardcode eventType 字符串,统一走 streamParser 谓词
+    if (isSystemInit(eventType)) {
       this.sessionId = raw.session_id;
       // [需求@2026-06-12 Phase 2E §5] 抓 claude 自报的当前模型
-      //   (system/init payload 含 model 字段,如 'claude-opus-4-8' / 'claude-haiku-4-5')
       if (raw.model && this.currentModel !== raw.model) {
         this.currentModel = raw.model;
       }
-      // 顺便记录其他可能有用的元数据
       if (raw.claude_code_version) this.claudeCodeVersion = raw.claude_code_version;
       this._setStatus('idle');
-    } else if (eventType === 'user') {
-      // stdin echo — confirms our message was consumed (we go busy)
+    } else if (isUserEcho(eventType)) {
       this._setStatus('busy');
-    } else if (eventType.startsWith('result')) {
+    } else if (isResult(eventType)) {
       // terminal of this turn — back to idle (or surface error)
-      // [bug@2026-06-13] streamParser 把 type+subtype 拼成 'result/success' / 'result/error',
-      //   原代码 `eventType === 'result'` 永远不匹配 → status 永久卡 busy。
-      //   SpawnManager._wireListeners 那边已经用 startsWith,这里漏改。
       const isErr = raw.is_error === true;
       this._emit(isErr ? 'turn_error' : 'turn_done', raw);
       this._setStatus('idle');

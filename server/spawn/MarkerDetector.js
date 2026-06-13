@@ -25,6 +25,11 @@ const HANDOFF_RE = /<mate:handoff\s+target="([^"]+)"(?:\s+reason="(.*?)")?\s*\/>
 const DONE_RE = /<mate:done(?:\s+summary="(.*?)")?\s*\/>/is;
 const BLOCKED_RE = /<mate:blocked\s+question="(.*?)"(?:\s+severity="([^"]*)")?\s*\/>/is;
 
+// [arch-debt §13] 失败可观测性 — 这个 looser 正则用于"看起来像 marker 但 parse 失败"
+//   的判断。SpawnManager 在 detect() 返 [] 但 looksLikeMarker() 返 true 时 emit
+//   'marker.malformed' event,让 user 在 dashboard 看见 — 不再 silent fail。
+const LOOSE_MARKER_RE = /<mate:(handoff|done|blocked)\b/i;
+
 const MarkerDetector = {
   /**
    * Parse an assistant text for mate markers.
@@ -45,6 +50,17 @@ const MarkerDetector = {
     if (b) found.push({ kind: 'blocked', question: b[1], severity: b[2] || 'mid' });
 
     return found;
+  },
+
+  /**
+   * [arch-debt §13] 看起来像有 marker 的意图(粗判)。
+   * 用于"detect 返 [] 但文本含 <mate:* 子串"的 malformed 检测。
+   *
+   * @returns {boolean}
+   */
+  looksLikeMarker(text) {
+    if (!text || typeof text !== 'string') return false;
+    return LOOSE_MARKER_RE.test(text);
   },
 
   /**

@@ -74,6 +74,31 @@ function isResultError(ev) {
   return ev?.type === 'result' && ev.is_error === true;
 }
 
+// [arch-debt §14 ✅ 2026-06-13] eventType 谓词中心化 — 所有 caller 必须用这些函数,
+//   绝不允许在别处自己写 `eventType === 'result'` / `=== 'rate_limit_event'` 等。
+//   原因:streamParser 把 type+subtype 拼成 'result/success' 等,过去
+//   RoleInstance.js 用了 `=== 'result'` 不匹配 → status 永久卡 busy(Bug 1)。
+//
+// 这里集中维护 mate 关心的所有 eventType 谓词,新增 event type 时只改这里。
+function isResult(eventType) {
+  return typeof eventType === 'string' && eventType.startsWith('result');
+}
+function isAssistantFinal(eventType) {
+  return eventType === 'assistant';
+}
+function isSystemInit(eventType) {
+  return eventType === 'system/init';
+}
+function isStreamPartial(eventType) {
+  return eventType === 'stream_event';
+}
+function isRateLimitEvent(eventType) {
+  return eventType === 'rate_limit_event';
+}
+function isUserEcho(eventType) {
+  return eventType === 'user';
+}
+
 // Helper: extract assistant text from an `assistant` event.
 function extractAssistantText(ev) {
   if (ev?.type !== 'assistant' || !ev.message || !Array.isArray(ev.message.content)) return '';
@@ -119,6 +144,13 @@ function extractTextDelta(ev) {
 module.exports = {
   StreamParser,
   isResultError,
+  // [arch-debt §14] eventType 谓词中心化
+  isResult,
+  isAssistantFinal,
+  isSystemInit,
+  isStreamPartial,
+  isRateLimitEvent,
+  isUserEcho,
   extractAssistantText,
   extractToolUses,
   extractToolResults,

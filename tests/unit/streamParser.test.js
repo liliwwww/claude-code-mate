@@ -2,7 +2,8 @@
 //   覆盖:完整行 / 跨 chunk / 多事件单 chunk / 畸形 JSON / 超大行防御
 
 const { describe, it, expect } = require('../_framework');
-const { StreamParser, isResultError, extractAssistantText, extractToolUses, extractTextDelta } = require('../../server/spawn/streamParser');
+const { StreamParser, isResultError, extractAssistantText, extractToolUses, extractTextDelta,
+  isResult, isAssistantFinal, isSystemInit, isStreamPartial, isRateLimitEvent, isUserEcho } = require('../../server/spawn/streamParser');
 
 function makeParser() {
   const events = [];
@@ -112,5 +113,49 @@ describe('StreamParser helpers', () => {
   it('extractTextDelta returns null for non-delta stream events', () => {
     expect(extractTextDelta({ type: 'stream_event', event: { type: 'message_start' } })).toBeNull();
     expect(extractTextDelta({ type: 'assistant' })).toBeNull();
+  });
+});
+
+// [arch-debt §14 ✅ 2026-06-13] eventType 谓词中心化
+describe('eventType predicates (arch-debt §14)', () => {
+  it('isResult matches "result", "result/success", "result/error"', () => {
+    expect(isResult('result')).toBe(true);
+    expect(isResult('result/success')).toBe(true);
+    expect(isResult('result/error')).toBe(true);
+    expect(isResult('result/anything-future')).toBe(true);
+    expect(isResult('not-result')).toBe(false);
+    expect(isResult('assistant')).toBe(false);
+    expect(isResult('')).toBe(false);
+    expect(isResult(null)).toBe(false);
+    expect(isResult(undefined)).toBe(false);
+  });
+
+  it('isAssistantFinal only matches exact "assistant"', () => {
+    expect(isAssistantFinal('assistant')).toBe(true);
+    expect(isAssistantFinal('assistant/x')).toBe(false);
+    expect(isAssistantFinal('user')).toBe(false);
+  });
+
+  it('isSystemInit only matches "system/init"', () => {
+    expect(isSystemInit('system/init')).toBe(true);
+    expect(isSystemInit('system/status')).toBe(false);
+    expect(isSystemInit('init')).toBe(false);
+  });
+
+  it('isStreamPartial only matches "stream_event"', () => {
+    expect(isStreamPartial('stream_event')).toBe(true);
+    expect(isStreamPartial('stream')).toBe(false);
+    expect(isStreamPartial('event')).toBe(false);
+  });
+
+  it('isRateLimitEvent only matches "rate_limit_event"', () => {
+    expect(isRateLimitEvent('rate_limit_event')).toBe(true);
+    expect(isRateLimitEvent('rate_limit')).toBe(false);
+  });
+
+  it('isUserEcho only matches "user"', () => {
+    expect(isUserEcho('user')).toBe(true);
+    expect(isUserEcho('user_to_role')).toBe(false);
+    expect(isUserEcho('User')).toBe(false);
   });
 });

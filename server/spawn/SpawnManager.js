@@ -46,6 +46,8 @@ const ThreadStore = require('../threads/ThreadStore');
 const ThreadHooks = require('../system-agent/ThreadHooks');
 const MarkerDetector = require('./MarkerDetector');
 const QuotaState = require('../quota/QuotaState');
+// [arch-debt §14] eventType 谓词集中化
+const { isResult, isRateLimitEvent, isUserEcho, isAssistantFinal, isStreamPartial } = require('./streamParser');
 const EventStore = require('../events/EventStore');
 const ScanRecycler = require('./ScanRecycler');
 const PoolAllocator = require('./PoolAllocator');
@@ -174,23 +176,24 @@ class SpawnManager {
     inst.on('event', ({ eventType, raw }) => {
       // [需求@2026-06-12 Phase 2E §6 §7] rate_limit_event → QuotaState
       //   claude 在每条 user 消息处理时会推送 5h + 7d 双轨,QuotaState 维护全局状态
-      if (eventType === 'rate_limit_event') {
+      // [arch-debt §14 ✅] 不再 hardcode eventType
+      if (isRateLimitEvent(eventType)) {
         try { QuotaState.ingest(raw); } catch (e) { console.warn(`[SpawnManager] QuotaState.ingest failed: ${e.message}`); }
       }
 
       const direction =
-        eventType === 'user' ? 'user_to_role' :
-        eventType === 'assistant' ? 'role_to_user' :
+        isUserEcho(eventType) ? 'user_to_role' :
+        isAssistantFinal(eventType) ? 'role_to_user' :
         'system';
 
       // For high-frequency partial deltas, skip persistence (only final assistant + result)
-      const skip = eventType === 'stream_event';
+      const skip = isStreamPartial(eventType);
       // [需求@2026-06-12 §9] mateTerm 直连模式:消息挂 instance,不挂 thread。
       //   `inst._directMode` 在 sendDirectToInstance 时置 true,result 事件后清除。
       const isDirect = !!inst._directMode;
       // [需求@2026-06-12 Phase 2E §12] user-direction event 拿出 FIFO 队首的 clientMessageId
       let attachClientId = null;
-      if (eventType === 'user' && inst._pendingClientIds?.length) {
+      if (isUserEcho(eventType) && inst._pendingClientIds?.length) {
         attachClientId = inst._pendingClientIds.shift();
       }
       let serverMessageId = null;
@@ -217,7 +220,7 @@ class SpawnManager {
       // [需求@2026-06-12 §6.2 Gap 1] 在 thread.metadata 暂存 _current_role_type
       //   让 ThreadHooks 知道是哪个角色 type 在说话(用于 last_questioner_role_type)
       // 直连模式不写 thread metadata(没有 thread 可写)
-      if (!isDirect && inst.threadSlug && eventType === 'assistant') {
+      if (!isDirect && inst.threadSlug && isAssistantFinal(eventType)) {
         try {
           const cur = ThreadStore.get(inst.projectId, inst.threadSlug);
           if (cur) {
@@ -250,7 +253,7 @@ class SpawnManager {
       //   不是 'result'。判断要 startsWith,不是 ===。
       // [需求@2026-06-12 §9] 直连模式:不跑 ThreadHooks,不跑 _handleMarkers — 因为没 thread 可挂。
       //   marker 由前端在 assistant 文本里识别后**灰色提示**显示,不触发 side effect。
-      if (eventType.startsWith('result') && raw.is_error !== true) {
+      if (isResult(eventType) && raw.is_error !== true) {
         if (!isDirect && inst.threadSlug) {
           setImmediate(() => {
             ThreadHooks.onResultEvent({
@@ -265,6 +268,25 @@ class SpawnManager {
           const markers = MarkerDetector.detect(assistantText);
           if (markers.length) {
             setImmediate(() => this._handleMarkers(inst, markers));
+          } else if (MarkerDetector.looksLikeMarker(assistantText)) {
+            // [arch-debt §13 ✅] 看起来有 marker 意图但 parse 失败 → 显式 emit 失败信号
+            //   不再 silent fail(2026-06-13 H 在 reason 内嵌 JSON " 撞过这个)
+            const hint = 'marker pattern detected but parser returned 0 — likely "/<unescaped chars in reason/summary/question';
+            console.warn(`[SpawnManager] marker.malformed from ${inst.id}: ${hint}`);
+            bus.publish('marker.malformed', {
+              instanceId: inst.id,
+              displayName: inst.displayName,
+              roleName: inst.role.name,
+              projectId: inst.projectId,
+              threadSlug: inst.threadSlug,
+              textPreview: assistantText.slice(0, 800),
+              hint,
+              ts: Date.now(),
+            });
+            try {
+              recordEvent('marker.malformed', { textPreview: assistantText.slice(0, 800), hint },
+                { projectId: inst.projectId, threadSlug: inst.threadSlug, instanceId: inst.id });
+            } catch {}
           }
         }
         // result 后清除直连标志(若有);下一轮 user 再发才会再置位
