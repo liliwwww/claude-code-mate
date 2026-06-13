@@ -678,3 +678,60 @@ main { flex: 1; display: flex; min-height: 0; }
   cursor: not-allowed;
   background: var(--bg-card);
 }
+
+/* ============================================================ */
+/* [需求@2026-06-14] dashboard tab 5 — 日志流                    */
+/* ============================================================ */
+.logs-toolbar {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  padding: 8px 4px; border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--text-secondary);
+}
+.logs-toolbar label { display: inline-flex; align-items: center; gap: 4px; }
+.logs-toolbar select, .logs-toolbar input[type=text] {
+  background: var(--bg-input); color: var(--text-primary);
+  border: 1px solid var(--border-light); border-radius: 3px;
+  padding: 3px 6px; font-size: 12px;
+}
+.logs-toolbar button {
+  background: var(--bg-card); color: var(--text-primary);
+  border: 1px solid var(--border-light); border-radius: 3px;
+  padding: 3px 10px; font-size: 12px; cursor: pointer;
+}
+#logs-list {
+  font-family: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
+  font-size: 11px; line-height: 1.5;
+}
+.logs-empty { padding: 30px; text-align: center; color: var(--text-muted); }
+.logs-row { border-top: 1px solid var(--border); padding: 0; }
+.logs-row:first-child { border-top: none; }
+.logs-row > summary {
+  display: grid;
+  grid-template-columns: 88px 130px 130px 140px 1fr;
+  gap: 10px; padding: 4px 8px; cursor: pointer;
+  align-items: center; list-style: none;
+}
+.logs-row > summary::-webkit-details-marker { display: none; }
+.logs-row > summary::before {
+  content: '▸'; color: var(--text-muted); width: 10px; display: inline-block;
+  transition: transform 0.15s;
+}
+.logs-row[open] > summary::before { transform: rotate(90deg); }
+.logs-row:hover > summary { background: var(--bg-card-hover); }
+.logs-row .logs-ts { color: var(--text-muted); }
+.logs-row .logs-inst { color: var(--accent); font-weight: 600; }
+.logs-row .logs-et { color: var(--accent-yellow); }
+.logs-row .logs-thread { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-row .logs-sum { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-row .logs-raw {
+  margin: 6px 0 8px 24px; padding: 8px 10px;
+  background: var(--bg-code); border-radius: 3px;
+  font-size: 11px; white-space: pre-wrap; word-break: break-word;
+  max-height: 500px; overflow-y: auto;
+}
+/* eventType 着色:result/error 红,result/success 绿,system 蓝,stream_event 灰 */
+.logs-et-result_error .logs-et, .logs-et-system_error .logs-et { color: var(--accent-red); }
+.logs-et-result_success .logs-et { color: var(--accent-green); }
+.logs-et-system_init .logs-et, .logs-et-system_api_retry .logs-et { color: var(--accent); }
+.logs-et-stream_event .logs-et { color: var(--text-muted); }
+.logs-et-rate_limit_event .logs-et { color: var(--accent-yellow); }

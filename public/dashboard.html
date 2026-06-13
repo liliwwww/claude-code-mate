@@ -32,6 +32,8 @@
       <button type="button" class="tab-btn" data-tab="queue">任务队列</button>
       <button type="button" class="tab-btn" data-tab="dispatch">H 派工时序</button>
       <button type="button" class="tab-btn" data-tab="control">对话控制</button>
+      <!-- [需求@2026-06-14] tab 5:全局日志流 -->
+      <button type="button" class="tab-btn" data-tab="logs">日志流</button>
     </div>
 
     <div class="tab-content" data-tab="terminals">
@@ -60,6 +62,41 @@
         </label>
       </div>
       <div id="dispatch-list"></div>
+    </div>
+
+    <!-- [需求@2026-06-14] tab 5 — 全局日志流(所有 claude 终端 stream 事件聚合)-->
+    <div class="tab-content" data-tab="logs" hidden>
+      <div class="logs-toolbar">
+        <label>实例:<select id="logs-instance"><option value="">所有</option></select></label>
+        <label>线索:<select id="logs-thread"><option value="">所有</option></select></label>
+        <label>类型:
+          <select id="logs-eventtype">
+            <option value="all">所有</option>
+            <option value="assistant">assistant</option>
+            <option value="user">user (含 tool_result)</option>
+            <option value="result">result/* (turn 结束)</option>
+            <option value="system">system/* (init / status / etc)</option>
+            <option value="stream_event">stream_event (token 增量)</option>
+            <option value="rate_limit_event">rate_limit_event</option>
+          </select>
+        </label>
+        <label>窗口:
+          <select id="logs-window">
+            <option value="3600000">最近 1h</option>
+            <option value="21600000">最近 6h</option>
+            <option value="86400000" selected>最近 24h</option>
+            <option value="604800000">最近 7d</option>
+            <option value="0">全部</option>
+          </select>
+        </label>
+        <label style="flex:1">搜索:
+          <input id="logs-search" type="text" placeholder="文本/工具名/session id..." style="width:100%" />
+        </label>
+        <label><input type="checkbox" id="logs-live" checked /> 实时</label>
+        <button id="logs-refresh" type="button">⟳</button>
+        <span id="logs-count" class="muted" style="font-size:11px"></span>
+      </div>
+      <div id="logs-list"></div>
     </div>
 
     <!-- [需求@2026-06-12 §9 mateTerm] tab 4 — 直接对指定终端说话 -->

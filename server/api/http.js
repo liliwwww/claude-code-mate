@@ -392,6 +392,66 @@ function buildRouter() {
     })));
   });
 
+  // [需求@2026-06-14] 日志流 — dashboard tab 5
+  //   全局多维度过滤 messages 表(SSOT 所有 claude stream 事件)。
+  //   - instanceId / projectId / threadSlug / eventType / since
+  //   - eventType 支持 'assistant' / 'result' (前缀,匹配 result/success+error) / 'system' / 'all'
+  //   - 默认 limit 500,max 2000
+  //   - 默认按 ts DESC(最新在前),让前端 prepend 即可
+  r.get('/log-stream', (req, res) => {
+    const conds = [];
+    const params = [];
+    if (req.query.instanceId) { conds.push('instance_id = ?'); params.push(req.query.instanceId); }
+    if (req.query.projectId) {
+      // messages 没直接 projectId 字段,通过 instance_id join 在 role_instances
+      const ids = db.prepare(`SELECT id FROM role_instances WHERE project_id = ?`).all(parseInt(req.query.projectId, 10)).map((r) => r.id);
+      if (!ids.length) return res.json([]);
+      conds.push(`instance_id IN (${ids.map(() => '?').join(',')})`);
+      params.push(...ids);
+    }
+    if (req.query.threadSlug) {
+      // thread 维度:thread_slug 直接或 direct_target 关联同 thread 实例
+      conds.push('thread_slug = ?');
+      params.push(req.query.threadSlug);
+    }
+    if (req.query.eventType && req.query.eventType !== 'all') {
+      const et = req.query.eventType;
+      // 前缀匹配:'result' → matches result/success + result/error;'system' → system/*
+      if (et === 'result' || et === 'system') {
+        conds.push('event_type LIKE ?');
+        params.push(et + '%');
+      } else {
+        conds.push('event_type = ?');
+        params.push(et);
+      }
+    }
+    if (req.query.since) {
+      conds.push('ts > ?');
+      params.push(parseInt(req.query.since, 10));
+    }
+    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
+    const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+    const rows = db.prepare(`
+      SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json, thread_slug, direct_target
+      FROM messages
+      ${where}
+      ORDER BY ts DESC, id DESC
+      LIMIT ?
+    `).all(...params, limit);
+    res.json(rows.map((m) => ({
+      id: m.id,
+      instanceId: m.instance_id,
+      roleName: m.role_name,
+      direction: m.direction,
+      claudeSessionId: m.claude_session_id,
+      ts: m.ts,
+      eventType: m.event_type,
+      threadSlug: m.thread_slug,
+      directTarget: m.direct_target,
+      payload: JSON.parse(m.payload_json),
+    })));
+  });
+
   r.get('/instances/:id/history', (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
     const rows = db.prepare(`

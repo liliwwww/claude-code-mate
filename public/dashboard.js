@@ -751,12 +751,14 @@ async function refreshActiveTab() {
   else if (currentTab === 'queue') await refreshQueueList();
   else if (currentTab === 'dispatch') await refreshDispatchHistory();
   else if (currentTab === 'control') await refreshMatetermInstances();  // 只刷实例下拉,不重拉历史(避免打断对话)
+  else if (currentTab === 'logs') await refreshLogStream();
   updateLastRefresh();
 }
 
 function switchTab(target) {
-  if (!['terminals', 'queue', 'dispatch', 'control'].includes(target)) target = 'terminals';
+  if (!['terminals', 'queue', 'dispatch', 'control', 'logs'].includes(target)) target = 'terminals';
   const isEnteringControl = currentTab !== 'control' && target === 'control';
+  const isEnteringLogs = currentTab !== 'logs' && target === 'logs';
   currentTab = target;
   document.querySelectorAll('#dashboard-tabs .tab-btn').forEach((t) => {
     t.classList.toggle('active', t.dataset.tab === target);
@@ -770,6 +772,12 @@ function switchTab(target) {
   // 进入 control tab → full init(实例 + thread + 历史)
   if (isEnteringControl) {
     refreshControl();
+    updateLastRefresh();
+    return;
+  }
+  // 进入 logs tab → 拉一次 + 装好下拉
+  if (isEnteringLogs) {
+    initLogStreamTab();
     updateLastRefresh();
     return;
   }
@@ -826,6 +834,217 @@ function wireUI() {
   });
 }
 
+// ============================== Tab 5: log-stream ==============================
+// [需求@2026-06-14] 全局日志流 — 所有 claude 终端 stream 事件聚合
+//   数据源:GET /api/log-stream 历史快照 + WS instance.event 实时追加
+//   过滤:实例 / 线索 / 类型 / 时间窗 / 文本搜索
+//   每行:ts · instance · eventType · summary(短)→ 点击 <details> 展开 raw
+
+const LOG_STATE = {
+  inited: false,
+  rows: [],          // 当前显示的事件(已被 filter 过的)
+  maxRows: 1000,     // 内存里最多保留多少行
+  filters: { instanceId: '', threadSlug: '', eventType: 'all', window: '86400000', search: '', live: true },
+};
+
+async function initLogStreamTab() {
+  if (!LOG_STATE.inited) {
+    LOG_STATE.inited = true;
+    wireLogStreamUI();
+    setupLogStreamWS();
+  }
+  await populateLogStreamDropdowns();
+  await refreshLogStream();
+}
+
+async function populateLogStreamDropdowns() {
+  // 实例下拉:从 /api/instances/all?includeDead=1 拉
+  try {
+    const r = await fetch('/api/instances/all?includeDead=1');
+    const insts = await r.json();
+    const sel = el('#logs-instance');
+    const cur = LOG_STATE.filters.instanceId;
+    sel.innerHTML = '<option value="">所有实例</option>' + insts
+      .sort((a, b) => (a.displayName || a.id).localeCompare(b.displayName || b.id))
+      .map((i) => `<option value="${escapeHtml(i.id)}">${escapeHtml(i.displayName || i.id)} (${escapeHtml(i.projectName || '?')})</option>`)
+      .join('');
+    sel.value = cur;
+  } catch (e) {
+    console.warn('[logs] populate instances failed', e);
+  }
+  // 线索下拉
+  try {
+    const r = await fetch('/api/threads/all?includeClosed=1');
+    const threads = await r.json();
+    const sel = el('#logs-thread');
+    const cur = LOG_STATE.filters.threadSlug;
+    sel.innerHTML = '<option value="">所有线索</option>' + threads
+      .map((t) => `<option value="${escapeHtml(t.slug)}">${escapeHtml(t.title || t.slug)} · ${escapeHtml(t.projectName || '?')}</option>`)
+      .join('');
+    sel.value = cur;
+  } catch (e) {
+    console.warn('[logs] populate threads failed', e);
+  }
+}
+
+function readLogFilters() {
+  LOG_STATE.filters.instanceId = el('#logs-instance').value || '';
+  LOG_STATE.filters.threadSlug = el('#logs-thread').value || '';
+  LOG_STATE.filters.eventType = el('#logs-eventtype').value || 'all';
+  LOG_STATE.filters.window = el('#logs-window').value || '86400000';
+  LOG_STATE.filters.search = el('#logs-search').value || '';
+  LOG_STATE.filters.live = el('#logs-live').checked;
+}
+
+async function refreshLogStream() {
+  readLogFilters();
+  const params = ['limit=500'];
+  if (LOG_STATE.filters.instanceId) params.push('instanceId=' + encodeURIComponent(LOG_STATE.filters.instanceId));
+  if (LOG_STATE.filters.threadSlug) params.push('threadSlug=' + encodeURIComponent(LOG_STATE.filters.threadSlug));
+  if (LOG_STATE.filters.eventType !== 'all') params.push('eventType=' + encodeURIComponent(LOG_STATE.filters.eventType));
+  if (LOG_STATE.filters.window !== '0') params.push('since=' + (Date.now() - parseInt(LOG_STATE.filters.window, 10)));
+  try {
+    const r = await fetch('/api/log-stream?' + params.join('&'));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const rows = await r.json();
+    LOG_STATE.rows = rows;
+    renderLogStream();
+  } catch (e) {
+    el('#logs-list').innerHTML = `<div class="logs-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderLogStream() {
+  const listEl = el('#logs-list');
+  const search = LOG_STATE.filters.search.toLowerCase().trim();
+  let rows = LOG_STATE.rows;
+  if (search) {
+    rows = rows.filter((m) => {
+      const json = JSON.stringify(m.payload || {}).toLowerCase();
+      return json.includes(search) || (m.instanceId || '').toLowerCase().includes(search) || (m.eventType || '').toLowerCase().includes(search);
+    });
+  }
+  el('#logs-count').textContent = `${rows.length} 条${search ? ' (搜索后)' : ''} · ${LOG_STATE.rows.length} 总缓存`;
+  if (!rows.length) {
+    listEl.innerHTML = `<div class="logs-empty">无匹配事件</div>`;
+    return;
+  }
+  listEl.innerHTML = rows.map(makeLogRowHtml).join('');
+}
+
+function makeLogRowHtml(m) {
+  const ts = new Date(m.ts);
+  const tsStr = `${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}:${String(ts.getSeconds()).padStart(2,'0')}.${String(ts.getMilliseconds()).padStart(3,'0')}`;
+  const summary = logRowSummary(m);
+  const etCls = (m.eventType || '').replace(/[\/.]/g, '_');
+  const payloadStr = JSON.stringify(m.payload, null, 2);
+  // 不全部把 payload 渲到 DOM(太大),只显前 8KB,details 展开时按 data-* 取
+  const preview = payloadStr.length > 8000 ? payloadStr.slice(0, 8000) + `\n... (+${payloadStr.length - 8000} 字符)` : payloadStr;
+  return `
+    <details class="logs-row logs-et-${escapeHtml(etCls)}">
+      <summary>
+        <span class="logs-ts">${tsStr}</span>
+        <span class="logs-inst" title="${escapeHtml(m.instanceId || '')}">${escapeHtml((m.instanceId || '').replace(/^mate-/, ''))}</span>
+        <span class="logs-et">${escapeHtml(m.eventType || '')}</span>
+        <span class="logs-thread">${escapeHtml(m.threadSlug || (m.directTarget ? '→direct' : '-'))}</span>
+        <span class="logs-sum">${escapeHtml(summary)}</span>
+      </summary>
+      <pre class="logs-raw">${escapeHtml(preview)}</pre>
+    </details>
+  `;
+}
+
+function logRowSummary(m) {
+  const p = m.payload || {};
+  if (m.eventType === 'system/init') return `session ${(p.session_id || '?').slice(0, 8)}… model ${p.model || '?'}`;
+  if (m.eventType === 'assistant') {
+    const content = p.message?.content || [];
+    const tools = content.filter((c) => c.type === 'tool_use');
+    const texts = content.filter((c) => c.type === 'text').map((c) => c.text).join(' ').trim();
+    if (tools.length) return `🔧 ${tools.map((t) => t.name).join(', ')}`;
+    if (texts) return texts.length > 100 ? texts.slice(0, 100) + '…' : texts;
+    return '(empty assistant)';
+  }
+  if (m.eventType === 'user') {
+    const content = p.message?.content || [];
+    const trs = Array.isArray(content) ? content.filter((c) => c.type === 'tool_result') : [];
+    if (trs.length) return `↩ tool_result × ${trs.length}${trs.some((tr) => tr.is_error) ? ' (含 ERROR)' : ''}`;
+    const t = Array.isArray(content) ? content.filter((c) => c.type === 'text').map((c) => c.text).join(' ') : (typeof content === 'string' ? content : '');
+    return t.length > 100 ? t.slice(0, 100) + '…' : (t || '(empty user)');
+  }
+  if (m.eventType?.startsWith('result')) {
+    const ok = p.is_error !== true;
+    return ok ? `✓ cost $${(p.total_cost_usd || 0).toFixed(4)} · ${p.duration_ms || 0}ms · ${p.num_turns || 0} turns` : `✗ ${p.api_error_status || ''} ${(p.result || '').slice(0, 60)}`;
+  }
+  if (m.eventType === 'stream_event') {
+    const sub = p.event?.type || '?';
+    if (sub === 'content_block_delta') {
+      const dt = p.event?.delta?.text;
+      if (dt) return `Δ ${dt.length > 80 ? dt.slice(0, 80) + '…' : dt}`;
+    }
+    return sub;
+  }
+  if (m.eventType === 'rate_limit_event') return `rate: ${JSON.stringify(p).slice(0, 120)}`;
+  return JSON.stringify(p).slice(0, 120);
+}
+
+function wireLogStreamUI() {
+  // filter changes → reload from server(因服务器端过滤);search 走客户端
+  ['#logs-instance', '#logs-thread', '#logs-eventtype', '#logs-window'].forEach((sel) => {
+    el(sel).addEventListener('change', () => refreshLogStream());
+  });
+  el('#logs-search').addEventListener('input', () => { readLogFilters(); renderLogStream(); });
+  el('#logs-live').addEventListener('change', () => readLogFilters());
+  el('#logs-refresh').addEventListener('click', () => refreshLogStream());
+}
+
+function setupLogStreamWS() {
+  if (!window.MateWS) return;
+  window.MateWS.subscribe('instance.event', (msg) => {
+    if (currentTab !== 'logs') return;
+    if (!LOG_STATE.filters.live) return;
+    const p = msg.payload;
+    if (!p) return;
+    // 应用服务端等价的过滤(client 侧也滤一次,因为 WS 推送是全量)
+    if (LOG_STATE.filters.instanceId && p.instanceId !== LOG_STATE.filters.instanceId) return;
+    if (LOG_STATE.filters.threadSlug && p.threadSlug !== LOG_STATE.filters.threadSlug) return;
+    if (LOG_STATE.filters.eventType !== 'all') {
+      const et = LOG_STATE.filters.eventType;
+      if (et === 'result' || et === 'system') {
+        if (!p.eventType?.startsWith(et)) return;
+      } else if (p.eventType !== et) return;
+    }
+    // 添加到内存数组的开头,溢出截断
+    const m = {
+      id: p.serverMessageId || ('ws-' + Date.now()),
+      instanceId: p.instanceId,
+      roleName: p.roleName,
+      direction: null,
+      claudeSessionId: null,
+      ts: p.ts || Date.now(),
+      eventType: p.eventType,
+      threadSlug: p.threadSlug,
+      directTarget: p.directTarget,
+      payload: p.raw,
+    };
+    LOG_STATE.rows.unshift(m);
+    if (LOG_STATE.rows.length > LOG_STATE.maxRows) LOG_STATE.rows.length = LOG_STATE.maxRows;
+    // 只渲染新行,prepend(避免全量重画)
+    const listEl = el('#logs-list');
+    if (listEl.querySelector('.logs-empty')) listEl.innerHTML = '';
+    // 应用搜索 filter
+    const search = LOG_STATE.filters.search.toLowerCase().trim();
+    if (search) {
+      const json = JSON.stringify(m.payload || {}).toLowerCase();
+      if (!json.includes(search) && !(m.instanceId || '').toLowerCase().includes(search) && !(m.eventType || '').toLowerCase().includes(search)) return;
+    }
+    const wasAtTop = listEl.scrollTop < 30;
+    listEl.insertAdjacentHTML('afterbegin', makeLogRowHtml(m));
+    el('#logs-count').textContent = `${LOG_STATE.rows.length} 条 · 实时`;
+    if (wasAtTop) listEl.scrollTop = 0;
+  });
+}
+
 // ============================== Bootstrap ==============================
 
 (function init() {
@@ -838,4 +1057,6 @@ function wireUI() {
   if (window.RuntimeChip) window.RuntimeChip.init({ projectId: null });
   // 首次 tab=control 时也要初始化下拉
   if (currentTab === 'control') refreshControl();
+  // 首次 tab=logs 时也要初始化
+  if (currentTab === 'logs') initLogStreamTab();
 })();
