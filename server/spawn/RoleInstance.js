@@ -257,8 +257,11 @@ class RoleInstance {
     } else if (eventType === 'user') {
       // stdin echo — confirms our message was consumed (we go busy)
       this._setStatus('busy');
-    } else if (eventType === 'result') {
+    } else if (eventType.startsWith('result')) {
       // terminal of this turn — back to idle (or surface error)
+      // [bug@2026-06-13] streamParser 把 type+subtype 拼成 'result/success' / 'result/error',
+      //   原代码 `eventType === 'result'` 永远不匹配 → status 永久卡 busy。
+      //   SpawnManager._wireListeners 那边已经用 startsWith,这里漏改。
       const isErr = raw.is_error === true;
       this._emit(isErr ? 'turn_error' : 'turn_done', raw);
       this._setStatus('idle');
