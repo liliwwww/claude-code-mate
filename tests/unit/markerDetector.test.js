@@ -2,7 +2,7 @@
 //   纯函数,零 IO,毫秒级。覆盖所有 marker 形态 + 边界情况。
 
 const { describe, it, expect } = require('../_framework');
-const M = require('../../server/system-agent/MarkerDetector');
+const M = require('../../server/spawn/MarkerDetector');
 
 describe('MarkerDetector.detect', () => {
   it('handoff with target + reason', () => {

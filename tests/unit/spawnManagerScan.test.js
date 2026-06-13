@@ -40,7 +40,7 @@ const tsPath = path.resolve(__dirname, '../../server/threads/ThreadStore.js');
 require.cache[tsPath] = { exports: { get: () => null, list: () => [], setStage: () => null, bindInstance: () => {}, touch: () => {} } };
 const thPath = path.resolve(__dirname, '../../server/system-agent/ThreadHooks.js');
 require.cache[thPath] = { exports: { onResultEvent: async () => null } };
-const mdPath = path.resolve(__dirname, '../../server/system-agent/MarkerDetector.js');
+const mdPath = path.resolve(__dirname, '../../server/spawn/MarkerDetector.js');
 require.cache[mdPath] = { exports: { detect: () => [] } };
 const qsPath = path.resolve(__dirname, '../../server/quota/QuotaState.js');
 require.cache[qsPath] = { exports: { ingest: () => null, isPaused: () => false } };

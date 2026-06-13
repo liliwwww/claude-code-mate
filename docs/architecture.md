@@ -63,18 +63,18 @@ Mate 不是新 agent,**不替代** R / H / execB / testC 任何一个角色的�
 ┌──────────────────────────────────────────────────────────────────┐
 │  L3 Business Hooks    server/system-agent/                      │
 │   - SystemAgent.js   — Haiku 短命 LLM runner(摘要/模板)         │
-│   - MarkerDetector.js — 正则解析 mate marker(纯函数)            │
 │   - ThreadHooks.js   — 自动摘要 / reply template / has_question  │
 │   - envCheck.js      — env 探针                                 │
 └──────────────────────────────────────────────────────────────────┘
                             ↑
 ┌──────────────────────────────────────────────────────────────────┐
 │  L2 Process Control   server/spawn/ + server/quota/             │
-│   - RoleInstance.js  — 单个 claude 子进程 lifecycle              │
-│   - SpawnManager.js  — 实例池 + marker dispatch + handoff 状态机 │
-│   - streamParser.js  — stdout NDJSON 解析(纯函数 + helpers)     │
-│   - PendingSends.js  — mate_pending_sends 表 helper             │
-│   - QuotaState.js    — 5h/7d quota 状态机 + setTimer + cron     │
+│   - RoleInstance.js   — 单个 claude 子进程 lifecycle             │
+│   - SpawnManager.js   — 实例池 + marker dispatch + handoff 状态机│
+│   - streamParser.js   — stdout NDJSON 解析(纯函数 + helpers)    │
+│   - MarkerDetector.js — 正则解析 <mate:...> marker(纯函数)      │
+│   - PendingSends.js   — mate_pending_sends 表 helper            │
+│   - QuotaState.js     — 5h/7d quota 状态机 + setTimer + cron    │
 └──────────────────────────────────────────────────────────────────┘
                             ↑
 ┌──────────────────────────────────────────────────────────────────┐
@@ -125,7 +125,8 @@ Mate 不是新 agent,**不替代** R / H / execB / testC 任何一个角色的�
 
 | 模块 | 责任 | 公共 API | 禁止 |
 |---|---|---|---|
-| `spawn/streamParser.js` | stdout NDJSON 解析 + 通用 helpers | `class StreamParser` + `extractAssistantText / isResultError / extractToolUses` | 不修改 raw event;不管业务(MarkerDetector 在 L3 不在这) |
+| `spawn/streamParser.js` | stdout NDJSON 解析 + 通用 helpers | `class StreamParser` + `extractAssistantText / isResultError / extractToolUses` | 不修改 raw event;不管业务(MarkerDetector 是同层但独立模块) |
+| `spawn/MarkerDetector.js` | 正则解析 `<mate:handoff/done/blocked />` marker(纯函数,无 IO) | `detect(text) → markers[]` | 不解释 marker 语义(SpawnManager 负责);新 marker 类型 先改本文档 |
 | `spawn/RoleInstance.js` | 单个 claude child 的 spawn / send / kill / event 暴露 | class `RoleInstance` + `spawn / sendUserText / kill / on(event)` | 不管池子;不发 bus 事件(SpawnManager 接管);不解析 marker |
 | `spawn/SpawnManager.js` | **实例池** + **marker dispatch** + **handoff 状态机** + **TTL/unstick/老化 scanner** + **clientMessageId FIFO** | 单例 + `spawnInstance / sendToThread / sendDirectToInstance / killInstance / restoreFromDisk / startTtlScanner` 等 | 不持久化业务实体(L1);**绝不**替 LLM 决策派工目标 |
 | `spawn/PendingSends.js` | `mate_pending_sends` 表薄包装 | `enqueue / listForTarget / remove / count*` | 纯 CRUD,不解释队列语义 |
@@ -136,7 +137,6 @@ Mate 不是新 agent,**不替代** R / H / execB / testC 任何一个角色的�
 | 模块 | 责任 | 公共 API | 禁止 |
 |---|---|---|---|
 | `system-agent/SystemAgent.js` | Haiku 短命 LLM 调用(标题摘要 / reply template / 黄灯判断) | `runStructured(prompt, schema, opts)` | 不替业务角色做决策;成本受控($ cap) |
-| `system-agent/MarkerDetector.js` | 正则解析 `<mate:handoff/done/blocked />` | `detect(text) → markers[]` | 纯函数,无 IO;新增 marker 类型先改本文档再加 |
 | `system-agent/ThreadHooks.js` | result event 后跑 SystemAgent 做 metadata 自动化 | `onResultEvent({ projectId, threadSlug, instanceId })` | 不调 SpawnManager;不持久化 message(只更 thread.metadata) |
 | `system-agent/envCheck.js` | env 探针(代理 / claude bin / DB) | `runAllChecks()` | 不阻塞 boot |
 

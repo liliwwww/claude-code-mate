@@ -1,7 +1,8 @@
 // ============================================================================
 // MODULE CONTRACT(架构 SSOT:docs/architecture.md §3 §4 §6)
 // ----------------------------------------------------------------------------
-// 层:L3 Business Hooks(位置存在争议,见 arch-debt §4 — 应该在 L2)
+// 层:L2 Process Control(2026-06-13 从 L3 system-agent/ 迁入 L2 spawn/,
+//   arch-debt §4 ✅;marker 解析是 stream-json 应用层,属 L2 不属 L3)
 // 责任:正则解析 <mate:handoff/done/blocked /> marker(纯函数)
 // 公共 API:detect(text) → markers[]
 // 允许依赖:无(纯)

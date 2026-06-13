@@ -17,7 +17,8 @@
 //   getInstance / listInstances
 // 允许依赖(自下而上):config / db / messageBus / RoleInstance / streamParser /
 //   roleCatalog / ThreadStore / ThreadHooks / MarkerDetector / QuotaState
-//   注:ThreadHooks/MarkerDetector 当前挂 L3 system-agent,见 arch-debt §4 §5
+//   注:ThreadHooks 当前挂 L3 system-agent,见 arch-debt §5(MarkerDetector
+//   2026-06-13 已迁入 L2 spawn/,arch-debt §4 ✅)
 // 禁止:
 //   - 替 LLM 决策(选哪个 instance、handoff target 写啥)
 //   - 写任何 file-based handoff(WORK_HANDOFF / doc/queue / doc/_dispatch)
@@ -43,7 +44,7 @@ const config = require('../config');
 const { db, recordMessage, recordEvent, stmts } = require('../db');
 const ThreadStore = require('../threads/ThreadStore');
 const ThreadHooks = require('../system-agent/ThreadHooks');
-const MarkerDetector = require('../system-agent/MarkerDetector');
+const MarkerDetector = require('./MarkerDetector');
 const QuotaState = require('../quota/QuotaState');
 
 class SpawnManager {
