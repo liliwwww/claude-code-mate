@@ -6,15 +6,15 @@ const M = require('../../server/spawn/MarkerDetector');
 
 describe('MarkerDetector.detect', () => {
   it('handoff with target + reason', () => {
-    const out = M.detect('queue 已 ready。\n<mate:handoff target="planA-H" reason="需求 queued" />');
+    const out = M.detect('queue 已 ready。\n<mate:handoff target="mate-H" reason="需求 queued" />');
     expect(out).toHaveLength(1);
-    expect(out[0]).toEqual({ kind: 'handoff', target: 'planA-H', reason: '需求 queued' });
+    expect(out[0]).toEqual({ kind: 'handoff', target: 'mate-H', reason: '需求 queued' });
   });
 
   it('handoff with target only (no reason)', () => {
-    const out = M.detect('<mate:handoff target="execB" />');
+    const out = M.detect('<mate:handoff target="mate-B" />');
     expect(out).toHaveLength(1);
-    expect(out[0]).toEqual({ kind: 'handoff', target: 'execB', reason: '' });
+    expect(out[0]).toEqual({ kind: 'handoff', target: 'mate-B', reason: '' });
   });
 
   it('done with summary', () => {
@@ -53,7 +53,7 @@ describe('MarkerDetector.detect', () => {
   });
 
   it('handoff + blocked in one message → both detected', () => {
-    const out = M.detect('<mate:handoff target="execB" /> <mate:blocked question="OS?" />');
+    const out = M.detect('<mate:handoff target="mate-B" /> <mate:blocked question="OS?" />');
     expect(out).toHaveLength(2);
   });
 
@@ -64,7 +64,7 @@ describe('MarkerDetector.detect', () => {
   });
 
   it('marker buried in middle of prose still detected', () => {
-    const txt = 'Step 1: 写 queue。\n<mate:handoff target="planA-H" />\nStep 2: 等编排。';
+    const txt = 'Step 1: 写 queue。\n<mate:handoff target="mate-H" />\nStep 2: 等编排。';
     const out = M.detect(txt);
     expect(out).toHaveLength(1);
   });
@@ -72,7 +72,7 @@ describe('MarkerDetector.detect', () => {
 
 describe('MarkerDetector.strip', () => {
   it('removes single marker cleanly', () => {
-    const t = M.strip('我们继续。\n<mate:handoff target="planA-H" reason="OK" />\n');
+    const t = M.strip('我们继续。\n<mate:handoff target="mate-H" reason="OK" />\n');
     expect(t).toBe('我们继续。');
   });
 
@@ -82,12 +82,12 @@ describe('MarkerDetector.strip', () => {
   });
 
   it('removes all markers when multiple present', () => {
-    const t = M.strip('A. <mate:handoff target="planA-H" /> B. <mate:blocked question="??" />');
+    const t = M.strip('A. <mate:handoff target="mate-H" /> B. <mate:blocked question="??" />');
     expect(t).toBe('A.  B.');
   });
 
   it('collapses excess newlines after stripping', () => {
-    const t = M.strip('Line 1\n\n\n\n<mate:handoff target="execB" />\n\n\n\nLine 2');
+    const t = M.strip('Line 1\n\n\n\n<mate:handoff target="mate-B" />\n\n\n\nLine 2');
     expect(t).toMatch(/^Line 1\n+Line 2$/);
   });
 

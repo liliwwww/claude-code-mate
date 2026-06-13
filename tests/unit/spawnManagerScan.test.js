@@ -50,7 +50,7 @@ const smPath = path.resolve(__dirname, '../../server/spawn/SpawnManager.js');
 delete require.cache[smPath];
 const spawnManager = require(smPath);
 
-function makeMockInstance({ id, status, projectId = 1, roleName = 'planA-R', sessionTtlHours = 8, lastActiveAt = Date.now() }) {
+function makeMockInstance({ id, status, projectId = 1, roleName = 'mate-R', sessionTtlHours = 8, lastActiveAt = Date.now() }) {
   return {
     id,
     status,
@@ -131,12 +131,12 @@ describe('SpawnManager._runTtlScan disconnected aging', () => {
     // 4 个 R in proj 1 + 4 个 H in proj 1 → 各保留 3,各老化 1
     for (let i = 0; i < 4; i++) {
       spawnManager.instances.set(`r${i}`, makeMockInstance({
-        id: `r${i}`, status: 'disconnected', roleName: 'planA-R', projectId: 1, lastActiveAt: Date.now() - i * 86400000,
+        id: `r${i}`, status: 'disconnected', roleName: 'mate-R', projectId: 1, lastActiveAt: Date.now() - i * 86400000,
       }));
     }
     for (let i = 0; i < 4; i++) {
       spawnManager.instances.set(`h${i}`, makeMockInstance({
-        id: `h${i}`, status: 'disconnected', roleName: 'planA-H', projectId: 1, lastActiveAt: Date.now() - i * 86400000,
+        id: `h${i}`, status: 'disconnected', roleName: 'mate-H', projectId: 1, lastActiveAt: Date.now() - i * 86400000,
       }));
     }
     spawnManager._runTtlScan();
@@ -150,7 +150,7 @@ describe('SpawnManager._runTtlScan disconnected aging', () => {
     const recents = [];
     for (let i = 0; i < 5; i++) {
       const inst = makeMockInstance({
-        id: `r${i}`, status: 'disconnected', roleName: 'planA-R', projectId: 1,
+        id: `r${i}`, status: 'disconnected', roleName: 'mate-R', projectId: 1,
         lastActiveAt: Date.now() - i * 86400000,
       });
       spawnManager.instances.set(`r${i}`, inst);

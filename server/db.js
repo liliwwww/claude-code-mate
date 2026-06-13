@@ -117,7 +117,11 @@ CREATE TABLE IF NOT EXISTS events (
 //          删除 mate-self thread bootstrap(mateBot 砍掉,System project 保留)
 // v4 -> v5 [需求@2026-06-12 Phase 2E §1.5]:
 //          mate_pending_sends + mate_quota_state 双表(§3 排队 + §6 quota 暂停共用)
-const SCHEMA_VERSION = 5;
+// v5 -> v6 [2026-06-13]: mate 角色重命名 — planA-R/H/execB/testC → mate-R/H/B/C
+//          物理隔离 sibling 项目同名 .claude/commands/*.md 的污染。
+//          ALTER 不动 schema,只 UPDATE role_instances.role_name + 现有 events.payload_json
+//          / messages.role_name 等都 lazy,新 role 名生效后自动 OK。
+const SCHEMA_VERSION = 6;
 let cur = db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get();
 let curVersion = cur ? parseInt(cur.value, 10) : 1;
 
@@ -239,6 +243,34 @@ if (curVersion < 5) {
   `);
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '5');
   curVersion = 5;
+}
+
+// [2026-06-13] v5 -> v6:mate 角色重命名
+//   planA-R → mate-R / planA-H → mate-H / execB → mate-B / testC → mate-C
+//   把 role_instances.role_name + messages.role_name 全部翻新。
+//   thread.metadata.current_role_instances 是按 role.type 映射的,不动。
+//   instance.id 里也含老 role name(`planA-R.xxxxxx`),改 instance.id 风险大(各处外键引用),
+//   保留旧 id;新查 / spawn 都用新 role 名。
+if (curVersion < 6) {
+  const RENAME_MAP = {
+    'planA-R': 'mate-R',
+    'planA-H': 'mate-H',
+    'execB':   'mate-B',
+    'testC':   'mate-C',
+  };
+  for (const [oldName, newName] of Object.entries(RENAME_MAP)) {
+    try {
+      const r1 = db.prepare(`UPDATE role_instances SET role_name = ? WHERE role_name = ?`).run(newName, oldName);
+      const r2 = db.prepare(`UPDATE messages SET role_name = ? WHERE role_name = ?`).run(newName, oldName);
+      if (r1.changes || r2.changes) {
+        console.log(`[db v6] renamed ${oldName} → ${newName}: role_instances=${r1.changes}, messages=${r2.changes}`);
+      }
+    } catch (e) {
+      console.warn(`[db v6] rename ${oldName} → ${newName} failed: ${e.message}`);
+    }
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '6');
+  curVersion = 6;
 }
 
 function ensureSystemProject() {

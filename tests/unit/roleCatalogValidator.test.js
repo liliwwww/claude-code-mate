@@ -35,7 +35,7 @@ describe('RoleCatalog.ROLE_SCHEMA shape', () => {
 describe('validateField type checks', () => {
   it('string accepts string', () => {
     reset();
-    const r = validateField('test.md', 'name', 'planA-R', ROLE_SCHEMA.name);
+    const r = validateField('test.md', 'name', 'mate-R', ROLE_SCHEMA.name);
     expect(r.ok).toBe(true);
     expect(captured.length).toBe(0);
   });
@@ -153,7 +153,7 @@ describe('catalog.load happy path (real roles/*.md)', () => {
     reset();
     RoleCatalog.load();
     const names = RoleCatalog.list().map((r) => r.name).sort();
-    expect(names).toEqual(['execB', 'planA-H', 'planA-R', 'testC']);
+    expect(names).toEqual(['mate-B', 'mate-C', 'mate-H', 'mate-R']);
     // 有 warn 也行(未知字段历史遗留),但不能有 invalid
     const invalidWarns = captured.filter((s) => s.includes('must be') || s.includes('not in allowed') || s.includes('above max') || s.includes('below min'));
     expect(invalidWarns).toHaveLength(0);
@@ -164,6 +164,6 @@ describe('catalog.load happy path (real roles/*.md)', () => {
     RoleCatalog.load();
     const centrals = RoleCatalog.list().filter((r) => r.isCentral);
     expect(centrals).toHaveLength(1);
-    expect(centrals[0].name).toBe('planA-H');
+    expect(centrals[0].name).toBe('mate-H');
   });
 });
