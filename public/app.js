@@ -390,8 +390,20 @@ function renderEventInStream(eventType, raw, autoscroll = true) {
     // skip — noise
     return;
   } else if (eventType === 'user') {
-    const txt = userEventToText(raw);
-    if (txt) node = makeMsg('user', 'user', txt);
+    // [arch §13 user 反馈 2026-06-13] 区分:真 user 文字 vs tool_result(工具返回)
+    //   原行为:两种都渲染成蓝色 user bubble,"大段蓝色"实际是 grep/Read/Bash 等工具返回
+    //   现在:tool_result 渲染成可折叠的琥珀色 tool-block,真 user 文字仍蓝色
+    const content = raw.message?.content || [];
+    const toolResults = Array.isArray(content) ? content.filter((c) => c.type === 'tool_result') : [];
+    if (toolResults.length) {
+      for (const tr of toolResults) {
+        const trnode = makeToolResultBlock(tr);
+        els.stream.appendChild(trnode);
+      }
+    } else {
+      const txt = userEventToText(raw);
+      if (txt) node = makeMsg('user', 'user', txt);
+    }
   } else if (eventType === 'assistant') {
     const text = (raw.message?.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
     const tools = (raw.message?.content || []).filter((c) => c.type === 'tool_use');
@@ -481,6 +493,39 @@ function makeToolBlock(toolUse) {
   `;
   return div;
 }
+// [arch §13 user 反馈 2026-06-13] tool_result 折叠块
+//   原本 claude 的 tool_result 走 user direction event,被渲染成大段蓝色 user bubble。
+//   现在改成琥珀色可折叠 "🔧 tool 返回" — 跟 makeToolBlock 配色一致。
+function makeToolResultBlock(toolResult) {
+  const div = document.createElement('div');
+  div.className = 'msg tool_use tool-block tool-result-block';
+  // 提取 text
+  let text = '';
+  if (typeof toolResult.content === 'string') {
+    text = toolResult.content;
+  } else if (Array.isArray(toolResult.content)) {
+    text = toolResult.content.map((x) => x.text || (typeof x === 'string' ? x : '')).join('');
+  } else if (toolResult.content) {
+    text = JSON.stringify(toolResult.content);
+  }
+  const lineCount = text.split('\n').length;
+  const isErr = toolResult.is_error;
+  // hint:首行预览 + 大小
+  const firstLine = text.split('\n').find((l) => l.trim()) || '';
+  const hint = (firstLine.length > 80 ? firstLine.slice(0, 80) + '…' : firstLine) + `  (${lineCount} 行, ${text.length} 字符)`;
+  div.innerHTML = `
+    <details>
+      <summary class="tool-summary">
+        <span class="tool-icon">${isErr ? '❌' : '↩'}</span>
+        <span class="tool-name">tool 返回${isErr ? ' (ERROR)' : ''}</span>
+        <span class="tool-hint">${escapeHtml(hint)}</span>
+      </summary>
+      <pre class="tool-detail">${escapeHtml(text)}</pre>
+    </details>
+  `;
+  return div;
+}
+
 function toolHintFor(t) {
   const inp = t.input || {};
   if (t.name === 'Read' || t.name === 'Write') return inp.file_path || '';
