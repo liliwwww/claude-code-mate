@@ -58,6 +58,11 @@ const config = {
   // [需求@2026-06-12 §8.10] background recycler 扫描间隔 + 提前预警阈值
   ttlScanIntervalMin: int(process.env.TTL_SCAN_INTERVAL_MIN, 5),
   ttlWarnBeforeMin: int(process.env.TTL_WARN_BEFORE_MIN, 15),
+  // [需求@2026-06-12 Phase 2E §4] status=busy 但长时间无活动 → 自动 unstick 阈值
+  stuckBusyThresholdMin: int(process.env.STUCK_BUSY_THRESHOLD_MIN, 5),
+  // [需求@2026-06-12 Phase 2E §13] disconnected 实例每 (project,role) 双组保留数,
+  //   超出按 lastActiveAt 降序老化(标 dead)
+  disconnectedKeepPerGroup: int(process.env.DISCONNECTED_KEEP_PER_GROUP, 5),
 };
 
 // Ensure data dirs exist

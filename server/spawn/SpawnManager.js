@@ -976,8 +976,32 @@ class SpawnManager {
   _runTtlScan() {
     const now = Date.now();
     const warnAheadMs = (config.ttlWarnBeforeMin || 15) * 60 * 1000;
+    const STUCK_BUSY_THRESHOLD_MS = (config.stuckBusyThresholdMin || 5) * 60 * 1000;
+    const DISC_KEEP_PER_GROUP = config.disconnectedKeepPerGroup || 5;
+
+    // 分支 1:TTL 临近/过期 warn(原有)+ 卡死 busy 自动 unstick(§4)
     for (const inst of this.instances.values()) {
       if (inst.status === 'dead') continue;
+
+      // [需求@2026-06-12 Phase 2E §4] 卡死 busy:status=busy 但长时间无活动 → 自动翻 idle
+      //   原因可能:claude child 卡了 / 没收到 result event / status_change 错失
+      //   这是 safety net — 让 user 不至于被永远卡死。后续 send 会再使该 inst 翻 busy 正常处理
+      if (inst.status === 'busy' && (now - inst.lastActiveAt) > STUCK_BUSY_THRESHOLD_MS) {
+        const stuckMin = Math.round((now - inst.lastActiveAt) / 60000);
+        console.warn(`[SpawnManager] stuck busy ${inst.id} (idle ${stuckMin}m) → forcing idle`);
+        inst._setStatus('idle');
+        bus.publish('instance.unstuck', {
+          instanceId: inst.id,
+          displayName: inst.displayName,
+          roleName: inst.role.name,
+          projectId: inst.projectId,
+          stuckMinutes: stuckMin,
+          ts: now,
+        });
+        try { recordEvent('instance.unstuck', { stuckMinutes: stuckMin }, { projectId: inst.projectId, instanceId: inst.id }); } catch {}
+        continue;  // 已 emit,本轮不再走 TTL 判断
+      }
+
       const ttlMs = (inst.role.sessionTtlHours || 4) * 3600 * 1000;
       const expiresAt = inst.lastActiveAt + ttlMs;
       const remainMs = expiresAt - now;
@@ -1013,6 +1037,42 @@ class SpawnManager {
         inst._ttlSoonWarned = false;
         inst._ttlExpiredWarned = false;
       }
+    }
+
+    // 分支 2:[需求@2026-06-12 Phase 2E §13] disconnected 老化
+    //   每 (projectId, roleName) 双组,按 lastActiveAt 降序保留 N 个最近,其余标 dead
+    //   防止历史 disconnected 无限累积(运行几天后 popover 老实例堆成山,chip 计数虚高)
+    const discGroups = new Map();
+    for (const inst of this.instances.values()) {
+      if (inst.status !== 'disconnected') continue;
+      const key = `${inst.projectId}|${inst.role.name}`;
+      if (!discGroups.has(key)) discGroups.set(key, []);
+      discGroups.get(key).push(inst);
+    }
+    let agedOut = 0;
+    for (const [key, list] of discGroups) {
+      if (list.length <= DISC_KEEP_PER_GROUP) continue;
+      list.sort((a, b) => b.lastActiveAt - a.lastActiveAt);  // 最近的在前
+      const expired = list.slice(DISC_KEEP_PER_GROUP);
+      for (const inst of expired) {
+        try { stmts.setInstanceDied.run(now, inst.id); } catch {}
+        inst._setStatus('dead');
+        inst.diedAt = now;
+        this.instances.delete(inst.id);
+        agedOut++;
+        bus.publish('instance.aged_out', {
+          instanceId: inst.id,
+          displayName: inst.displayName,
+          roleName: inst.role.name,
+          projectId: inst.projectId,
+          ageDays: +(((now - inst.lastActiveAt) / 86400000)).toFixed(1),
+          ts: now,
+        });
+      }
+    }
+    if (agedOut > 0) {
+      console.log(`[SpawnManager] aged out ${agedOut} disconnected instances`);
+      try { recordEvent('disconnected.aged_out', { count: agedOut, keep: DISC_KEEP_PER_GROUP }); } catch {}
     }
   }
 }

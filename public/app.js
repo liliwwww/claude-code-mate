@@ -607,6 +607,24 @@ function handleWsMsg({ type, payload }) {
   } else if (type === 'instance.ttl_expired') {
     // [需求@2026-06-12 §8.10] 已过期:下次 user send 会自动开新 session
     pushTickerEvent('blocked', `⏰ ${payload.displayName} TTL 过期(idle ${payload.idleHours}h > ${payload.ttlHours}h),下次 send 起新 session`);
+  } else if (type === 'instance.unstuck') {
+    // [需求@2026-06-12 Phase 2E §4] 自动解卡:status=busy 但长时间无活动 → 翻 idle
+    pushTickerEvent('handoff', `🔓 ${payload.displayName} 卡 ${payload.stuckMinutes}m 自动解(翻 idle)`);
+    if (payload.projectId === state.activeProjectId && state.focusedSlug) {
+      const focused = state.threads.get(state.focusedSlug);
+      const boundIds = focused?.metadata?.current_role_instances || {};
+      const matches = Object.values(boundIds).includes(payload.instanceId);
+      if (matches) {
+        const node = makeMsg('system', '⚠ 自动解卡',
+          `${payload.displayName} 卡 busy ${payload.stuckMinutes} 分钟无活动,已自动 reset 为 idle。`);
+        els.stream.appendChild(node);
+        els.stream.scrollTop = els.stream.scrollHeight;
+      }
+    }
+  } else if (type === 'instance.aged_out') {
+    // [需求@2026-06-12 Phase 2E §13] disconnected 老化:超过保留数 → 标 dead
+    pushTickerEvent('kill', `🗑 ${payload.displayName} 已老化(${payload.ageDays}d 未活动)`);
+    updateTerminalsCount();
   }
 }
 
