@@ -88,7 +88,10 @@ function buildRouter() {
             const texts = content.filter((c) => c.type === 'text');
             if (tools.length) currentActivity = `🔧 ${tools[0].name}`;
             else if (texts.length) {
-              const t = texts.join(' ').trim();
+              // [bug@2026-06-13] texts 是 {type:'text', text:'...'} 对象数组,直接 .join 会得 "[object Object]"
+              //   症状:chip/popover 显 "近活: [object Object]"
+              //   修:.map(t => t.text || '') 先抽 text 字段再 join
+              const t = texts.map((tt) => tt.text || '').join(' ').trim();
               currentActivity = t.length > 80 ? t.slice(0, 80) + '…' : t;
             }
           }
