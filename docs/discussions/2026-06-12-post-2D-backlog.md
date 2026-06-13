@@ -1049,3 +1049,21 @@ L3 taskkill /F /T
 **长期方向**(本条不做):
 - §5 改模型:reconnaissance 用 Haiku,设计上 Opus(快 5-10x)
 - prompt 优化让 LLM 一次决策多步,减少 API 往返(role markdown)
+
+---
+
+## 2026-06-13 Phase 2F 主视图集中改造 — 落地纪要
+
+commit `0b829f7`:6 文件 +323 -6,113 测试全过。
+
+| 条目 | 状态 |
+|---|---|
+| §10 派工沉默 → 主视图卡片 | ✅ 已实施(之前已落,本次审计确认 app.js:643-668 4 阶段卡片) |
+| §14 chip 增强 busy term currentActivity | ✅ 已实施(chip inline `· 🔧 Grep` 提示,~20 字截断) |
+| §15 user bubble dedup 验证 | ✅ RESOLVED-by-code-review(clientMessageId dedup 完整,tool_result 无 id 保险) |
+| §16 流式 assistant 气泡默认折叠 | ✅ 已实施(`<details>` 包,summary 单行带字数) |
+| §17 流式渲染开关 | ✅ 已实施(📺 实时 checkbox + localStorage) |
+| §18 thread busy input disable + 红色停止 | ✅ 已实施(输入框 disabled + 红 ■ 停止 + 新端点 `/threads/:slug/stop` 走完整 kill 升级链) |
+| §19 LLM 等待 indicator + noise 静音 | ✅ 已实施(⌛ timer + system noise 全静) |
+
+顺带修复 bug:`renderEventInStream` 用 `=== 'result'` 不匹配 `result/success` / `result/error`(streamParser 把 type+subtype 拼成一起)→ 改 `startsWith('result')`,result bubble 漏渲染 + waitIndicator 不清问题一起治。
