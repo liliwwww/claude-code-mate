@@ -70,7 +70,11 @@ Mate 不是新 agent,**不替代** R / H / execB / testC 任何一个角色的�
 ┌──────────────────────────────────────────────────────────────────┐
 │  L2 Process Control   server/spawn/ + server/quota/             │
 │   - RoleInstance.js   — 单个 claude 子进程 lifecycle             │
-│   - SpawnManager.js   — 实例池 + marker dispatch + handoff 状态机│
+│   - SpawnManager.js   — wiring + sendToThread/Direct + event 桥接│
+│   - PoolAllocator.js  — 池槽 find/acquire/create/backfill        │
+│   - MarkerDispatcher.js — marker → handoff/done/blocked side fx │
+│   - HandoffTracker.js — 派工进度 spawning/ready/failed 跟踪      │
+│   - ScanRecycler.js   — TTL scanner / stuck unstick / disc 老化  │
 │   - streamParser.js   — stdout NDJSON 解析(纯函数 + helpers)    │
 │   - MarkerDetector.js — 正则解析 <mate:...> marker(纯函数)      │
 │   - PendingSends.js   — mate_pending_sends 表 helper            │

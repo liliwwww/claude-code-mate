@@ -50,6 +50,7 @@ const EventStore = require('../events/EventStore');
 const ScanRecycler = require('./ScanRecycler');
 const PoolAllocator = require('./PoolAllocator');
 const HandoffTracker = require('./HandoffTracker');
+const MarkerDispatcher = require('./MarkerDispatcher');
 
 class SpawnManager {
   constructor() {
@@ -332,198 +333,11 @@ class SpawnManager {
     ).length;
   }
 
-  // [需求@2026-06-10 §6] 自动状态机:处理 R/H/B/C 输出的 mate marker
-  //   - handoff target=<role>: 切换到下一角色 + 推进 stage + 自动 spawn
-  //   - done: 标记线索 verified(H 自验通过 = 流程到头 = IDLE,user 体验回归)
-  //   - blocked: 标记线索为 blocked 状态,前端黄灯闪烁
-  //   marker 由 SpawnManager._wireListeners 在 result event 时通过 MarkerDetector 提取
-  // [需求@2026-06-12 §6.1 + 8.3] Marker 优先级:done > blocked > handoff
-  //   首个出现的高优先级 marker 处理完后,**静默忽略**剩余 marker(避免 done 翻 verified 后还派下一个角色,产生孤儿实例)。
+  // [arch §1.4 ✅] marker 处理移到 MarkerDispatcher。
+  //   SpawnManager 只注入 sendToThread callback,实现都在 MarkerDispatcher。
   async _handleMarkers(inst, markers) {
-    if (!inst.threadSlug) return;
-    const done = markers.find((m) => m.kind === 'done');
-    if (done) {
-      try { this._performDone(inst, done.summary); }
-      catch (e) { console.warn(`[SpawnManager] done marker failed (${inst.id}):`, e.message); }
-      if (markers.length > 1) {
-        console.warn(`[SpawnManager] ignoring ${markers.length - 1} subsequent marker(s) after <mate:done /> from ${inst.id}`);
-      }
-      return;
-    }
-    const blocked = markers.find((m) => m.kind === 'blocked');
-    if (blocked) {
-      try { this._performBlocked(inst, blocked.question, blocked.severity); }
-      catch (e) { console.warn(`[SpawnManager] blocked marker failed (${inst.id}):`, e.message); }
-      const others = markers.filter((m) => m.kind !== 'blocked');
-      if (others.length) {
-        console.warn(`[SpawnManager] ignoring ${others.length} non-blocked marker(s) alongside <mate:blocked /> from ${inst.id}`);
-      }
-      return;
-    }
-    const handoff = markers.find((m) => m.kind === 'handoff');
-    if (handoff) {
-      try {
-        await this._performHandoff(inst, handoff.target, handoff.reason);
-      } catch (e) {
-        console.warn(`[SpawnManager] handoff marker failed (${inst.id}):`, e.message);
-        // [需求@2026-06-12 Phase 2E §10] 派工失败 → 通知前端红色卡片
-        bus.publish('thread.handoff.failed', {
-          projectId: inst.projectId,
-          threadSlug: inst.threadSlug,
-          from: inst.role.name,
-          target: handoff.target,
-          reason: handoff.reason,
-          error: e.message,
-          handoffKey: `${inst.projectId}::${inst.threadSlug}::FAILED::${Date.now()}`,
-        });
-      }
-    }
-  }
-
-  // [需求@2026-06-12 §6 + 8.3] target 可以是 "execB"(泛型)或 "execB-2"(具体 slot)
-  async _performHandoff(fromInst, targetSpec, reason) {
-    const { roleName: targetRoleName, poolSlot: targetSlot } = this._parseMarkerTarget(targetSpec);
-    const targetRole = roleCatalog.get(targetRoleName);
-    if (!targetRole) {
-      console.warn(`[SpawnManager] handoff target "${targetSpec}" → role "${targetRoleName}" not found in catalog`);
-      return;
-    }
-    const project = stmts.getProject.get(fromInst.projectId);
-    if (!project) return;
-
-    // Stage progression (data-driven from target role type)
-    const stageByTargetType = {
-      orchestrator: 'designing',
-      executor: 'executing',
-      validator: 'testing',
-      requirements: 'discussing',
-    };
-    const nextStage = stageByTargetType[targetRole.type] || null;
-    if (nextStage) {
-      try { ThreadStore.setStage(fromInst.projectId, fromInst.threadSlug, nextStage); } catch {}
-    }
-
-    // Build first message for target role: thread slug + reason + recent context summary
-    const recent = db.prepare(`
-      SELECT event_type, payload_json FROM messages
-      WHERE project_id = ? AND thread_slug = ? AND event_type IN ('user','assistant')
-      ORDER BY ts DESC LIMIT 6
-    `).all(fromInst.projectId, fromInst.threadSlug);
-    const ctx = recent.reverse().map((r) => {
-      try {
-        const p = JSON.parse(r.payload_json);
-        const content = p.message?.content;
-        const text = Array.isArray(content)
-          ? content.filter((c) => c.type === 'text').map((c) => c.text).join('')
-          : (typeof content === 'string' ? content : '');
-        return `[${r.event_type}] ${text.slice(0, 500)}`;
-      } catch { return ''; }
-    }).filter(Boolean).join('\n\n');
-
-    const handoffText = [
-      `# Thread handoff from ${fromInst.role.name}`,
-      ``,
-      `**Thread:** \`${fromInst.threadSlug}\`  (project root: \`${project.root_dir}\`)`,
-      `**Reason for handoff:** ${reason || '(unspecified)'}`,
-      ``,
-      `## Recent conversation context (last 6 messages):`,
-      ``,
-      ctx || '(no prior messages)',
-      ``,
-      `---`,
-      ``,
-      `Begin your role's work on this thread.`,
-    ].join('\n');
-
-    // Spawn or reuse target role for this thread
-    const inst = this.sendToThread({
-      projectId: fromInst.projectId,
-      projectRootDir: project.root_dir,
-      threadSlug: fromInst.threadSlug,
-      text: handoffText,
-      roleType: targetRole.type,
-      targetSlot,
-    });
-
-    recordEvent('thread.handoff', {
-      from: fromInst.role.name, target: targetSpec, resolvedRole: targetRoleName,
-      resolvedSlot: targetSlot, reason,
-      fromInstanceId: fromInst.id, toInstanceId: inst.id,
-    }, { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
-
-    // [需求@2026-06-12 Phase 2E §10] 派工进度三阶段:
-    //   pending → spawning(若 target 正在 spawn)→ ready(target status='busy' 收到 stdin)
-    //   handoffKey 唯一关联 4 段事件(.handoff / .spawning / .ready / .failed),前端按 key 更新同一张卡片
-    const handoffKey = `${fromInst.projectId}::${fromInst.threadSlug}::${inst.id}::${Date.now()}`;
-    const basePayload = {
-      projectId: fromInst.projectId,
-      threadSlug: fromInst.threadSlug,
-      from: fromInst.role.name,
-      target: targetSpec,
-      reason,
-      handoffKey,
-      toInstanceId: inst.id,
-      toDisplayName: inst.displayName,
-    };
-    bus.publish('thread.handoff', basePayload);
-
-    // 派工瞬间 target inst 可能已是 busy(idle → sendUserText → busy 同步翻),也可能仍 spawning
-    if (inst.status === 'busy') {
-      // 直接 ready,无需 spawn 等待
-      setImmediate(() => bus.publish('thread.handoff.ready', { ...basePayload }));
-    } else {
-      // 如果已是 spawning,先 emit 一次 spawning 让 UI 切色
-      if (inst.status === 'spawning') {
-        setImmediate(() => bus.publish('thread.handoff.spawning', { ...basePayload }));
-      }
-      // [arch §1.3 ✅] 入 HandoffTracker 等 status_change 路由
-      HandoffTracker.register(inst.id, basePayload, inst.status === 'spawning');
-    }
-  }
-
-  _performDone(fromInst, summary) {
-    try {
-      ThreadStore.setStage(fromInst.projectId, fromInst.threadSlug, 'verified');
-    } catch (e) {
-      console.warn(`[SpawnManager] setStage verified failed:`, e.message);
-    }
-    recordEvent('thread.done', { summary, fromInstanceId: fromInst.id },
-      { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
-    bus.publish('thread.done', {
-      projectId: fromInst.projectId,
-      threadSlug: fromInst.threadSlug,
-      summary,
-      thread: ThreadStore.get(fromInst.projectId, fromInst.threadSlug),
-    });
-  }
-
-  _performBlocked(fromInst, question, severity) {
-    // Mark thread metadata with blocked info (the UI uses this for the yellow blink light)
-    const thread = ThreadStore.get(fromInst.projectId, fromInst.threadSlug);
-    if (!thread) return;
-    const meta = thread.metadata || {};
-    meta.blocked = {
-      question,
-      severity: severity || 'mid',
-      ts: Date.now(),
-      raisedBy: fromInst.role.name,
-    };
-    try {
-      db.prepare(`UPDATE threads SET metadata_json = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
-        .run(JSON.stringify(meta), Date.now(), fromInst.projectId, fromInst.threadSlug);
-    } catch (e) {
-      console.warn(`[SpawnManager] blocked metadata persist failed:`, e.message);
-      return;
-    }
-    recordEvent('thread.blocked', { question, severity, fromInstanceId: fromInst.id },
-      { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
-    bus.publish('thread.blocked', {
-      projectId: fromInst.projectId,
-      threadSlug: fromInst.threadSlug,
-      question,
-      severity: severity || 'mid',
-      raisedBy: fromInst.role.name,
-      thread: ThreadStore.get(fromInst.projectId, fromInst.threadSlug),
+    return MarkerDispatcher.handleMarkers(inst, markers, {
+      sendToThread: (args) => this.sendToThread(args),
     });
   }
 
@@ -732,16 +546,7 @@ class SpawnManager {
     });
   }
 
-  // [需求@2026-06-12 §6 + 8.3] Parse marker target:
-  //   "execB" → { roleName: 'execB', poolSlot: null }
-  //   "execB-2" → { roleName: 'execB', poolSlot: 2 }
-  _parseMarkerTarget(target) {
-    const m = String(target).match(/^([a-zA-Z][a-zA-Z0-9_-]*?)-(\d+)$/);
-    if (m && roleCatalog.get(m[1])) {
-      return { roleName: m[1], poolSlot: parseInt(m[2], 10) };
-    }
-    return { roleName: target, poolSlot: null };
-  }
+  // [arch §1.4 ✅] parseMarkerTarget 已抽到 MarkerDispatcher
 
   // [需求@2026-06-12 §1.7 §8.5] 给 H 注入的 task board snapshot
   //   每次 H 激活时拼一份当前 project 的全局视图:
