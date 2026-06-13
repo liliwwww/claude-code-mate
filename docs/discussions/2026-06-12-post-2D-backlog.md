@@ -954,3 +954,54 @@ s.el.querySelector('.body').textContent = s.text;  // 累积更新
 - 跟 §15 user bubble dedup / §16 折叠 / §17 流式开关 一起做(主视图集中改动一次性)
 - 跟 §15(操作约束:不要 mid-task kill mate)同源思想,这条把约束**给 user 也用上**
 - §11(角色重命名)语义影响:disabled 提示文案用新名 mate-R/H/B/C
+
+### §18 修订(2026-06-13)— "停止"不一定要杀进程
+
+**user 提问**:"一定要杀进程吗?PowerShell 终端有一个 esc 键,直接把正在执行的终端拉住"
+
+**确认**:不一定。SIGINT(ESC / Ctrl+C 等价)可以**软取消当前 turn 而进程仍活**,session 保留。
+
+**4 级停止升级**(替代原 §18 的"kill"):
+
+```
+L0 SIGINT       (新增)→ 等 3s 看 status 翻 idle → yes: session 保留 done
+L1 stdin.end()        → 等 2s
+L2 SIGTERM            → 等 2s
+L3 taskkill /F /T
+```
+
+最理想 L0 成功 = 进程活、session 保留、user 立刻能继续(下次 dispatch 直接复用 H,context warm)。
+
+最坏 L3 = 现状(kill + 下次重新 spawn 新 H)。
+
+**UI 提示**:
+- L0 成功:`"mate-H-1 当前任务已取消,可以继续输入"`(温和)
+- 跌到 L1/L2/L3:`"mate-H-1 没响应 soft cancel,已强制终止(session 仍可下次 resume)"`(警告色)
+
+**Windows 注意**:
+- node 的 `child.kill('SIGINT')` 在 Windows 下实际等价 SIGTERM(node 翻译)
+- 真正 graceful SIGINT 需要 Win32 API `GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid)`
+- 实施前要 probe 一次:测 `claude -p --input-format stream-json` 收到 SIGINT 时的实际反应,确认是 graceful cancel 还是 SIGTERM 等价
+
+**probe 计划**(实施 §18 前完成):
+- `probe/sigint_behavior.md` + 测试脚本
+- 起一个跑长任务的 claude child,kill('SIGINT'),记录 stdout 反应:
+  - 是否有 `result/error subtype=user_interrupted` 或类似事件
+  - process 是否仍 alive(`tasklist /fi "PID eq <N>"`)
+  - 后续再写 stdin 一条 user message 是否被处理
+- 如果 SIGINT 不工作,实测 `child.stdin.write('\x03')`(Ctrl+C 字符) 看是否被解读
+- 实在不行就接受"停止 = kill",fallback 到原方案
+
+**实施成本变化**(相比原 §18):
+- 加 probe(0.5 天)
+- L0 SIGINT 逻辑加 RoleInstance.softInterrupt() ~30 行
+- UI 提示分级 ~20 行
+- 单测 ~30 行
+- **新合计 ~290 行**(原 210 + 80)
+
+**preferred 路径**(实施时):
+1. 先做 probe,**确认 SIGINT 在 Windows + claude headless 是否 graceful**
+2. 如果是 → 实施 4 级升级
+3. 如果不是 → 用 fallback("停止" = kill,原 §18 方案)
+4. 任何情况下 user 看到的"红色停止" UI 都不变,只是底层实现细节
+
