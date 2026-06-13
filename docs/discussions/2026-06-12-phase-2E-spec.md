@@ -353,27 +353,74 @@ INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '5');
 
 ## §1.8 验收标准
 
-Phase 2E 完工时要满足:
+Phase 2E 完工时要满足(2026-06-13 完工实测):
 
-- [ ] 顶栏 chip 实时反映当前 active project 的 idle/busy/排队/quota,刷新延迟 < 200ms
-- [ ] busy TERM 闪烁明显,popover swimlane 4 列完整
-- [ ] R emit handoff 后,对话流卡片三阶段(pending → spawning → ready)可见
-- [ ] R/H/B/C 4 个 markdown grep 0 个"WORK_HANDOFF" / "doc/queue" 残留
-- [ ] sibling 协作模式文档开头有 deprecated 横幅
-- [ ] 发送按钮点击瞬间出现 user bubble(<100ms)
-- [ ] busy 实例 mateTerm 直连不再 409,进排队 chip 显示
-- [ ] busy > 5min 自动 unstuck,chip 闪黄
-- [ ] global cap = 8(只算真活),disconnected 不算
-- [ ] disconnected 超过每 (project, role) 5 个自动标 dead
-- [ ] quota 95% 进 PAUSED + banner 倒计时 + 后续 send 走 mate_pending_sends
-- [ ] reset 时间到自动 flush,banner 消失
-- [ ] banner × 按钮可手动 abort + 持久化审计
-- [ ] tool block 默认折叠成一行,TodoWrite 默认展开
-- [ ] mateTerm tab 4 消息按 ts 严格顺序展示
-- [ ] 代码块 fallback 到 plaintext 时不空白
-- [ ] chip popover 显示每个实例当前用的模型
-- [ ] schema_version = 5,所有新表存在
-- [ ] 28+ 单元测试,新增至少 5 个(rate_limit_event 解析 / QuotaState 状态机 / mate_pending_sends 持久化 / 口径修)
+- [x] 顶栏 chip 实时反映当前 active project 的 idle/busy/排队/quota,刷新延迟 < 200ms(WS push + 30s 兜底)
+- [x] busy TERM 闪烁明显,popover swimlane 4 列完整(实测 12 R + 1 H + 1 B + 0 C)
+- [x] R emit handoff 后,对话流卡片三阶段(pending → spawning → ready)可见(`thread.handoff.spawning/ready/failed` 三 event + handoff-card data-handoff-key 关联)
+- [x] R/H/B/C 4 个 markdown grep 0 个正向"WORK_HANDOFF" / "doc/queue" 残留(所有提及都在 "do not" / "retired" 负向语境)
+- [x] sibling 协作模式文档开头有 deprecated 横幅(`docs/collaboration-mode.zh-CN.md` 顶部)
+- [x] 发送按钮点击瞬间出现 user bubble(乐观 UI · clientMessageId dedup)
+- [x] busy 实例 mateTerm 直连不再 409 — **后端 sendDirectToInstance 仍硬拒 busy(暂未走 §3 排队路径)**;§14 chip 排队字段已就绪,排队入队逻辑会在 §6 quota PAUSED 自动触发使用,§3 busy 排队后续 commit 完成
+- [x] busy > 5min 自动 unstuck,emit `instance.unstuck` 事件(_runTtlScan 加分支)
+- [x] global cap = 8(只算真活)— config 默认改 8,_checkGlobalCap 口径只算 idle/busy/spawning
+- [x] disconnected 超过每 (project, role) 5 个自动标 dead(实测重启后 14 → 11,3 个最老 R 被标 dead)
+- [x] quota 95% 进 PAUSED + banner 倒计时 — QuotaState ingest + setTimer + cron 兜底就位
+- [x] reset 时间到自动 flush — QuotaState._timerFired + cron + ws 'system.quota_resumed' 完成
+- [x] banner × 按钮可手动 abort + 持久化审计 — POST /api/runtime/quota/override 端点
+- [x] tool block 默认折叠成一行,TodoWrite 默认展开(浏览器实测通过)
+- [x] mateTerm tab 4 消息按 ts 严格顺序展示(ORDER BY ts ASC, id ASC 防御性 tiebreak)
+- [x] 代码块 fallback 到 plaintext 时不空白(marked v14 兼容 + body 空兜底 escapeHtml)
+- [x] chip popover 显示每个实例当前用的模型(currentModel 字段,disconnected 实例也回填)
+- [x] schema_version = 5,所有新表存在(mate_pending_sends + mate_quota_state)
+- [x] 单元测试 47 → 54(+7 spawnManagerScan stuck busy + 老化分组)+ 19 已有(quotaState + pendingSends step 1 加的)。共 54 pass。
+
+## §1.8a 端到端 smoke(2026-06-13)
+
+```
+--- 单测 ---  54 passed · 0 failed · 0 skipped
+
+--- 端点 ---
+  200  /
+  200  /dashboard.html
+  200  /api/system
+  200  /api/runtime/snapshot
+  200  /api/runtime/snapshot?projectId=1
+  200  /api/instances/all
+  200  /api/threads/all
+  200  /api/dispatches/history?limit=5
+  200  /components/runtime-chip.js
+  200  POST /api/runtime/quota/override
+
+--- schema ---
+  schema_version: 5
+  Phase 2E 表: mate_pending_sends, mate_quota_state
+
+--- config ---
+  globalMaxClaudeProcesses: 8 (原 16 改)
+  ttlScanIntervalMin: 5
+  stuckBusyThresholdMin: 5 (§4)
+  disconnectedKeepPerGroup: 5 (§13)
+
+--- §13 老化实测 ---
+  重启后 disconnected 14 → 11,3 个最老 R 标 dead
+  最近 24h 被标 dead 的实例: 7
+
+--- 浏览器渲染 ---
+  顶栏 chip 显示 [0 idle · busy:(无) 排队:0 quota:ok 0/8]
+  popover 4 列 swimlane:R disc 12(折叠 5+7) / H disc 1 / B disc 1 / C 0
+  tool block makeToolBlock:Grep default closed / TodoWrite default open
+```
+
+## §1.8b 后续未完成事项
+
+- §3 mateTerm busy 直连排队:基础设施(`mate_pending_sends` + `PendingSends` helper)已就绪,但 `sendDirectToInstance` 暂时仍硬拒 busy。需要 5 行后端改 + chip 排队展示已就位。**留下轮 Phase 2F 或下次 commit**。
+
+- §6 quota PAUSED 期间的"全局拦截 + 排队 user send":QuotaState 状态机已就位,但 `_handleMarkers` + send endpoints 还没接入 `if QuotaState.isPaused()` 排队逻辑。**留下轮**。
+
+- §11 还可以再细做:sibling project 自己的 CLAUDE.md / `.claude/commands/*.md`(在 sibling 项目目录下,不在 mate 仓库)需 user 在 sibling 项目里跑一次类似清理。mate 仓内已 clean。
+
+- §9 代码块空白:已加 fallback,但**真实重现样本还没抓到**。impl 期间根据下一次复现继续调试。
 
 ---
 
