@@ -126,6 +126,10 @@ class RoleInstance {
     // [需求@2026-06-12 Phase 2E §5] currentModel:claude system/init 时填充,disconnect 保留
     this.currentModel = null;
     this.claudeCodeVersion = null;
+    // [需求@2026-06-15 Phase 2G M1.2] currentTaskSlug:此刻在处理哪个线索(per turn,
+    //   池化角色的 threadSlug 不可靠 — 它会被新派工覆盖,但 currentTaskSlug 才是"now")
+    //   每次新 user_to_role 写 stdin 时更新;result 后保留(等下次 dispatch 再翻)
+    this.currentTaskSlug = null;
     // [需求@2026-06-15] preferredModel — user 在 UI 切换的 model 覆盖。
     //   优先级:preferredModel > role.model > (空 = claude 默认)
     //   in-memory,mate 重启失效(永久改要走 role frontmatter model 字段)
@@ -449,6 +453,8 @@ class RoleInstance {
       diedAt: this.diedAt,
       exitCode: this.exitCode,
       displayColor: this.role.displayColor,
+      // [需求@2026-06-15 Phase 2G M1.2] 此刻在处理的线索(per turn,不同于长绑定 threadSlug)
+      currentTaskSlug: this.currentTaskSlug || null,
       // [需求@2026-06-12 Phase 2E §5] 当前 child 实际用的模型(claude 自报)
       currentModel: this.currentModel || null,
       // [需求@2026-06-15] UI 显:user 设的 preferredModel + role.md 默认 model

@@ -294,6 +294,19 @@
     'popover.moreOlder': '+ {n} 更老',
     'popover.pendingHeader': '排队中 ({n})',
     'popover.pendingItem': '{kind}: {id} · {n} 条',
+    // ---------------- Phase 2G: dispatch chain / queue / busy prompt ----------------
+    'breadcrumb.label': '派工链',
+    'busyPrompt.title': '目标终端忙碌中',
+    'busyPrompt.body': '{from} 想派任务给 {to},但 {to} 正在跑别的活(线索 {thread})。怎么办?',
+    'busyPrompt.reason': '原因',
+    'busyPrompt.wait': '等待 {to}',
+    'busyPrompt.backlog': '加入 backlog(稍后派)',
+    'busyPrompt.cancel': '取消',
+    'queue.statusQueued': '排队中',
+    'queue.statusBacklog': 'backlog',
+    'queue.statusWaitingUser': '等你决策',
+    'queue.cancel': '取消',
+    'queue.dispatchNow': '现在派',
   };
 
   const en = {
@@ -576,6 +589,19 @@
     'popover.moreOlder': '+ {n} older',
     'popover.pendingHeader': 'Pending ({n})',
     'popover.pendingItem': '{kind}: {id} · {n} msgs',
+    // ---------------- Phase 2G: dispatch chain / queue / busy prompt ----------------
+    'breadcrumb.label': 'Chain',
+    'busyPrompt.title': 'Target terminal is busy',
+    'busyPrompt.body': '{from} wants to hand off to {to}, but {to} is busy on another thread (thread {thread}). What to do?',
+    'busyPrompt.reason': 'Reason',
+    'busyPrompt.wait': 'Wait for {to}',
+    'busyPrompt.backlog': 'Add to backlog (dispatch later)',
+    'busyPrompt.cancel': 'Cancel',
+    'queue.statusQueued': 'queued',
+    'queue.statusBacklog': 'backlog',
+    'queue.statusWaitingUser': 'awaiting your decision',
+    'queue.cancel': 'Cancel',
+    'queue.dispatchNow': 'Dispatch now',
   };
 
   window.MateMessages = { zh, en };

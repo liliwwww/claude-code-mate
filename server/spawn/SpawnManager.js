@@ -68,6 +68,8 @@ class SpawnManager {
         throw new Error(`instance ${inst.id} not idle (status=${inst.status}) — leaving in queue`);
       }
       // 真写 stdin
+      // [Phase 2G M1.2] 把 currentTaskSlug 翻成这次要跑的 thread(给 UI 看)
+      inst.currentTaskSlug = pendingRow.threadSlug || inst.currentTaskSlug;
       inst.sendUserText(pendingRow.payload.text);
       // 绑 thread
       if (pendingRow.threadSlug && inst.role?.type) {
@@ -557,8 +559,11 @@ class SpawnManager {
       return inst;
     }
 
-    // Bind current task — inst.threadSlug = current task being processed
+    // [需求@2026-06-15 Phase 2G M1.2] 池化角色的 threadSlug 是"long-term binding"(对 R 有意义),
+    //   pooled 角色应该用 currentTaskSlug 表"此刻在处理哪个线索"。这里 threadSlug 保留兼容
+    //   (老代码 + UI 还在读),但同时 set currentTaskSlug。snapshot 暴露两者。
     inst.threadSlug = threadSlug;
+    inst.currentTaskSlug = threadSlug;
 
     // [需求@2026-06-12 Phase 2E §12] enqueue clientMessageId 等 echo back 时 attach
     this._enqueueClientId(inst, clientMessageId);

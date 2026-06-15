@@ -787,3 +787,133 @@ main { flex: 1; display: flex; min-height: 0; }
   font-family: ui-monospace, Consolas, monospace;
   color: var(--text-muted);
 }
+
+/* ============================================================ */
+/* [需求@2026-06-15 Phase 2G] 派工链面包屑 + queue/backlog + busy_prompt modal */
+/* ============================================================ */
+
+#dispatch-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+#dispatch-breadcrumb .bc-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+#dispatch-breadcrumb .bc-seg {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  color: var(--accent);
+  font-weight: 600;
+}
+#dispatch-breadcrumb .bc-start { color: var(--text-muted); }
+#dispatch-breadcrumb .bc-done {
+  color: var(--accent-green);
+  background: var(--bg-msg-ok);
+}
+#dispatch-breadcrumb .bc-blocked {
+  color: var(--accent-yellow);
+  background: var(--bg-msg-system);
+}
+#dispatch-breadcrumb .bc-sep {
+  color: var(--text-muted);
+  margin: 0 2px;
+}
+#dispatch-breadcrumb .bc-repeat {
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-left: 4px;
+  font-weight: 400;
+}
+
+#queue-backlog-panel {
+  padding: 6px 12px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+#queue-backlog-panel .qb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 11px;
+}
+#queue-backlog-panel .qb-row + .qb-row { border-top: 1px dashed var(--border); }
+#queue-backlog-panel .qb-state {
+  color: var(--text-secondary);
+  font-weight: 600;
+  min-width: 100px;
+}
+#queue-backlog-panel .qb-queued .qb-state    { color: var(--accent-yellow); }
+#queue-backlog-panel .qb-backlog .qb-state   { color: var(--accent); }
+#queue-backlog-panel .qb-waiting .qb-state   { color: var(--accent-purple); }
+#queue-backlog-panel .qb-target {
+  flex: 1;
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--text-secondary);
+}
+#queue-backlog-panel .qb-cancel,
+#queue-backlog-panel .qb-dispatch {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+#queue-backlog-panel .qb-cancel:hover   { border-color: var(--accent-red); color: var(--accent-red); }
+#queue-backlog-panel .qb-dispatch:hover { border-color: var(--accent-green); color: var(--accent-green); }
+
+#busy-prompt-dialog {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 18px 22px;
+  min-width: 420px;
+  max-width: 560px;
+}
+#busy-prompt-dialog h3 { margin: 0 0 10px; font-size: 14px; }
+#busy-prompt-dialog p { margin: 0 0 8px; font-size: 12px; line-height: 1.5; }
+#busy-prompt-dialog .bp-reason {
+  background: var(--bg-card);
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 8px 0;
+}
+#busy-prompt-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+#busy-prompt-dialog button {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  padding: 5px 14px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+#busy-prompt-dialog button.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+#busy-prompt-dialog button.primary:hover { opacity: 0.9; }

@@ -174,6 +174,27 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread }) {
     return;
   }
 
+  // [需求@2026-06-15 Phase 2G M1.2] dispatch_chain 追加段
+  try {
+    const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
+      kind: 'handoff',
+      fromRole: fromInst.role.name,
+      fromInstanceId: fromInst.id,
+      toRole: targetRoleName,
+      toInstanceId: inst.id,
+      toDisplayName: inst.displayName,
+      targetSpec,
+      reason: reason || '',
+    });
+    bus.publish('dispatch.chain_updated', {
+      projectId: fromInst.projectId,
+      threadSlug: fromInst.threadSlug,
+      chain: updated?.metadata?.dispatch_chain || [],
+    });
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] dispatch_chain append failed: ${e.message}`);
+  }
+
   recordEvent('thread.handoff', {
     from: fromInst.role.name, target: targetSpec, resolvedRole: targetRoleName,
     resolvedSlot: targetSlot, reason,
@@ -211,6 +232,22 @@ function _performDone(fromInst, summary) {
   } catch (e) {
     console.warn(`[MarkerDispatcher] setStage verified failed:`, e.message);
   }
+  // [Phase 2G M1.2] append done segment to chain
+  try {
+    const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
+      kind: 'done',
+      fromRole: fromInst.role.name,
+      fromInstanceId: fromInst.id,
+      summary: summary || '',
+    });
+    bus.publish('dispatch.chain_updated', {
+      projectId: fromInst.projectId,
+      threadSlug: fromInst.threadSlug,
+      chain: updated?.metadata?.dispatch_chain || [],
+    });
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] dispatch_chain done append failed: ${e.message}`);
+  }
   recordEvent('thread.done', { summary, fromInstanceId: fromInst.id },
     { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
   bus.publish('thread.done', {
@@ -237,6 +274,23 @@ function _performBlocked(fromInst, question, severity) {
   } catch (e) {
     console.warn(`[MarkerDispatcher] blocked metadata persist failed:`, e.message);
     return;
+  }
+  // [Phase 2G M1.2] append blocked segment to chain
+  try {
+    const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
+      kind: 'blocked',
+      fromRole: fromInst.role.name,
+      fromInstanceId: fromInst.id,
+      question: (question || '').slice(0, 120),
+      severity: severity || 'mid',
+    });
+    bus.publish('dispatch.chain_updated', {
+      projectId: fromInst.projectId,
+      threadSlug: fromInst.threadSlug,
+      chain: updated?.metadata?.dispatch_chain || [],
+    });
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] dispatch_chain blocked append failed: ${e.message}`);
   }
   recordEvent('thread.blocked', { question, severity, fromInstanceId: fromInst.id },
     { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });

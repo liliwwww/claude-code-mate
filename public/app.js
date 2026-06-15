@@ -394,6 +394,9 @@ function renderConvHeader() {
   els.stagePicker.value = th.stage;
   els.sendBtn.disabled = false;
   applyBusyUiState();
+  // [需求@2026-06-15 Phase 2G M1.4] 面包屑 + 队列/backlog 面板
+  renderBreadcrumb();
+  renderQueueAndBacklog();
   // [需求@2026-06-15] conv-header 加 slug + copy 按钮(title 跟 slug 不一样时才显)
   let slugEl = els.convTitle.parentNode.querySelector('.conv-slug');
   if (!slugEl) {
@@ -453,6 +456,8 @@ async function focusThread(slug) {
   els.stream.innerHTML = '';
   state.streamingAssistants.delete(slug);
   await loadThreadHistory(slug);
+  // [需求@2026-06-15 Phase 2G M1.4] 拉队列/backlog
+  refreshQueueForFocusedThread();
 }
 
 async function loadThreadHistory(slug) {
@@ -890,7 +895,209 @@ function handleWsMsg({ type, payload }) {
     // [需求@2026-06-12 Phase 2E §13] disconnected 老化:超过保留数 → 标 dead
     pushTickerEvent('kill', t('ticker.agedOut', { name: payload.displayName, days: payload.ageDays }));
     updateTerminalsCount();
+  } else if (type === 'dispatch.busy_prompt') {
+    // [需求@2026-06-15 Phase 2G M1.4] H/B/C busy 时,marker 派工先问 user:等 / backlog / 取消
+    if (payload.projectId !== state.activeProjectId) return;
+    handleBusyPrompt(payload);
+  } else if (type === 'queue.added') {
+    if (payload.projectId !== state.activeProjectId) return;
+    pushTickerEvent('handoff', `⏸ queued → ${payload.toInstanceId}`);
+    refreshQueueForThread(payload.threadSlug);
+  } else if (type === 'queue.claimed') {
+    if (payload.projectId !== state.activeProjectId) return;
+    pushTickerEvent('handoff', `▶ flushed → ${payload.toInstanceId}`);
+    refreshQueueForThread(payload.threadSlug);
+  } else if (type === 'queue.cancelled' || type === 'backlog.cancelled') {
+    if (payload.projectId !== state.activeProjectId) return;
+    pushTickerEvent('kill', `✕ ${type === 'backlog.cancelled' ? 'backlog' : 'queue'} cancelled`);
+    refreshQueueForThread(payload.threadSlug);
+  } else if (type === 'backlog.added') {
+    if (payload.projectId !== state.activeProjectId) return;
+    pushTickerEvent('handoff', `📥 backlog → ${payload.toInstanceId}`);
+    refreshQueueForThread(payload.threadSlug);
+  } else if (type === 'backlog.dispatched') {
+    if (payload.projectId !== state.activeProjectId) return;
+    pushTickerEvent('handoff', `📤 backlog → queue`);
+    refreshQueueForThread(payload.threadSlug);
+  } else if (type === 'dispatch.chain_updated') {
+    if (payload.projectId !== state.activeProjectId) return;
+    // 更新内存中的 thread metadata.dispatch_chain
+    const th = state.threads.get(payload.threadSlug);
+    if (th) {
+      th.metadata = th.metadata || {};
+      th.metadata.dispatch_chain = payload.chain || [];
+      state.threads.set(payload.threadSlug, th);
+    }
+    if (payload.threadSlug === state.focusedSlug) {
+      renderBreadcrumb();
+    }
   }
+}
+
+// ============ Phase 2G M1.4 队列 + 面包屑 + busy_prompt modal ============
+
+// 内存:每个 thread 当前的 queue/backlog 项
+const queueByThread = new Map();  // threadSlug → array of pending rows
+
+async function refreshQueueForThread(threadSlug) {
+  if (!threadSlug || !state.activeProjectId) return;
+  try {
+    const items = await api(`/queue?projectId=${state.activeProjectId}&threadSlug=${encodeURIComponent(threadSlug)}`);
+    queueByThread.set(threadSlug, items);
+    if (threadSlug === state.focusedSlug) renderQueueAndBacklog();
+  } catch (e) {
+    console.warn('[queue] refresh failed', e.message);
+  }
+}
+
+// 全局 refresh — 用在 focusThread / 初始化
+async function refreshQueueForFocusedThread() {
+  if (state.focusedSlug) await refreshQueueForThread(state.focusedSlug);
+}
+
+// dispatch.busy_prompt → modal
+function handleBusyPrompt(payload) {
+  // 一次只显一个 modal
+  document.querySelector('#busy-prompt-dialog')?.remove();
+  const dlg = document.createElement('dialog');
+  dlg.id = 'busy-prompt-dialog';
+  const fromName = payload.fromDisplayName || payload.fromInstanceId;
+  const toName = payload.toDisplayName || payload.toInstanceId;
+  const reason = payload.reason ? `<div class="bp-reason"><strong>${t('busyPrompt.reason')}:</strong> ${escapeHtml(payload.reason)}</div>` : '';
+  dlg.innerHTML = `
+    <form method="dialog">
+      <h3>${t('busyPrompt.title')}</h3>
+      <p>${t('busyPrompt.body', { from: escapeHtml(fromName), to: escapeHtml(toName), thread: escapeHtml(payload.threadSlug || '?') })}</p>
+      ${reason}
+      <div class="dialog-actions">
+        <button type="button" id="bp-wait"   class="primary">${t('busyPrompt.wait')}</button>
+        <button type="button" id="bp-backlog">${t('busyPrompt.backlog')}</button>
+        <button type="button" id="bp-cancel">${t('busyPrompt.cancel')}</button>
+      </div>
+      <div id="bp-error" class="error" style="color:#d44;margin-top:6px"></div>
+    </form>
+  `;
+  document.body.appendChild(dlg);
+  dlg.showModal();
+  const errEl = dlg.querySelector('#bp-error');
+  const submit = async (choice) => {
+    errEl.textContent = '';
+    try {
+      await api(`/dispatch/${payload.pendingSendId}/choose`, {
+        method: 'POST', body: { choice },
+      });
+      dlg.close();
+      dlg.remove();
+    } catch (e) {
+      errEl.textContent = e.message;
+    }
+  };
+  dlg.querySelector('#bp-wait').addEventListener('click', () => submit('wait'));
+  dlg.querySelector('#bp-backlog').addEventListener('click', () => submit('backlog'));
+  dlg.querySelector('#bp-cancel').addEventListener('click', () => submit('cancel'));
+}
+
+// 面包屑渲染 — 从 thread.metadata.dispatch_chain 读
+function renderBreadcrumb() {
+  const t2 = state.focusedSlug ? state.threads.get(state.focusedSlug) : null;
+  let host = document.querySelector('#dispatch-breadcrumb');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'dispatch-breadcrumb';
+    const convHeader = document.querySelector('#conv-header');
+    if (convHeader && convHeader.parentNode) {
+      convHeader.parentNode.insertBefore(host, convHeader.nextSibling);
+    }
+  }
+  const chain = t2?.metadata?.dispatch_chain || [];
+  if (!chain.length) { host.innerHTML = ''; host.hidden = true; return; }
+  // 折叠相邻同 instanceId
+  const collapsed = [];
+  for (const seg of chain) {
+    const last = collapsed[collapsed.length - 1];
+    if (last && last.instanceId && last.instanceId === (seg.toInstanceId || seg.fromInstanceId)) {
+      last.repeat = (last.repeat || 1) + 1;
+      continue;
+    }
+    if (seg.kind === 'handoff') {
+      collapsed.push({
+        kind: 'handoff',
+        label: seg.toDisplayName || seg.toInstanceId || seg.toRole,
+        instanceId: seg.toInstanceId,
+        ts: seg.ts,
+      });
+    } else if (seg.kind === 'done') {
+      collapsed.push({ kind: 'done', label: '✓', ts: seg.ts });
+    } else if (seg.kind === 'blocked') {
+      collapsed.push({ kind: 'blocked', label: '⚠', ts: seg.ts });
+    }
+  }
+  // 第一段如果没有,加 fromRole 起点
+  if (chain.length && collapsed.length) {
+    const firstSeg = chain[0];
+    if (firstSeg.fromRole && firstSeg.fromInstanceId !== collapsed[0].instanceId) {
+      collapsed.unshift({ kind: 'start', label: firstSeg.fromRole, instanceId: firstSeg.fromInstanceId });
+    }
+  }
+  const html = `<span class="bc-label">${t('breadcrumb.label')}:</span>` + collapsed.map((c, i) => {
+    const sep = i > 0 ? '<span class="bc-sep">→</span>' : '';
+    const cls = `bc-seg bc-${c.kind}`;
+    const repeat = c.repeat ? `<span class="bc-repeat">× ${c.repeat}</span>` : '';
+    return `${sep}<span class="${cls}" title="${escapeHtml(c.instanceId || '')}">${escapeHtml(c.label)}${repeat}</span>`;
+  }).join('');
+  host.innerHTML = html;
+  host.hidden = false;
+}
+
+// 当前线索的 queue / backlog 列表(放在面包屑下方)
+function renderQueueAndBacklog() {
+  let host = document.querySelector('#queue-backlog-panel');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'queue-backlog-panel';
+    const bc = document.querySelector('#dispatch-breadcrumb');
+    if (bc && bc.parentNode) bc.parentNode.insertBefore(host, bc.nextSibling);
+  }
+  const items = (queueByThread.get(state.focusedSlug) || []);
+  if (!items.length) { host.innerHTML = ''; host.hidden = true; return; }
+  const groups = { queued: [], backlog: [], waiting_user: [], processing: [] };
+  for (const it of items) (groups[it.status] || (groups[it.status] = [])).push(it);
+  const rows = [];
+  for (const it of groups.queued) {
+    rows.push(`<div class="qb-row qb-queued">
+      <span class="qb-state">⏸ ${t('queue.statusQueued')}</span>
+      <span class="qb-target">→ ${escapeHtml(it.targetId)}</span>
+      <button class="qb-cancel" data-id="${it.id}">${t('queue.cancel')}</button>
+    </div>`);
+  }
+  for (const it of groups.backlog) {
+    rows.push(`<div class="qb-row qb-backlog">
+      <span class="qb-state">📥 ${t('queue.statusBacklog')}</span>
+      <span class="qb-target">→ ${escapeHtml(it.targetId)}</span>
+      <button class="qb-dispatch" data-id="${it.id}">${t('queue.dispatchNow')}</button>
+      <button class="qb-cancel" data-id="${it.id}">${t('queue.cancel')}</button>
+    </div>`);
+  }
+  for (const it of groups.waiting_user) {
+    rows.push(`<div class="qb-row qb-waiting">
+      <span class="qb-state">❓ ${t('queue.statusWaitingUser')}</span>
+      <span class="qb-target">→ ${escapeHtml(it.targetId)}</span>
+    </div>`);
+  }
+  host.innerHTML = rows.join('');
+  host.hidden = false;
+  host.querySelectorAll('.qb-cancel').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try { await api(`/queue/${btn.dataset.id}/cancel`, { method: 'POST', body: {} }); }
+      catch (e) { alert('cancel failed: ' + e.message); }
+    });
+  });
+  host.querySelectorAll('.qb-dispatch').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try { await api(`/backlog/${btn.dataset.id}/dispatch`, { method: 'POST', body: {} }); }
+      catch (e) { alert('dispatch failed: ' + e.message); }
+    });
+  });
 }
 
 // [需求@2026-06-12 §8.10] 顶栏粘性 system banner(cap warn 用)

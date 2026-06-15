@@ -178,6 +178,39 @@ const ThreadStore = {
     meta.last_session_activity_at[roleType] = Date.now();
     stmts.updateMetadata.run(JSON.stringify(meta), Date.now(), projectId, slug);
   },
+
+  // ====================== Phase 2G M1.2 dispatch_chain ======================
+  // [需求@2026-06-15 Phase 2G] 派工链 — call stack 模型,记录每个 marker handoff
+  //   每个 segment: { role, instanceId, displayName?, marker?, ts, kind: 'handoff'|'done'|'blocked' }
+  //   渲染时折叠相邻同 instanceId(R → H ↔ B-1 ↔ H)。
+
+  /**
+   * Append a segment to thread.metadata.dispatch_chain.
+   * Returns the updated thread.
+   */
+  appendDispatchChain(projectId, slug, segment) {
+    const cur = ThreadStore.get(projectId, slug);
+    if (!cur) throw new Error(`thread ${slug} not found`);
+    const meta = cur.metadata;
+    if (!Array.isArray(meta.dispatch_chain)) meta.dispatch_chain = [];
+    meta.dispatch_chain.push({ ts: Date.now(), ...segment });
+    stmts.updateMetadata.run(JSON.stringify(meta), Date.now(), projectId, slug);
+    return ThreadStore.get(projectId, slug);
+  },
+
+  /**
+   * Clear or reset the dispatch chain (e.g. on done).
+   * For now we don't clear — done events are just appended as segments for history.
+   * Provide for future use.
+   */
+  clearDispatchChain(projectId, slug) {
+    const cur = ThreadStore.get(projectId, slug);
+    if (!cur) throw new Error(`thread ${slug} not found`);
+    const meta = cur.metadata;
+    meta.dispatch_chain = [];
+    stmts.updateMetadata.run(JSON.stringify(meta), Date.now(), projectId, slug);
+    return ThreadStore.get(projectId, slug);
+  },
 };
 
 module.exports = ThreadStore;
