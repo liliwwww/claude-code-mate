@@ -36,6 +36,8 @@
       <button type="button" class="tab-btn" data-tab="control" data-i18n="dashboard.tabs.control">对话控制</button>
       <!-- [需求@2026-06-14] tab 5:全局日志流 -->
       <button type="button" class="tab-btn" data-tab="logs" data-i18n="dashboard.tabs.logs">日志流</button>
+      <!-- [需求@2026-06-15 Phase 2G M2] tab 6:状态图 -->
+      <button type="button" class="tab-btn" data-tab="graph" data-i18n="dashboard.tabs.graph">状态图</button>
     </div>
 
     <div class="tab-content" data-tab="terminals">
@@ -122,6 +124,24 @@
         <textarea id="mt-input" data-i18n-attr-placeholder="dashboard.control.placeholder" placeholder="给该终端发消息(Ctrl+Enter 发送)" rows="3"></textarea>
         <button type="submit" id="mt-send" data-i18n="dashboard.control.sendBtn">发送</button>
       </form>
+    </div>
+
+    <!-- [需求@2026-06-15 Phase 2G M2] tab 6 — 状态图(SVG 节点-边图) -->
+    <div class="tab-content" data-tab="graph" hidden>
+      <div class="graph-toolbar">
+        <label><span data-i18n="dashboard.graph.scope">范围:</span>
+          <select id="graph-scope">
+            <option value="global" data-i18n="dashboard.graph.scopeAll">全局</option>
+            <option value="default" selected data-i18n="dashboard.graph.scopeDefault">Default project</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="graph-show-disc" /> <span data-i18n="dashboard.graph.showDisc">含 disconnected</span></label>
+        <button id="graph-refresh" type="button">⟳</button>
+        <span id="graph-info" class="muted" style="font-size:11px;margin-left:10px"></span>
+      </div>
+      <div id="graph-canvas-wrap">
+        <svg id="graph-svg" xmlns="http://www.w3.org/2000/svg" width="100%" height="640"></svg>
+      </div>
     </div>
   </main>
 

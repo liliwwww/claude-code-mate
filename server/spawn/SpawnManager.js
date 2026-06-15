@@ -821,7 +821,9 @@ class SpawnManager {
         }
         try {
           const inst = this._createPoolInstance({ projectId, projectRootDir, role, poolSlot: slot, threadSlug: null });
-          inst.spawn({ suppressGreeting: true });
+          // 必须发 greeting(默认 "ready"),否则 claude headless 无 stdin → 卡 spawning
+          //   (RoleInstance.spawn 注释 §2:greeting 是为避免 claude 3s no-stdin auto-exit)
+          inst.spawn({ suppressGreeting: false });
           results.spawned++;
           results.perRole[role.name].after++;
         } catch (e) {

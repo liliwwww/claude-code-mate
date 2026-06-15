@@ -833,13 +833,15 @@ async function refreshActiveTab() {
   else if (currentTab === 'dispatch') await refreshDispatchHistory();
   else if (currentTab === 'control') await refreshMatetermInstances();  // 只刷实例下拉,不重拉历史(避免打断对话)
   else if (currentTab === 'logs') await refreshLogStream();
+  else if (currentTab === 'graph') await refreshGraph();
   updateLastRefresh();
 }
 
 function switchTab(target) {
-  if (!['terminals', 'queue', 'dispatch', 'control', 'logs'].includes(target)) target = 'terminals';
+  if (!['terminals', 'queue', 'dispatch', 'control', 'logs', 'graph'].includes(target)) target = 'terminals';
   const isEnteringControl = currentTab !== 'control' && target === 'control';
   const isEnteringLogs = currentTab !== 'logs' && target === 'logs';
+  const isEnteringGraph = currentTab !== 'graph' && target === 'graph';
   currentTab = target;
   document.querySelectorAll('#dashboard-tabs .tab-btn').forEach((t) => {
     t.classList.toggle('active', t.dataset.tab === target);
@@ -859,6 +861,12 @@ function switchTab(target) {
   // 进入 logs tab → 拉一次 + 装好下拉
   if (isEnteringLogs) {
     initLogStreamTab();
+    updateLastRefresh();
+    return;
+  }
+  // 进入 graph tab → 初始化 + 拉一次
+  if (isEnteringGraph) {
+    initGraphTab();
     updateLastRefresh();
     return;
   }
@@ -1143,6 +1151,275 @@ function setupLogStreamWS() {
   });
 }
 
+// ============================== Tab 6: state graph ==============================
+// [需求@2026-06-15 Phase 2G M2] 状态图 — SVG 4 层节点-边图(R / H / B / C)
+//   节点:实例(idle/busy/spawning/disconnected)
+//   边:派工关系
+//     实线 + 绿色 = 正在处理(active)
+//     虚线 + 黄色 = 排队中(queued)
+//     点线 + 蓝色 = backlog(等用户决策)
+//   数据源:GET /api/runtime/snapshot + GET /api/queue?status=all
+//   增量更新:WS instance.status_change / queue.* / backlog.* / dispatch.* → 防抖 refresh
+
+const GRAPH_STATE = {
+  inited: false,
+  scope: 'default',
+  showDisc: false,
+  defaultProjectId: 1,
+  snapshot: null,
+  queue: [],
+};
+
+const LAYER_DEFS = [
+  { type: 'requirements', key: 'R', labelKey: 'dashboard.graph.layerR', color: '#88ccff' },
+  { type: 'orchestrator', key: 'H', labelKey: 'dashboard.graph.layerH', color: '#ffcc66' },
+  { type: 'executor',     key: 'B', labelKey: 'dashboard.graph.layerB', color: '#aaffaa' },
+  { type: 'validator',    key: 'C', labelKey: 'dashboard.graph.layerC', color: '#ffaaff' },
+];
+
+const NODE_W = 130;
+const NODE_H = 52;
+const LAYER_HEIGHT = 130;
+const LAYER_LABEL_W = 60;
+const NODE_GAP_X = 18;
+
+async function initGraphTab() {
+  if (!GRAPH_STATE.inited) {
+    GRAPH_STATE.inited = true;
+    wireGraphUI();
+    setupGraphWS();
+    // 读 defaultProjectId
+    try {
+      const sys = await fetch('/api/system').then((r) => r.json());
+      GRAPH_STATE.defaultProjectId = sys.defaultProjectId || 1;
+    } catch {}
+  }
+  await refreshGraph();
+}
+
+function wireGraphUI() {
+  el('#graph-scope').addEventListener('change', (e) => {
+    GRAPH_STATE.scope = e.target.value;
+    refreshGraph();
+  });
+  el('#graph-show-disc').addEventListener('change', (e) => {
+    GRAPH_STATE.showDisc = e.target.checked;
+    renderGraph();
+  });
+  el('#graph-refresh').addEventListener('click', () => refreshGraph());
+}
+
+let graphRefreshDebounce = null;
+function setupGraphWS() {
+  if (!window.MateWS) return;
+  const topics = [
+    'instance.spawned', 'instance.status_change', 'instance.exited',
+    'dispatch.busy_prompt',
+    'queue.added', 'queue.claimed', 'queue.cancelled',
+    'backlog.added', 'backlog.dispatched', 'backlog.cancelled',
+    'dispatch.chain_updated',
+  ];
+  for (const top of topics) {
+    window.MateWS.subscribe(top, () => {
+      if (currentTab !== 'graph') return;
+      if (graphRefreshDebounce) clearTimeout(graphRefreshDebounce);
+      graphRefreshDebounce = setTimeout(() => refreshGraph(), 250);
+    });
+  }
+}
+
+async function refreshGraph() {
+  const proj = GRAPH_STATE.scope === 'default' ? GRAPH_STATE.defaultProjectId : null;
+  try {
+    const snapUrl = proj ? `/api/runtime/snapshot?projectId=${proj}` : '/api/runtime/snapshot';
+    const queueUrl = `/api/queue?status=all${proj ? '&projectId=' + proj : ''}`;
+    const [snap, queue] = await Promise.all([
+      fetch(snapUrl).then((r) => r.json()),
+      fetch(queueUrl).then((r) => r.json()),
+    ]);
+    GRAPH_STATE.snapshot = snap;
+    GRAPH_STATE.queue = Array.isArray(queue) ? queue : [];
+    renderGraph();
+  } catch (e) {
+    console.warn('[graph] refresh failed', e);
+  }
+}
+
+function renderGraph() {
+  const svg = el('#graph-svg');
+  if (!svg) return;
+  const snap = GRAPH_STATE.snapshot;
+  if (!snap) { svg.innerHTML = `<text x="20" y="40" fill="#888">${escapeHtml(t('dashboard.graph.empty'))}</text>`; return; }
+
+  // 收集所有实例 → 按 roleType 分层
+  const groups = { requirements: [], orchestrator: [], executor: [], validator: [] };
+  const allInsts = [
+    ...(snap.instances?.idle || []),
+    ...(snap.instances?.busy || []),
+    ...(snap.instances?.spawning || []),
+  ];
+  if (GRAPH_STATE.showDisc) allInsts.push(...(snap.instances?.disconnected || []));
+  for (const i of allInsts) {
+    const g = groups[i.roleType];
+    if (g) g.push(i);
+  }
+  // R 按 displayName 排,池化角色按 poolSlot
+  for (const t2 of Object.keys(groups)) {
+    if (t2 === 'requirements') {
+      groups[t2].sort((a, b) => (a.displayName || a.id).localeCompare(b.displayName || b.id));
+    } else {
+      groups[t2].sort((a, b) => (a.poolSlot || 99) - (b.poolSlot || 99));
+    }
+  }
+
+  // 计算总宽 / 行宽
+  const maxCount = Math.max(1, ...LAYER_DEFS.map((l) => groups[l.type].length));
+  const wrapW = el('#graph-canvas-wrap').clientWidth || 800;
+  const innerW = wrapW - LAYER_LABEL_W - 40;  // padding
+  const totalH = LAYER_DEFS.length * LAYER_HEIGHT + 40;
+
+  // 索引 instance.id → 坐标
+  const nodePos = new Map();
+  // SVG defs — 3 种颜色箭头
+  let html = `<defs>
+    <marker id="arr-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#88dd88"/>
+    </marker>
+    <marker id="arr-queued" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ffcc66"/>
+    </marker>
+    <marker id="arr-backlog" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#88ccff"/>
+    </marker>
+  </defs>`;
+  html += `<g id="g-layers">`;
+  LAYER_DEFS.forEach((layer, layerIdx) => {
+    const y = 30 + layerIdx * LAYER_HEIGHT;
+    // 层 label
+    html += `<text x="10" y="${y + NODE_H / 2 + 5}" fill="#888" font-size="11" font-family="ui-monospace,Consolas,monospace">${escapeHtml(t(layer.labelKey))}</text>`;
+    // 横分隔线
+    html += `<line x1="${LAYER_LABEL_W}" y1="${y + NODE_H + 20}" x2="${wrapW - 20}" y2="${y + NODE_H + 20}" stroke="#333" stroke-dasharray="2,4" />`;
+    // 节点
+    const items = groups[layer.type] || [];
+    if (!items.length) {
+      html += `<text x="${LAYER_LABEL_W + 20}" y="${y + NODE_H / 2 + 4}" fill="#555" font-size="11" font-style="italic">(empty)</text>`;
+    } else {
+      const totalNodesW = items.length * NODE_W + (items.length - 1) * NODE_GAP_X;
+      const startX = LAYER_LABEL_W + Math.max(20, (innerW - totalNodesW) / 2);
+      items.forEach((i, idx) => {
+        const x = startX + idx * (NODE_W + NODE_GAP_X);
+        nodePos.set(i.id, { x: x + NODE_W / 2, yTop: y, yBot: y + NODE_H, cx: x + NODE_W / 2, cy: y + NODE_H / 2 });
+        html += renderNode(i, x, y, layer.color);
+      });
+    }
+  });
+  html += `</g>`;
+
+  // ----- 边:active dispatch(基于 thread.metadata.dispatch_chain)+ queued/backlog(基于 queue)
+  // active 边:遍历所有线索的最近 chain segment(实线绿)
+  html += `<g id="g-edges">`;
+  html += renderActiveEdges(snap, nodePos);
+  html += renderQueueEdges(GRAPH_STATE.queue, nodePos);
+  html += `</g>`;
+
+  svg.setAttribute('width', wrapW);
+  svg.setAttribute('height', totalH);
+  svg.innerHTML = html;
+
+  // 状态信息
+  const qCount = GRAPH_STATE.queue.filter((r) => r.status === 'queued').length;
+  const bCount = GRAPH_STATE.queue.filter((r) => r.status === 'backlog').length;
+  el('#graph-info').textContent = t('dashboard.graph.info', { n: allInsts.length, q: qCount, b: bCount });
+}
+
+function renderNode(inst, x, y, color) {
+  const bgByStatus = {
+    idle: '#1f2a1f',
+    busy: '#3a2c1f',
+    spawning: '#1f2a3a',
+    disconnected: '#222',
+    dead: '#3a1f1f',
+  };
+  const stroke = inst.status === 'busy' ? color : '#444';
+  const strokeW = inst.status === 'busy' ? 2.5 : 1;
+  const bg = bgByStatus[inst.status] || '#222';
+  const taskSlug = inst.currentTaskSlug || inst.threadSlug || '';
+  const taskShort = taskSlug ? taskSlug.slice(0, 14) + (taskSlug.length > 14 ? '…' : '') : '';
+  const act = inst.currentActivity ? inst.currentActivity.slice(0, 16) : '';
+  return `<g class="gn gn-${inst.status}">
+    <rect x="${x}" y="${y}" width="${NODE_W}" height="${NODE_H}" rx="4" fill="${bg}" stroke="${stroke}" stroke-width="${strokeW}"/>
+    <text x="${x + 8}" y="${y + 16}" fill="${color}" font-size="12" font-family="ui-monospace,Consolas,monospace" font-weight="600">${escapeHtml(inst.displayName || inst.id)}</text>
+    <text x="${x + 8}" y="${y + 32}" fill="#aaa" font-size="10">${escapeHtml(inst.status)}${taskShort ? ' · ' + escapeHtml(taskShort) : ''}</text>
+    <text x="${x + 8}" y="${y + 46}" fill="#777" font-size="10">${escapeHtml(act)}</text>
+    <title>${escapeHtml(inst.id)} · ${escapeHtml(inst.status)}${taskSlug ? '\nthread: ' + taskSlug : ''}${act ? '\nact: ' + inst.currentActivity : ''}</title>
+  </g>`;
+}
+
+// active 边:从所有 thread 的 dispatch_chain 最后一段提取 from→to,画实线
+function renderActiveEdges(snap, nodePos) {
+  // 我们没有从 snapshot 直接拿 thread 列表 — 借 instance.threadSlug 反推
+  //   每个 busy 实例的 threadSlug 是它当前在跑的线索 → 画从绑定的来源到此节点的边
+  //   简化:只画 R → 池化实例(根据 thread 的 metadata 应该有,但 snapshot 不带)
+  //   兜底:直接基于 instance 的 currentTaskSlug 配对找 R(同 thread 的 R)
+  let edges = '';
+  const allInsts = [
+    ...(snap.instances?.busy || []),
+    ...(snap.instances?.idle || []),
+  ];
+  // 找每个 thread 上的 R / H / B / C 配对
+  const threadGroups = new Map();
+  for (const i of allInsts) {
+    const ts = i.currentTaskSlug || i.threadSlug;
+    if (!ts) continue;
+    if (!threadGroups.has(ts)) threadGroups.set(ts, {});
+    threadGroups.get(ts)[i.roleType] = i;
+  }
+  // R → H → B/C 各层连边(只画相邻层)
+  for (const [, g] of threadGroups) {
+    if (g.requirements && g.orchestrator) {
+      edges += drawEdge(g.requirements.id, g.orchestrator.id, nodePos, 'active');
+    }
+    if (g.orchestrator && g.executor) {
+      edges += drawEdge(g.orchestrator.id, g.executor.id, nodePos, 'active');
+    }
+    if (g.orchestrator && g.validator) {
+      edges += drawEdge(g.orchestrator.id, g.validator.id, nodePos, 'active');
+    }
+  }
+  return edges;
+}
+
+function renderQueueEdges(queue, nodePos) {
+  let edges = '';
+  for (const q of queue) {
+    if (!['queued', 'backlog'].includes(q.status)) continue;
+    if (!q.fromInstanceId || !q.targetId) continue;
+    const cls = q.status === 'queued' ? 'queued' : 'backlog';
+    edges += drawEdge(q.fromInstanceId, q.targetId, nodePos, cls);
+  }
+  return edges;
+}
+
+function drawEdge(fromId, toId, nodePos, cls) {
+  const a = nodePos.get(fromId);
+  const b = nodePos.get(toId);
+  if (!a || !b) return '';
+  // 从 from 底中 → to 顶中,曲线
+  const x1 = a.cx;
+  const y1 = a.yBot;
+  const x2 = b.cx;
+  const y2 = b.yTop;
+  const midY = (y1 + y2) / 2;
+  const path = `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`;
+  const styleMap = {
+    active:  { stroke: '#88dd88', strokeW: 2,   dash: '',      marker: 'url(#arr-active)' },
+    queued:  { stroke: '#ffcc66', strokeW: 1.5, dash: '4,3',   marker: 'url(#arr-queued)' },
+    backlog: { stroke: '#88ccff', strokeW: 1.5, dash: '2,4',   marker: 'url(#arr-backlog)' },
+  };
+  const s = styleMap[cls] || styleMap.active;
+  return `<path d="${path}" fill="none" stroke="${s.stroke}" stroke-width="${s.strokeW}" stroke-dasharray="${s.dash}" marker-end="${s.marker}" class="ge ge-${cls}"/>`;
+}
+
 // ============================== Bootstrap ==============================
 
 (function init() {
@@ -1157,4 +1434,6 @@ function setupLogStreamWS() {
   if (currentTab === 'control') refreshControl();
   // 首次 tab=logs 时也要初始化
   if (currentTab === 'logs') initLogStreamTab();
+  // 首次 tab=graph 时也要初始化
+  if (currentTab === 'graph') initGraphTab();
 })();

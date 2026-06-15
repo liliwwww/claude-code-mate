@@ -307,6 +307,26 @@
     'queue.statusWaitingUser': '等你决策',
     'queue.cancel': '取消',
     'queue.dispatchNow': '现在派',
+    // ---------------- Phase 2G M2: 状态图 tab ----------------
+    'dashboard.tabs.graph': '状态图',
+    'dashboard.graph.scope': '范围:',
+    'dashboard.graph.scopeAll': '全局',
+    'dashboard.graph.scopeDefault': 'Default project',
+    'dashboard.graph.showDisc': '含 disconnected',
+    'dashboard.graph.legendActive': '正在处理',
+    'dashboard.graph.legendQueued': '排队中',
+    'dashboard.graph.legendBacklog': 'backlog',
+    'dashboard.graph.legendIdle': 'idle',
+    'dashboard.graph.legendBusy': 'busy',
+    'dashboard.graph.legendSpawning': 'spawning',
+    'dashboard.graph.legendDisc': 'disconnected',
+    'dashboard.graph.legendDead': 'dead',
+    'dashboard.graph.empty': '当前没有活实例',
+    'dashboard.graph.info': '{n} 实例 · {q} 排队 · {b} backlog',
+    'dashboard.graph.layerR': 'R (requirements)',
+    'dashboard.graph.layerH': 'H (orchestrator)',
+    'dashboard.graph.layerB': 'B (executor)',
+    'dashboard.graph.layerC': 'C (validator)',
   };
 
   const en = {
@@ -602,6 +622,26 @@
     'queue.statusWaitingUser': 'awaiting your decision',
     'queue.cancel': 'Cancel',
     'queue.dispatchNow': 'Dispatch now',
+    // ---------------- Phase 2G M2: State graph tab ----------------
+    'dashboard.tabs.graph': 'State Graph',
+    'dashboard.graph.scope': 'Scope:',
+    'dashboard.graph.scopeAll': 'All',
+    'dashboard.graph.scopeDefault': 'Default project',
+    'dashboard.graph.showDisc': 'show disconnected',
+    'dashboard.graph.legendActive': 'active',
+    'dashboard.graph.legendQueued': 'queued',
+    'dashboard.graph.legendBacklog': 'backlog',
+    'dashboard.graph.legendIdle': 'idle',
+    'dashboard.graph.legendBusy': 'busy',
+    'dashboard.graph.legendSpawning': 'spawning',
+    'dashboard.graph.legendDisc': 'disconnected',
+    'dashboard.graph.legendDead': 'dead',
+    'dashboard.graph.empty': 'no live instance',
+    'dashboard.graph.info': '{n} instances · {q} queued · {b} backlog',
+    'dashboard.graph.layerR': 'R (requirements)',
+    'dashboard.graph.layerH': 'H (orchestrator)',
+    'dashboard.graph.layerB': 'B (executor)',
+    'dashboard.graph.layerC': 'C (validator)',
   };
 
   window.MateMessages = { zh, en };

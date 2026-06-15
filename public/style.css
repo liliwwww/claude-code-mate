@@ -917,3 +917,44 @@ main { flex: 1; display: flex; min-height: 0; }
   border-color: var(--accent);
 }
 #busy-prompt-dialog button.primary:hover { opacity: 0.9; }
+
+/* [需求@2026-06-15 Phase 2G M2] 状态图 tab(SVG 节点-边图) */
+.graph-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.graph-toolbar label { display: inline-flex; align-items: center; gap: 4px; }
+.graph-toolbar select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.graph-toolbar button {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+#graph-canvas-wrap {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-top: 8px;
+  overflow: auto;
+  min-height: 640px;
+}
+#graph-svg { display: block; }
+#graph-svg .gn-busy rect { filter: drop-shadow(0 0 6px rgba(255,204,102,0.4)); }
+#graph-svg .gn-spawning rect { filter: drop-shadow(0 0 6px rgba(136,204,255,0.4)); animation: pulse 1.2s infinite alternate; }
+@keyframes pulse { from { opacity: 0.6; } to { opacity: 1; } }
