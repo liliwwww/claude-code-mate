@@ -297,8 +297,15 @@ class RoleInstance {
     }
     // Lazy resurrection: if disconnected, queue the message and spawn now.
     if (this.status === 'disconnected') {
+      // [bug@2026-06-15] sessionId=null 时不再抛错 — switchModel 主动清了
+      //   session_id(换 model 等于换世界,resume 没意义),改走 fresh spawn 路径
+      //   (跟 TTL 过期同语义)。
       if (!this.sessionId) {
-        throw new Error(`Cannot resume ${this.id}: no saved session_id`);
+        console.log(`[RoleInstance ${this.id}] no session_id (model switch or fresh) — starting fresh session`);
+        this._pendingUserText = text;
+        this.spawn({ suppressGreeting: true });
+        this._setStatus('busy');
+        return;
       }
       // [需求@2026-06-12 §8.10] TTL 防生锈:idle 太久 → session 内的代码/文件记忆已陈腐,
       //   --resume 续上反而是负资产。丢 session_id 起全新会话,role 靠 system prompt 重建认知。
