@@ -707,6 +707,9 @@ function handleWsMsg({ type, payload }) {
     if (inst.projectId !== state.activeProjectId) return;
     state.instances.set(inst.id, inst);
     renderThreads();
+    // [bug@2026-06-15] claude 完 turn → result → _setStatus('idle') → status_change
+    //   走这条路径(非 exited),需要重算 busy UI 才能把 ■停止 翻 发送
+    applyBusyUiState();
   } else if (type === 'instance.exited') {
     const inst = payload.instance;
     // [需求@2026-06-11 §3] 事件流 — kill/exit 推一条
