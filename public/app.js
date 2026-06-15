@@ -328,14 +328,45 @@ function renderThreads() {
         <span class="light ${light}"></span>
         ${escapeHtml(t.title || t.slug)}
       </div>
-      <div class="title">${escapeHtml(t.slug)}${blockedText}</div>
+      <div class="title">
+        <span class="slug-text">${escapeHtml(t.slug)}</span>
+        <button class="copy-slug-btn" data-slug="${escapeHtml(t.slug)}" title="复制线索 ID">📋</button>
+        ${blockedText}
+      </div>
       <div class="stage-row">
         <span class="stage ${t.stage}">${t.stage}</span>
       </div>
     `;
-    li.addEventListener('click', () => focusThread(t.slug));
+    li.addEventListener('click', (ev) => {
+      // [需求@2026-06-15] 点 copy 不触发 focusThread
+      if (ev.target.closest('.copy-slug-btn')) return;
+      focusThread(t.slug);
+    });
+    // [需求@2026-06-15] copy slug 按钮
+    const copyBtn = li.querySelector('.copy-slug-btn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        copySlugToClipboard(t.slug, copyBtn);
+      });
+    }
     els.threadsList.appendChild(li);
   }
+}
+
+// [需求@2026-06-15] 复制线索 slug 到剪贴板,带视觉反馈
+function copySlugToClipboard(slug, btn) {
+  navigator.clipboard.writeText(slug).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = orig;
+      btn.classList.remove('copied');
+    }, 1200);
+  }).catch((e) => {
+    alert('复制失败: ' + e.message);
+  });
 }
 
 function renderConvHeader() {
@@ -344,6 +375,9 @@ function renderConvHeader() {
     els.convTitle.textContent = '选一条线索开始';
     els.stagePicker.hidden = true;
     els.sendBtn.disabled = true;
+    // 清掉可能残留的 slug + copy
+    const ex = els.convTitle.parentNode.querySelector('.conv-slug');
+    if (ex) ex.remove();
     return;
   }
   els.convTitle.textContent = `${t.title || t.slug}`;
@@ -351,6 +385,17 @@ function renderConvHeader() {
   els.stagePicker.value = t.stage;
   els.sendBtn.disabled = false;
   applyBusyUiState();
+  // [需求@2026-06-15] conv-header 加 slug + copy 按钮(title 跟 slug 不一样时才显)
+  let slugEl = els.convTitle.parentNode.querySelector('.conv-slug');
+  if (!slugEl) {
+    slugEl = document.createElement('span');
+    slugEl.className = 'conv-slug';
+    els.convTitle.parentNode.insertBefore(slugEl, els.stagePicker);
+  }
+  slugEl.innerHTML = `<span class="conv-slug-text">${escapeHtml(t.slug)}</span>
+                      <button class="copy-slug-btn" title="复制线索 ID">📋</button>`;
+  const btn = slugEl.querySelector('.copy-slug-btn');
+  btn.addEventListener('click', () => copySlugToClipboard(t.slug, btn));
 }
 
 // [需求@2026-06-13 §18] 焦点 thread 是否 busy(任一绑定实例处于 busy/spawning)

@@ -750,3 +750,40 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 .term-row .term-model-sel:hover { border-color: var(--accent); }
 .term-row .term-model-sel:disabled { opacity: 0.5; cursor: wait; }
+
+/* [需求@2026-06-15] 线索 ID copy 按钮 */
+.copy-slug-btn {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  cursor: pointer;
+  margin-left: 4px;
+  line-height: 16px;
+  vertical-align: middle;
+}
+.copy-slug-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-card-hover);
+}
+.copy-slug-btn.copied {
+  border-color: var(--accent-green);
+  color: var(--accent-green);
+}
+#threads .title .slug-text {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.conv-slug {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 10px;
+  font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--text-muted);
+}
