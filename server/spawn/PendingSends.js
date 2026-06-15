@@ -30,7 +30,12 @@
 
 const { stmts } = require('../db');
 
-function enqueue({ kind, targetKind, targetId, projectId = null, payload, reason }) {
+// [需求@2026-06-15 Phase 2G] 加 status / dispatch_chain / thread_slug / from_instance_id
+//   status 默认 'queued'(向后兼容);新代码显式传 'waiting_user' / 'backlog'
+function enqueue({
+  kind, targetKind, targetId, projectId = null, payload, reason,
+  status = 'queued', dispatchChain = null, threadSlug = null, fromInstanceId = null,
+}) {
   if (!kind || !targetKind || !targetId || !payload || !reason) {
     throw new Error(`PendingSends.enqueue requires kind/targetKind/targetId/payload/reason`);
   }
@@ -42,6 +47,10 @@ function enqueue({ kind, targetKind, targetId, projectId = null, payload, reason
     payload_json: typeof payload === 'string' ? payload : JSON.stringify(payload),
     enqueued_at: Date.now(),
     reason,
+    status,
+    dispatch_chain: dispatchChain ? (typeof dispatchChain === 'string' ? dispatchChain : JSON.stringify(dispatchChain)) : null,
+    thread_slug: threadSlug,
+    from_instance_id: fromInstanceId,
   });
   return r.lastInsertRowid;
 }
@@ -82,6 +91,10 @@ function parseRow(r) {
   if (!r) return null;
   let payload = null;
   try { payload = JSON.parse(r.payload_json); } catch { payload = { _parse_error: true, raw: r.payload_json }; }
+  let dispatchChain = null;
+  if (r.dispatch_chain) {
+    try { dispatchChain = JSON.parse(r.dispatch_chain); } catch { dispatchChain = []; }
+  }
   return {
     id: r.id,
     kind: r.kind,
@@ -91,7 +104,52 @@ function parseRow(r) {
     payload,
     enqueuedAt: r.enqueued_at,
     reason: r.reason,
+    // [v7 字段]
+    status: r.status || 'queued',
+    dispatchChain,
+    threadSlug: r.thread_slug || null,
+    fromInstanceId: r.from_instance_id || null,
+    backlogAt: r.backlog_at || null,
+    processedAt: r.processed_at || null,
+    cancelledAt: r.cancelled_at || null,
+    cancelReason: r.cancel_reason || null,
   };
+}
+
+// ============================== v7 state machine helpers ==============================
+
+function getById(id) {
+  return parseRow(stmts.psGetById.get(id));
+}
+
+function listByStatus(status) {
+  return stmts.psListByStatus.all(status).map(parseRow);
+}
+
+function listByThread(threadSlug) {
+  return stmts.psListByThread.all(threadSlug).map(parseRow);
+}
+
+// 状态机迁移
+function markBacklog(id) {
+  return stmts.psSetBacklog.run(Date.now(), id);
+}
+
+function markQueued(id) {
+  return stmts.psSetStatus.run('queued', null, id);
+}
+
+function markProcessing(id) {
+  return stmts.psSetStatus.run('processing', Date.now(), id);
+}
+
+function markCancelled(id, reason = null) {
+  return stmts.psSetCancelled.run(Date.now(), reason, id);
+}
+
+// 找最早可派发的 queued 项,匹配 (target_kind, target_id)
+function findOldestQueuedFor(targetKind, targetId) {
+  return parseRow(stmts.psFindOldestQueuedFor.get(targetKind, targetId));
 }
 
 module.exports = {
@@ -99,8 +157,16 @@ module.exports = {
   listForTarget,
   listAll,
   listByProject,
+  listByStatus,
+  listByThread,
+  getById,
   remove,
   count,
   countByProject,
   countByReason,
+  markBacklog,
+  markQueued,
+  markProcessing,
+  markCancelled,
+  findOldestQueuedFor,
 };

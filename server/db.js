@@ -273,6 +273,42 @@ if (curVersion < 6) {
   curVersion = 6;
 }
 
+// [2026-06-15] v6 -> v7:queue 状态机 + dispatch_chain
+//   mate_pending_sends 扩字段:
+//     - status: 'waiting_user' | 'queued' | 'backlog' | 'processing' | 'done' | 'cancelled'
+//     - dispatch_chain: JSON 数组,thread.metadata 的快照(派工链)
+//     - backlog_at / cancelled_at / processed_at:状态机时间戳
+//     - cancel_reason: 文本(可选)
+//     - from_instance_id: 触发派工的源实例(R 或 H)
+//     - thread_slug: 关联线索(便于 UI 反查;原 target_id 也可能是 instance.id 没线索)
+//
+//   旧 row(reason='busy/quota_pause/spawning' 时无 status)默认补 status='queued'
+//   保持向后兼容。
+if (curVersion < 7) {
+  const cols = [
+    { name: 'status',           type: "TEXT NOT NULL DEFAULT 'queued'" },
+    { name: 'dispatch_chain',   type: 'TEXT' },
+    { name: 'thread_slug',      type: 'TEXT' },
+    { name: 'from_instance_id', type: 'TEXT' },
+    { name: 'backlog_at',       type: 'INTEGER' },
+    { name: 'processed_at',     type: 'INTEGER' },
+    { name: 'cancelled_at',     type: 'INTEGER' },
+    { name: 'cancel_reason',    type: 'TEXT' },
+  ];
+  for (const { name, type } of cols) {
+    if (!tableHasColumn('mate_pending_sends', name)) {
+      db.exec(`ALTER TABLE mate_pending_sends ADD COLUMN ${name} ${type}`);
+    }
+  }
+  // 给老 row 兜底 status(已有 NOT NULL DEFAULT 但 ALTER ADD 不回填):
+  db.exec(`UPDATE mate_pending_sends SET status = 'queued' WHERE status IS NULL OR status = ''`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_sends_status   ON mate_pending_sends(status, enqueued_at)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_sends_thread   ON mate_pending_sends(thread_slug, status, enqueued_at)`);
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '7');
+  curVersion = 7;
+  console.log('[db v7] mate_pending_sends extended for queue state machine');
+}
+
 function ensureSystemProject() {
   const existing = db.prepare(`SELECT id FROM projects WHERE name = 'System'`).get();
   if (existing) return existing.id;
@@ -346,10 +382,16 @@ const stmts = {
   insertProject:      db.prepare(`INSERT INTO projects (name, root_dir, settings_json, created_at) VALUES (?, ?, ?, ?)`),
   archiveProject:     db.prepare(`UPDATE projects SET archived_at = ? WHERE id = ?`),
 
-  // [需求@2026-06-12 Phase 2E §1.5] mate_pending_sends 操作
+  // [需求@2026-06-12 Phase 2E §1.5 + 2026-06-15 v7] mate_pending_sends 操作
   psEnqueue: db.prepare(`
-    INSERT INTO mate_pending_sends (kind, target_kind, target_id, project_id, payload_json, enqueued_at, reason)
-    VALUES (@kind, @target_kind, @target_id, @project_id, @payload_json, @enqueued_at, @reason)
+    INSERT INTO mate_pending_sends (
+      kind, target_kind, target_id, project_id, payload_json, enqueued_at, reason,
+      status, dispatch_chain, thread_slug, from_instance_id
+    )
+    VALUES (
+      @kind, @target_kind, @target_id, @project_id, @payload_json, @enqueued_at, @reason,
+      @status, @dispatch_chain, @thread_slug, @from_instance_id
+    )
   `),
   psListByTarget: db.prepare(`
     SELECT * FROM mate_pending_sends
@@ -358,10 +400,23 @@ const stmts = {
   `),
   psListAll: db.prepare(`SELECT * FROM mate_pending_sends ORDER BY enqueued_at ASC`),
   psListByProject: db.prepare(`SELECT * FROM mate_pending_sends WHERE project_id = ? ORDER BY enqueued_at ASC`),
+  psListByStatus: db.prepare(`SELECT * FROM mate_pending_sends WHERE status = ? ORDER BY enqueued_at ASC`),
+  psListByThread: db.prepare(`SELECT * FROM mate_pending_sends WHERE thread_slug = ? ORDER BY enqueued_at ASC`),
+  psGetById: db.prepare(`SELECT * FROM mate_pending_sends WHERE id = ?`),
   psDelete: db.prepare(`DELETE FROM mate_pending_sends WHERE id = ?`),
   psCount: db.prepare(`SELECT COUNT(*) AS n FROM mate_pending_sends`),
   psCountByProject: db.prepare(`SELECT COUNT(*) AS n FROM mate_pending_sends WHERE project_id = ?`),
   psCountByReason: db.prepare(`SELECT reason, COUNT(*) AS n FROM mate_pending_sends GROUP BY reason`),
+  // 状态机迁移
+  psSetStatus: db.prepare(`UPDATE mate_pending_sends SET status = ?, processed_at = ? WHERE id = ?`),
+  psSetBacklog: db.prepare(`UPDATE mate_pending_sends SET status = 'backlog', backlog_at = ? WHERE id = ?`),
+  psSetCancelled: db.prepare(`UPDATE mate_pending_sends SET status = 'cancelled', cancelled_at = ?, cancel_reason = ? WHERE id = ?`),
+  // 找最早的可派发(queued)
+  psFindOldestQueuedFor: db.prepare(`
+    SELECT * FROM mate_pending_sends
+    WHERE target_kind = ? AND target_id = ? AND status = 'queued'
+    ORDER BY enqueued_at ASC LIMIT 1
+  `),
 
   // [需求@2026-06-12 Phase 2E §1.5 §6] mate_quota_state 操作
   qsUpsert: db.prepare(`

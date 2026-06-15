@@ -14,6 +14,8 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mate-ps-test-'));
 const tmpDbPath = path.join(tmpDir, 'test.sqlite');
 const tdb = new Database(tmpDbPath);
 tdb.pragma('journal_mode = WAL');
+// [2026-06-15 v7] 加 status / dispatch_chain / thread_slug / from_instance_id / backlog_at /
+//                 processed_at / cancelled_at / cancel_reason 字段
 tdb.exec(`
   CREATE TABLE mate_pending_sends (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,23 +25,48 @@ tdb.exec(`
     project_id      INTEGER,
     payload_json    TEXT NOT NULL,
     enqueued_at     INTEGER NOT NULL,
-    reason          TEXT
+    reason          TEXT,
+    status          TEXT NOT NULL DEFAULT 'queued',
+    dispatch_chain  TEXT,
+    thread_slug     TEXT,
+    from_instance_id TEXT,
+    backlog_at      INTEGER,
+    processed_at    INTEGER,
+    cancelled_at    INTEGER,
+    cancel_reason   TEXT
   );
 `);
 
-// Stub db module with table-equivalent prepared statements
+// Stub db module with table-equivalent prepared statements (v7)
 const fakeStmts = {
   psEnqueue: tdb.prepare(`
-    INSERT INTO mate_pending_sends (kind, target_kind, target_id, project_id, payload_json, enqueued_at, reason)
-    VALUES (@kind, @target_kind, @target_id, @project_id, @payload_json, @enqueued_at, @reason)
+    INSERT INTO mate_pending_sends (
+      kind, target_kind, target_id, project_id, payload_json, enqueued_at, reason,
+      status, dispatch_chain, thread_slug, from_instance_id
+    )
+    VALUES (
+      @kind, @target_kind, @target_id, @project_id, @payload_json, @enqueued_at, @reason,
+      @status, @dispatch_chain, @thread_slug, @from_instance_id
+    )
   `),
   psListByTarget: tdb.prepare(`SELECT * FROM mate_pending_sends WHERE target_kind = ? AND target_id = ? ORDER BY enqueued_at ASC`),
   psListAll: tdb.prepare(`SELECT * FROM mate_pending_sends ORDER BY enqueued_at ASC`),
   psListByProject: tdb.prepare(`SELECT * FROM mate_pending_sends WHERE project_id = ? ORDER BY enqueued_at ASC`),
+  psListByStatus: tdb.prepare(`SELECT * FROM mate_pending_sends WHERE status = ? ORDER BY enqueued_at ASC`),
+  psListByThread: tdb.prepare(`SELECT * FROM mate_pending_sends WHERE thread_slug = ? ORDER BY enqueued_at ASC`),
+  psGetById: tdb.prepare(`SELECT * FROM mate_pending_sends WHERE id = ?`),
   psDelete: tdb.prepare(`DELETE FROM mate_pending_sends WHERE id = ?`),
   psCount: tdb.prepare(`SELECT COUNT(*) AS n FROM mate_pending_sends`),
   psCountByProject: tdb.prepare(`SELECT COUNT(*) AS n FROM mate_pending_sends WHERE project_id = ?`),
   psCountByReason: tdb.prepare(`SELECT reason, COUNT(*) AS n FROM mate_pending_sends GROUP BY reason`),
+  psSetStatus: tdb.prepare(`UPDATE mate_pending_sends SET status = ?, processed_at = ? WHERE id = ?`),
+  psSetBacklog: tdb.prepare(`UPDATE mate_pending_sends SET status = 'backlog', backlog_at = ? WHERE id = ?`),
+  psSetCancelled: tdb.prepare(`UPDATE mate_pending_sends SET status = 'cancelled', cancelled_at = ?, cancel_reason = ? WHERE id = ?`),
+  psFindOldestQueuedFor: tdb.prepare(`
+    SELECT * FROM mate_pending_sends
+    WHERE target_kind = ? AND target_id = ? AND status = 'queued'
+    ORDER BY enqueued_at ASC LIMIT 1
+  `),
 };
 
 const dbPath = path.resolve(__dirname, '../../server/db.js');
