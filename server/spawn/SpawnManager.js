@@ -788,6 +788,50 @@ class SpawnManager {
       getRecordEvent: () => recordEvent,
     });
   }
+
+  // ====================== Phase 2G M1.5 boot 预热 ======================
+  // [需求@2026-06-15] boot 时为指定 project 预 spawn 池化角色实例(默认 1 H + 4 B + 4 C)。
+  //   - 跳过 R(R 是 per-thread,无意义预热)
+  //   - 已存在的 slot 不重复 spawn(restoreFromDisk 已恢复的 disconnected 也算占 slot)
+  //   - cap 超出时停止预热并 log warn(不抛错,容许 mate 继续起)
+  preheatPool({ projectId, projectRootDir }) {
+    if (!projectId || !projectRootDir) return { spawned: 0, skipped: 0, reason: 'missing project info' };
+    const results = { spawned: 0, skipped: 0, perRole: {} };
+    for (const role of roleCatalog.list()) {
+      if (role.type === 'requirements' || role.type === 'advisor') continue;
+      const target = role.parallelismLimit || 1;
+      results.perRole[role.name] = { target, before: 0, after: 0 };
+      for (let slot = 1; slot <= target; slot++) {
+        // 已有(任何状态非 dead)就跳过
+        const existing = [...this.instances.values()].find(
+          (i) => i.projectId === projectId && i.role.name === role.name && i.poolSlot === slot && i.status !== 'dead'
+        );
+        if (existing) {
+          results.perRole[role.name].before++;
+          results.skipped++;
+          continue;
+        }
+        // cap 检查
+        const alive = [...this.instances.values()].filter(
+          (i) => ['idle', 'busy', 'spawning'].includes(i.status)
+        ).length;
+        if (alive >= config.globalMaxClaudeProcesses) {
+          console.warn(`[SpawnManager] preheat aborted: cap reached (${alive}/${config.globalMaxClaudeProcesses})`);
+          return results;
+        }
+        try {
+          const inst = this._createPoolInstance({ projectId, projectRootDir, role, poolSlot: slot, threadSlug: null });
+          inst.spawn({ suppressGreeting: true });
+          results.spawned++;
+          results.perRole[role.name].after++;
+        } catch (e) {
+          console.warn(`[SpawnManager] preheat ${role.name}-${slot} failed: ${e.message}`);
+        }
+      }
+    }
+    console.log(`[SpawnManager] preheat done for project ${projectId}: spawned ${results.spawned}, skipped existing ${results.skipped}`);
+    return results;
+  }
 }
 
 module.exports = new SpawnManager();

@@ -1,7 +1,7 @@
 ---
 name: mate-C
 type: validator
-parallelism_limit: 2
+parallelism_limit: 4
 is_central: false
 session_ttl_hours: 2
 display_color: "#ffaaff"

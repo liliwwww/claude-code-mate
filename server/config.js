@@ -68,10 +68,19 @@ const config = {
   //   "永不过期"。需要 per-role 短 TTL 仍在 frontmatter 写 session_ttl_hours 覆盖。
   defaultSessionTtlHours: int(process.env.DEFAULT_SESSION_TTL_HOURS, 720),
 
-  // [需求@2026-06-12 §8.10 + Phase 2E §13] 全局并发软上限 — 超出 emit cap_warn,前端红条 banner,不硬拒
-  //   口径:**只算 idle/busy/spawning 真活实例**(disconnected 不算 — 它们没 child process,资源消耗 0)
-  //   默认 8(真活口径下,2 R + 1 H + 2 execB + 1 testC + 余 2 弹性)。
-  globalMaxClaudeProcesses: int(process.env.GLOBAL_MAX_CLAUDE_PROCESSES, 8),
+  // [需求@2026-06-12 §8.10 + Phase 2E §13 + 2026-06-15 Phase 2G M1.5] 全局并发软上限
+  //   超出 emit cap_warn,前端红条 banner,不硬拒
+  //   口径:只算 idle/busy/spawning 真活实例(disconnected 不算)
+  //   2026-06-15:Phase 2G boot 预热 1 H + 4 B + 4 C = 9 池实例 + N R(per thread)+ 弹性 →
+  //              默认从 8 提到 16
+  globalMaxClaudeProcesses: int(process.env.GLOBAL_MAX_CLAUDE_PROCESSES, 16),
+
+  // [需求@2026-06-15 Phase 2G M1.5] Boot 预热配置
+  //   开启 → 启动时为 defaultProjectId 预 spawn 1 H + 4 B + 4 C(parallelism_limit 上限)
+  //   关闭 → 全 lazy spawn(等到有 marker / user send 触发才起)
+  //   user 反馈:R→H→B/C 多角色派工链路,H 想分派 B/C 时希望"看见"4 个 slot,
+  //   首次派工不用等 spawn(~3-5s)
+  preheatPoolOnBoot: (process.env.PREHEAT_POOL_ON_BOOT || 'true').toLowerCase() !== 'false',
 
   // [需求@2026-06-12 §8.10] background recycler 扫描间隔 + 提前预警阈值
   ttlScanIntervalMin: int(process.env.TTL_SCAN_INTERVAL_MIN, 5),

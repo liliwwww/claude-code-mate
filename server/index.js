@@ -31,6 +31,28 @@ console.log('[boot] roles loaded:', roleCatalog.list().map((r) => `${r.name}(${r
 spawnManager.restoreFromDisk();
 // [需求@2026-06-12 §8.10] 后台 TTL 扫描:idle 太久的实例 emit warn 事件
 spawnManager.startTtlScanner();
+// [需求@2026-06-15 Phase 2G M1.5] boot 预热池化角色 — 为 default project 预 spawn 1 H + 4 B + 4 C
+if (config.preheatPoolOnBoot) {
+  const ProjectStore = require('./projects/ProjectStore');
+  const defaultProj = ProjectStore.getByName('Default');
+  if (defaultProj) {
+    setImmediate(() => {
+      try {
+        const r = spawnManager.preheatPool({
+          projectId: defaultProj.id,
+          projectRootDir: defaultProj.root_dir,
+        });
+        console.log(`[boot] pool preheat: spawned ${r.spawned}, skipped existing ${r.skipped}`);
+      } catch (e) {
+        console.warn('[boot] pool preheat failed:', e.message);
+      }
+    });
+  } else {
+    console.log('[boot] no Default project found, skipping pool preheat');
+  }
+} else {
+  console.log('[boot] PREHEAT_POOL_ON_BOOT=false, skipping pool preheat');
+}
 // [需求@2026-06-12 Phase 2E §6] QuotaState 启动 — 恢复持久化状态 + setTimer + cron
 const QuotaState = require('./quota/QuotaState');
 QuotaState.start();
