@@ -334,6 +334,29 @@ function buildRouter() {
     }
   });
 
+  // [需求@2026-06-15] 切 model — claude headless 不接 /model slash,只能 kill+respawn
+  //   - 设 inst.preferredModel(in-memory)
+  //   - 如果有 child:graceful kill(stdin.end + 2s grace + SIGTERM)→ exit handler 看 _softKillForRestart 翻 disconnected
+  //   - 下次 user send 时 lazy resurrect 用 preferredModel + 全新 session
+  //   - busy/spawning 拒绝(409),让 user 自己 stop 后再切
+  //   - mate 重启 preferredModel 失效(永久改要走 roles/<name>.md frontmatter)
+  r.post('/instances/:id/switch-model', async (req, res) => {
+    const { model } = req.body || {};
+    if (typeof model !== 'string' || !model.trim()) {
+      return res.status(400).json({ error: 'model required (e.g. claude-haiku-4-5)' });
+    }
+    const inst = spawnManager.getInstance(req.params.id);
+    if (!inst) return res.status(404).json({ error: 'instance not found' });
+    try {
+      const r = await inst.switchModel(model.trim());
+      res.json({ ...r, instanceId: req.params.id, hint: '下次发消息时 lazy resurrect,起新 session + 新 model' });
+    } catch (e) {
+      // busy/spawning/dead 拒
+      const code = /busy|spawning|dead/.test(e.message) ? 409 : 400;
+      res.status(code).json({ error: e.message });
+    }
+  });
+
   // [需求@2026-06-14 D] 系统监控 — 给具体 instance 发 slash / skill 指令
   //   (/clear, /resume, /help 等 — 或自由文本)
   //   语义上同 /message,但语义清晰、便于审计;走 sendUserText,绕过 thread 路由。

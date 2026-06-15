@@ -44,7 +44,7 @@ function buildUserMessage(text) {
   };
 }
 
-function buildSpawnArgs({ role, sessionId, resumeSessionId, forkSession, cwd }) {
+function buildSpawnArgs({ role, sessionId, resumeSessionId, forkSession, cwd, modelOverride = null }) {
   const args = [
     '-p',
     '--input-format', 'stream-json',
@@ -63,9 +63,10 @@ function buildSpawnArgs({ role, sessionId, resumeSessionId, forkSession, cwd }) 
       permissions: { allow: role.allowRules },
     }));
   }
-  // [需求@2026-06-15] role 级 model 覆盖 — null 不传,跟 claude 默认(usually Opus)
-  if (role.model) {
-    args.push('--model', role.model);
+  // [需求@2026-06-15] model 优先级:modelOverride(per-instance UI 切换)> role.model > 不传(跟 claude 默认)
+  const effectiveModel = modelOverride || role.model;
+  if (effectiveModel) {
+    args.push('--model', effectiveModel);
   }
   if (resumeSessionId) {
     args.push('--resume', resumeSessionId);
@@ -125,6 +126,13 @@ class RoleInstance {
     // [需求@2026-06-12 Phase 2E §5] currentModel:claude system/init 时填充,disconnect 保留
     this.currentModel = null;
     this.claudeCodeVersion = null;
+    // [需求@2026-06-15] preferredModel — user 在 UI 切换的 model 覆盖。
+    //   优先级:preferredModel > role.model > (空 = claude 默认)
+    //   in-memory,mate 重启失效(永久改要走 role frontmatter model 字段)
+    this.preferredModel = null;
+    // [需求@2026-06-15] _softKillForRestart:switchModel 触发的 kill → exit handler
+    //   把 status 翻 disconnected(非 dead),下次 sendUserText lazy resurrect
+    this._softKillForRestart = false;
     this._listeners = new Map(); // event -> Set<handler>
     this._customGreeting = customGreeting;
     this._spawnArgs = null;
@@ -164,6 +172,8 @@ class RoleInstance {
       resumeSessionId,
       forkSession: !!resumeSessionId,
       cwd,
+      // [需求@2026-06-15] preferredModel 优先于 role.model
+      modelOverride: this.preferredModel,
     });
     this._setStatus('spawning');
 
@@ -238,6 +248,18 @@ class RoleInstance {
     this._child.on('exit', (code, signal) => {
       this.exitCode = code;
       this.exitSignal = signal;
+      // [需求@2026-06-15] _softKillForRestart:UI 切 model 触发的 kill,
+      //   把 status 翻 disconnected(非 dead)→ 下次 sendUserText lazy resurrect
+      //   会用 preferredModel + 新 session(丢老 session_id 因为换 model 等于新世界)
+      if (this._softKillForRestart) {
+        this._softKillForRestart = false;
+        this.sessionId = null;  // 换 model 丢老 session,避免 --resume 续接到老 model 上下文
+        this._setStatus('disconnected');
+        this.pid = null;
+        this._child = null;
+        this._emit('exited', { code, signal, softRestart: true });
+        return;
+      }
       this.diedAt = Date.now();
       this._setStatus('dead');
       this._emit('exited', { code, signal });
@@ -311,6 +333,40 @@ class RoleInstance {
     const line = JSON.stringify(buildUserMessage(text)) + '\n';
     this._child.stdin.write(line);
     this._setStatus('busy');
+  }
+
+  // [需求@2026-06-15] UI 切换 model — kill 当前 child + 设 preferredModel,
+  //   下次 sendUserText 触发 lazy resurrect 时用新 model spawn 全新 session。
+  //   要点:
+  //   - 不真 kill instance(对象保留),只 kill child 进程 → status 翻 disconnected
+  //   - sessionId 同时丢掉(换 model 等于换世界,resume 没意义)
+  //   - busy 时拒绝(避免打断 user 工作);user 可显式 stop 后再切
+  //   - 如果没 child(已 disconnected),直接设 preferredModel,下次 spawn 时生效
+  async switchModel(newModel) {
+    if (!newModel || typeof newModel !== 'string') {
+      throw new Error('switchModel requires a model id (e.g. claude-haiku-4-5)');
+    }
+    if (this.status === 'dead') {
+      throw new Error(`instance ${this.id} is dead`);
+    }
+    if (this.status === 'busy' || this.status === 'spawning') {
+      throw new Error(`instance ${this.id} is ${this.status} — stop it first then switch model`);
+    }
+    const prev = this.preferredModel;
+    this.preferredModel = newModel;
+    // 若有 child,kill 它;exit handler 看 _softKillForRestart 翻 disconnected
+    if (this._child) {
+      this._softKillForRestart = true;
+      try {
+        this._child.stdin.end();
+      } catch {}
+      // 等 2s graceful;不等了硬 SIGTERM
+      const exited = await this._waitExit(this._child, 2000);
+      if (!exited && this._child) {
+        try { this._child.kill('SIGTERM'); } catch {}
+      }
+    }
+    return { ok: true, previousModel: prev, newModel, nextSpawnUsesNewModel: true };
   }
 
   // [需求@2026-06-13 §18] thread stop 用 — 软中断:发 SIGINT 让 child 自然终止当前 turn,
@@ -388,6 +444,10 @@ class RoleInstance {
       displayColor: this.role.displayColor,
       // [需求@2026-06-12 Phase 2E §5] 当前 child 实际用的模型(claude 自报)
       currentModel: this.currentModel || null,
+      // [需求@2026-06-15] UI 显:user 设的 preferredModel + role.md 默认 model
+      //   前端下拉框可以正确显"用户期望 vs claude 实跑"两者
+      preferredModel: this.preferredModel || null,
+      roleDefaultModel: this.role.model || null,
       claudeCodeVersion: this.claudeCodeVersion || null,
     };
   }

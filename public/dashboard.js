@@ -78,10 +78,11 @@ function renderTerminalsList(instances) {
     const canSkill = !['dead', 'disconnected'].includes(i.status);
     const slotText = i.poolSlot != null ? String(i.poolSlot) : '-';
     const activity = i.latestActivity || '(no data)';
-    // [需求@2026-06-14 B + 2026-06-15] 模型列 — currentModel 后端已有,改为下拉切模型
-    //   下拉 onChange 调 /api/instances/:id/slash 发 /model <id>(claude 内部切)
-    const modelFull = i.currentModel || '';
-    const canSwitchModel = !['dead', 'disconnected'].includes(i.status);
+    // [需求@2026-06-14 B + 2026-06-15] 模型列 — 下拉切模型
+    //   优先显 preferredModel(user 设的),否则 currentModel(claude 自报)
+    //   disconnected 可以改 — 下次 send 时按 preferredModel spawn
+    const modelFull = i.preferredModel || i.currentModel || '';
+    const canSwitchModel = !['dead', 'spawning', 'busy'].includes(i.status);
     const memoryText = i.memory && i.memory.fileCount > 0
       ? `${i.memory.fileCount} files${i.memory.latestMtime ? ' · ' + relTime(i.memory.latestMtime) : ''}`
       : '—';
@@ -129,31 +130,32 @@ function renderTerminalsList(instances) {
     });
   });
 
-  // [需求@2026-06-15] model 下拉切换 — onChange 发 /model <id> 到 instance
+  // [需求@2026-06-15] model 下拉切换 — claude headless 不接 /model slash,
+  //   改走 kill+respawn 路径:POST /switch-model → child kill → 下次 send 用新 model 起 session
   listEl.querySelectorAll('.term-model-sel[data-id]').forEach((sel) => {
     sel.addEventListener('change', async (e) => {
       const id = sel.dataset.id;
       const newModel = sel.value;
       const prevModel = sel.dataset.prev || '';
       if (!newModel || newModel === prevModel) return;
-      if (!confirm(`切换 ${id} 到 ${newModel}?\n\n会发 /model 命令到 claude session。生效要看 claude headless 是否接 /model slash。\n下次实例 spawn 时仍用 role 默认模型(若要永久改,改 roles/<role>.md frontmatter model 字段)。`)) {
+      if (!confirm(`切换 ${id} 到 ${newModel}?\n\n会 kill 当前 child 进程,下次发消息时按新 model 起全新 session(老对话上下文保留在 mate 数据库,但 claude session 重起)。\n\nbusy 实例会被拒绝(先 stop 再切)。\nmate 重启后还原 role 默认(永久改请改 roles/<role>.md frontmatter)。`)) {
         sel.value = prevModel;  // 还原
         return;
       }
       sel.disabled = true;
       try {
-        const r = await fetch(`/api/instances/${encodeURIComponent(id)}/slash`, {
+        const r = await fetch(`/api/instances/${encodeURIComponent(id)}/switch-model`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: `/model ${newModel}` }),
+          body: JSON.stringify({ model: newModel }),
         });
         if (!r.ok) {
           const err = await r.json().catch(() => ({ error: r.statusText }));
           throw new Error(err.error || r.statusText);
         }
         sel.dataset.prev = newModel;
-        // 等 5 秒重新拉,看 currentModel 是否真翻了
-        setTimeout(() => refreshTerminalsList(), 5000);
+        // 等 2 秒重新拉,看 status 翻 disconnected
+        setTimeout(() => refreshTerminalsList(), 2000);
       } catch (err) {
         alert('切换 model 失败: ' + err.message);
         sel.value = prevModel;
