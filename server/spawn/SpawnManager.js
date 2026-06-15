@@ -802,14 +802,33 @@ class SpawnManager {
       const target = role.parallelismLimit || 1;
       results.perRole[role.name] = { target, before: 0, after: 0 };
       for (let slot = 1; slot <= target; slot++) {
-        // 已有(任何状态非 dead)就跳过
-        const existing = [...this.instances.values()].find(
-          (i) => i.projectId === projectId && i.role.name === role.name && i.poolSlot === slot && i.status !== 'dead'
+        // 已有 alive(idle/busy/spawning)的跳过 — 真的有 child 在
+        // disconnected 的虽然 instance 对象在,但没 child process,需要 lazy resurrect
+        // [bug@2026-06-16] preheat 应该唤醒 disconnected slots(不然 mate-H 起不来)
+        const live = [...this.instances.values()].find(
+          (i) => i.projectId === projectId && i.role.name === role.name && i.poolSlot === slot && ['idle', 'busy', 'spawning'].includes(i.status)
         );
-        if (existing) {
+        if (live) {
           results.perRole[role.name].before++;
           results.skipped++;
           continue;
+        }
+        // disconnected 的实例:复用对象但要 spawn 一个新 child(走 fresh session,
+        // 因为 preheat 不带 user message,resume 老 session 没意义)
+        const disconnected = [...this.instances.values()].find(
+          (i) => i.projectId === projectId && i.role.name === role.name && i.poolSlot === slot && i.status === 'disconnected'
+        );
+        if (disconnected) {
+          try {
+            disconnected.sessionId = null;  // 丢老 session,起 fresh
+            disconnected.spawn({ suppressGreeting: false });
+            results.spawned++;
+            results.perRole[role.name].after++;
+            continue;
+          } catch (e) {
+            console.warn(`[SpawnManager] preheat resurrect ${role.name}-${slot} failed: ${e.message}`);
+            continue;
+          }
         }
         // cap 检查
         const alive = [...this.instances.values()].filter(
