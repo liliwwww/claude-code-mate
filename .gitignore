@@ -42,3 +42,6 @@ build/
 doc/
 tools/
 spike-*/
+
+# release notes scratch files
+.release-notes-*.md
