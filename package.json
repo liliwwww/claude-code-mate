@@ -57,6 +57,7 @@
     "README.md",
     "README.zh-CN.md",
     "CHANGELOG.md",
+    "CHANGELOG.en.md",
     "CONTRIBUTING.md"
   ],
   "dependencies": {

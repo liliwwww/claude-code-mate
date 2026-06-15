@@ -1,6 +1,6 @@
 # Changelog
 
-所有重要改动记录在这里。版本格式遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/),改动类别参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+[English version](./CHANGELOG.en.md) · 所有重要改动记录在这里。版本格式遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/),改动类别参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 ## [0.4.0] — 2026-06-15 · 首个 GitHub release(i18n + Phase 2E/2F/2G 累积)
 
