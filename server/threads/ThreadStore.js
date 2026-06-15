@@ -86,6 +86,8 @@ const ThreadStore = {
 
   // [需求@2026-06-10 §1.4] slug 默认自动生成(t-<base36>),user 不感知
   //   如果调用方没传 slug,自动生成一个 collision-free 的
+  // [需求@2026-06-15] 显式传 title(非空字符串) → metadata.title_locked=true,
+  //   后续 SystemAgent 跳过该 thread 的自动 title 摘要(user 设了不动)
   create(projectId, { slug, title }) {
     if (!projectId) throw new Error('projectId required');
     if (!slug) {
@@ -98,6 +100,7 @@ const ThreadStore = {
     const existing = stmts.get.get(projectId, slug);
     if (existing) throw new Error(`thread "${slug}" already exists in this project`);
 
+    const userProvidedTitle = typeof title === 'string' && title.trim().length > 0;
     const now = Date.now();
     const metadata = {
       // [需求@2026-06-10] 线索绑定到具体实例 — 一个角色 type 当前最多一个 active 实例
@@ -113,6 +116,8 @@ const ThreadStore = {
       last_session_activity_at: {},
       // For Phase 3 integration with the doc/queue/ file protocol
       queue_file_path: null,
+      // [需求@2026-06-15] user 显式给了 title → 锁住,自动摘要不覆盖
+      ...(userProvidedTitle ? { title_locked: true } : {}),
     };
     stmts.insert.run(slug, projectId, title || slug, 'discussing', now, now, JSON.stringify(metadata));
     return ThreadStore.get(projectId, slug);
@@ -128,10 +133,21 @@ const ThreadStore = {
     return ThreadStore.get(projectId, slug);
   },
 
-  setTitle(projectId, slug, newTitle) {
+  // [需求@2026-06-15] fromUser 区分:
+  //   - fromUser=true(默认,human 显式改名 / 创建时取的名):title_locked=true,SystemAgent 永不覆盖
+  //   - fromUser=false(SystemAgent 自动摘要):不动 title_locked,允许被后续 user 改盖
+  setTitle(projectId, slug, newTitle, { fromUser = true } = {}) {
     const cur = ThreadStore.get(projectId, slug);
     if (!cur) throw new Error(`thread ${slug} not found`);
     stmts.updateTitle.run(newTitle, Date.now(), projectId, slug);
+    if (fromUser) {
+      const meta = cur.metadata || {};
+      if (!meta.title_locked) {
+        const merged = { ...meta, title_locked: true };
+        db.prepare(`UPDATE threads SET metadata_json = ? WHERE project_id = ? AND slug = ?`)
+          .run(JSON.stringify(merged), projectId, slug);
+      }
+    }
     return ThreadStore.get(projectId, slug);
   },
 

@@ -100,12 +100,20 @@ const ThreadHooks = {
 
   async _summarizeTitleAsync(projectId, threadSlug, exchange) {
     if (!exchange.lastUserText && !exchange.lastAssistantText) return;
+
+    // [需求@2026-06-15] user 显式设过 title → metadata.title_locked=true,跳过自动摘要
+    //   (避免 user 取的名字第一轮就被 SystemAgent 摘要覆盖)
+    const current = ThreadStore.get(projectId, threadSlug);
+    if (current?.metadata?.title_locked) {
+      return;
+    }
+
     const title = await SystemAgent.summarizeTitle(exchange.lastUserText, exchange.lastAssistantText);
     if (!title) return;
 
-    // Update DB
+    // Update DB(fromUser=false:不动 title_locked,以便 user 之后还能手改并 lock)
     try {
-      ThreadStore.setTitle(projectId, threadSlug, title);
+      ThreadStore.setTitle(projectId, threadSlug, title, { fromUser: false });
     } catch (e) {
       console.warn(`[ThreadHooks] setTitle failed:`, e.message);
       return;
