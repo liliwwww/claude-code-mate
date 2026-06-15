@@ -53,11 +53,32 @@ const ScanRecycler = require('./ScanRecycler');
 const PoolAllocator = require('./PoolAllocator');
 const HandoffTracker = require('./HandoffTracker');
 const MarkerDispatcher = require('./MarkerDispatcher');
+const QueueDispatcher = require('./QueueDispatcher');
 
 class SpawnManager {
   constructor() {
     this.instances = new Map(); // instance.id -> RoleInstance
     // [arch §1.3 ✅] handoff 进度跟踪移到 HandoffTracker 模块
+    // [需求@2026-06-15 Phase 2G M1.1] 队列 flush 回调:queue idle 后台调,负责真写 stdin
+    this._queueDispatchCb = async (pendingRow) => {
+      const inst = this.instances.get(pendingRow.targetId);
+      if (!inst) throw new Error(`queue flush: instance ${pendingRow.targetId} not found`);
+      if (inst.status !== 'idle' && inst.status !== 'disconnected') {
+        // 罕见:user 端在 listener 异步执行间隙又发了消息把 inst 翻回 busy。原条留 queue 等下次 idle。
+        throw new Error(`instance ${inst.id} not idle (status=${inst.status}) — leaving in queue`);
+      }
+      // 真写 stdin
+      inst.sendUserText(pendingRow.payload.text);
+      // 绑 thread
+      if (pendingRow.threadSlug && inst.role?.type) {
+        try {
+          ThreadStore.bindInstance(pendingRow.projectId, pendingRow.threadSlug, inst.role.type, inst.id);
+          ThreadStore.touch(pendingRow.projectId, pendingRow.threadSlug, inst.role.type);
+        } catch (e) {
+          console.warn(`[SpawnManager] queue flush bindInstance failed: ${e.message}`);
+        }
+      }
+    };
   }
 
   // [需求@2026-06-10] lazy resurrection: on boot, restore non-dead instances
@@ -171,6 +192,11 @@ class SpawnManager {
       bus.publish('instance.status_change', { instance: inst.snapshot(), ...chg });
       // [arch §1.3 ✅] 派工 ready/spawning/failed 检测移到 HandoffTracker
       HandoffTracker.observeStatusChange(inst.id, chg.to);
+      // [需求@2026-06-15 Phase 2G M1.1] inst → idle 触发队列 flush
+      if (chg.to === 'idle') {
+        QueueDispatcher.onInstanceIdle(inst, { dispatchCb: this._queueDispatchCb })
+          .catch((e) => console.warn(`[SpawnManager] queue flush failed for ${inst.id}: ${e.message}`));
+      }
     });
 
     inst.on('event', ({ eventType, raw }) => {
@@ -371,7 +397,10 @@ class SpawnManager {
   //   targetSlot:可选,marker `target="execB-2"` 解析后传进来。
   //   targetInstance:可选(§9 mateTerm 干预模式),user 直接指定具体 instance.id 时由 caller 注入;
   //     从中推导 roleType + targetSlot,覆盖默认 last_questioner 路由。
-  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null, targetInstance = null, clientMessageId = null }) {
+  // [需求@2026-06-15 Phase 2G M1.1] fromMarker 标志 — true 时(MarkerDispatcher 调用),
+  //   池化 inst 是 busy 时触发 QueueDispatcher.enqueueBusy 而非直发 stdin。
+  //   markerFromInst/markerSpec/markerReason:busy_prompt 需要的元数据
+  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null, targetInstance = null, clientMessageId = null, fromMarker = false, markerFromInst = null, markerSpec = null, markerReason = null }) {
     if (!projectId) throw new Error('sendToThread requires projectId');
     if (!projectRootDir) throw new Error('sendToThread requires projectRootDir');
     if (!threadSlug) throw new Error('sendToThread requires threadSlug');
@@ -397,7 +426,7 @@ class SpawnManager {
     if (role.type === 'requirements') {
       return this._sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType, clientMessageId });
     }
-    return this._sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot, clientMessageId });
+    return this._sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot, clientMessageId, fromMarker, markerFromInst, markerSpec, markerReason });
   }
 
   // [需求@2026-06-12 §9 mateTerm] 直连模式 — user 直接对某个实例说话。
@@ -491,12 +520,9 @@ class SpawnManager {
   //   4. [§8.5] H 还要前置 task board snapshot(活跃线索 + 池子状态 + 最近决策)
   //   5. 派工(idle → sendUserText / disconnected → resurrect / 新 → spawn with pending)
   //   6. 绑定到 thread.metadata + touch
-  _sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot, clientMessageId = null }) {
+  _sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot, clientMessageId = null, fromMarker = false, markerFromInst = null, markerSpec = null, markerReason = null }) {
     const inst = this._acquirePoolInstance({ projectId, projectRootDir, role, requestedSlot: targetSlot, threadSlug });
     if (!inst) throw new Error(`could not acquire pool instance for ${role.name}`);
-
-    // Bind current task — inst.threadSlug = current task being processed
-    inst.threadSlug = threadSlug;
 
     // [需求@2026-06-12 §6 边界标记] task tag — 让 claude 知道当前 scope,但**不要它忘记过去**
     // [需求@2026-06-12 §1.7 §8.5] H 加 task board snapshot — 它需要全局视野做决策
@@ -505,6 +531,35 @@ class SpawnManager {
       finalText = this._buildTaskBoardSnapshot(projectId, threadSlug) + text;
     }
     const taggedText = `[Thread: ${threadSlug}]\n\n${finalText}`;
+
+    // [需求@2026-06-15 Phase 2G M1.1] marker handoff 派到 busy 实例 → 不直发,落 queue 等 user 决定
+    //   user 派工/mateTerm 直发不进此路径(fromMarker=false)。
+    //   注意:queue 路径下不更新 inst.threadSlug,不 bindInstance,等 flush 时再做。
+    if (fromMarker && inst.status === 'busy') {
+      const dispatchChain = (() => {
+        try {
+          const t = ThreadStore.get(projectId, threadSlug);
+          return t?.metadata?.dispatch_chain || [];
+        } catch { return []; }
+      })();
+      const pendingSendId = QueueDispatcher.enqueueBusy({
+        fromInst: markerFromInst || inst,  // 兜底 inst 本身,但应该总是 markerFromInst
+        targetInst: inst,
+        targetSpec: markerSpec || role.name,
+        reason: markerReason || '',
+        handoffText: taggedText,
+        threadSlug,
+        dispatchChain,
+        projectId,
+      });
+      // 返回 inst(caller MarkerDispatcher 仍要它做 WS 元数据),但标记 queued
+      inst._queuedPendingSendId = pendingSendId;
+      return inst;
+    }
+
+    // Bind current task — inst.threadSlug = current task being processed
+    inst.threadSlug = threadSlug;
+
     // [需求@2026-06-12 Phase 2E §12] enqueue clientMessageId 等 echo back 时 attach
     this._enqueueClientId(inst, clientMessageId);
 
@@ -516,7 +571,7 @@ class SpawnManager {
     //   修复:'spawning' 分支检查 inst._child;若 null 表示"还没真 spawn,只是 ctor 默认态",
     //   先设 pending 再 spawn(顺序确保 spawn 时 _pendingUserText 已有,suppressGreeting 路径会 flush)。
     if (inst.status === 'idle' || inst.status === 'busy') {
-      // Phase 2D §8.5 will add queueing for busy; for now just send (claude will process in order)
+      // busy 路径:非 marker(user 直发)就直接顺序写 stdin(claude 顺序处理,跟原行为一致)
       inst.sendUserText(taggedText);
     } else if (inst.status === 'disconnected') {
       inst.sendUserText(taggedText); // lazy resurrect via Phase 1 mechanism

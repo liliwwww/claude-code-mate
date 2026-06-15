@@ -145,7 +145,7 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread }) {
     `Begin your role's work on this thread.`,
   ].join('\n');
 
-  // Spawn or reuse target role for this thread (注入回调)
+  // [需求@2026-06-15 Phase 2G M1.1] 告诉 sendToThread 这是 marker 派工 — busy 时落 queue
   const inst = sendToThread({
     projectId: fromInst.projectId,
     projectRootDir: project.root_dir,
@@ -153,7 +153,26 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread }) {
     text: handoffText,
     roleType: targetRole.type,
     targetSlot,
+    fromMarker: true,
+    markerFromInst: fromInst,
+    markerSpec: targetSpec,
+    markerReason: reason,
   });
+
+  // [需求@2026-06-15 Phase 2G M1.1] queue 路径:不发 thread.handoff(它意味着真派出去了)
+  //   只发 dispatch.busy_prompt(已在 QueueDispatcher.enqueueBusy 里 emit)。
+  //   user 三选一后续才会 emit queue.added / queue.claimed 等。
+  if (inst._queuedPendingSendId) {
+    const pid = inst._queuedPendingSendId;
+    delete inst._queuedPendingSendId;
+    recordEvent('thread.handoff.queued', {
+      from: fromInst.role.name, target: targetSpec, resolvedRole: targetRoleName,
+      resolvedSlot: targetSlot, reason,
+      fromInstanceId: fromInst.id, toInstanceId: inst.id,
+      pendingSendId: pid,
+    }, { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
+    return;
+  }
 
   recordEvent('thread.handoff', {
     from: fromInst.role.name, target: targetSpec, resolvedRole: targetRoleName,

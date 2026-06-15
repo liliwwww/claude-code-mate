@@ -742,6 +742,105 @@ function buildRouter() {
     }
   });
 
+  // ============================== Phase 2G Queue + Backlog ==============================
+  // [需求@2026-06-15] busy 派工三选一 + cancel/dispatch backlog + 列表查询
+  //   设计 doc:docs/discussions/2026-06-15-queue-arch.md
+
+  const QueueDispatcher = require('../spawn/QueueDispatcher');
+  const PendingSends = require('../spawn/PendingSends');
+
+  // POST /api/dispatch/:id/choose  body: { choice: 'wait'|'backlog'|'cancel' }
+  //   user 在 dispatch.busy_prompt 上选了什么
+  r.post('/dispatch/:id/choose', async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid pending send id' });
+    const { choice } = req.body || {};
+    if (!['wait', 'backlog', 'cancel'].includes(choice)) {
+      return res.status(400).json({ error: 'choice must be wait | backlog | cancel' });
+    }
+    try {
+      const r2 = await QueueDispatcher.handleUserChoice(id, choice, {
+        dispatchCb: spawnManager._queueDispatchCb,
+      });
+      res.json(r2);
+    } catch (e) {
+      res.status(e.message.includes('not found') ? 404 : 400).json({ error: e.message });
+    }
+  });
+
+  // POST /api/queue/:id/cancel  — cancel queued 项
+  r.post('/queue/:id/cancel', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid pending send id' });
+    const { reason } = req.body || {};
+    try {
+      QueueDispatcher.cancelQueued(id, reason || 'user-cancel');
+      res.json({ ok: true, pendingSendId: id });
+    } catch (e) {
+      res.status(e.message.includes('not found') ? 404 : 400).json({ error: e.message });
+    }
+  });
+
+  // POST /api/backlog/:id/dispatch — backlog → queued + 立即 flush
+  r.post('/backlog/:id/dispatch', async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid pending send id' });
+    try {
+      const r2 = await QueueDispatcher.dispatchBacklog(id, {
+        dispatchCb: spawnManager._queueDispatchCb,
+      });
+      res.json({ ok: true, dispatched: !!r2, pendingSendId: id });
+    } catch (e) {
+      res.status(e.message.includes('not found') ? 404 : 400).json({ error: e.message });
+    }
+  });
+
+  // POST /api/backlog/:id/cancel — 同 queue cancel(allows backlog/queued/waiting_user)
+  r.post('/backlog/:id/cancel', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid pending send id' });
+    const { reason } = req.body || {};
+    try {
+      QueueDispatcher.cancelQueued(id, reason || 'user-cancel');
+      res.json({ ok: true, pendingSendId: id });
+    } catch (e) {
+      res.status(e.message.includes('not found') ? 404 : 400).json({ error: e.message });
+    }
+  });
+
+  // GET /api/queue  — 列所有 pending 项(状态 queued / backlog / waiting_user)
+  //   可选 filter:?projectId=N&threadSlug=xx&status=queued|backlog|waiting_user|all
+  r.get('/queue', (req, res) => {
+    const status = req.query.status || 'all';
+    const projectIdRaw = req.query.projectId;
+    const threadSlug = req.query.threadSlug;
+    let rows;
+    if (status === 'all') {
+      rows = PendingSends.listAll().filter(
+        (r2) => ['queued', 'backlog', 'waiting_user', 'processing'].includes(r2.status)
+      );
+    } else {
+      rows = PendingSends.listByStatus(status);
+    }
+    if (projectIdRaw) {
+      const pid = parseInt(projectIdRaw, 10);
+      rows = rows.filter((r2) => r2.projectId === pid);
+    }
+    if (threadSlug) {
+      rows = rows.filter((r2) => r2.threadSlug === threadSlug);
+    }
+    res.json(rows);
+  });
+
+  // GET /api/queue/:id — 单条详情
+  r.get('/queue/:id', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid pending send id' });
+    const row = PendingSends.getById(id);
+    if (!row) return res.status(404).json({ error: 'pending send not found' });
+    res.json(row);
+  });
+
   return r;
 }
 
