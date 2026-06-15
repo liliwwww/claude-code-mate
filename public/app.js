@@ -37,6 +37,7 @@ const els = {
   apForm: el('#add-project-form'),
   apError: el('#ap-error'),
   themeBtn: el('#theme-btn'),
+  langBtn: el('#lang-btn'),
   healthcheckBtn: el('#healthcheck-btn'),
   hcDialog: el('#healthcheck-dialog'),
   hcResults: el('#hc-results'),
@@ -64,6 +65,14 @@ const els = {
   // [需求@2026-06-13 §17] 流式渲染开关
   streamingToggle: el('#streaming-toggle-input'),
 };
+
+// ---------------- i18n helper ----------------
+const t = (key, params) => (window.MateI18n ? window.MateI18n.t(key, params) : key);
+function applyLangBtnLabel() {
+  if (!els.langBtn || !window.MateI18n) return;
+  // Button shows the OTHER language for the user to click into
+  els.langBtn.textContent = window.MateI18n.getLang() === 'zh' ? 'EN' : '中';
+}
 
 // [需求@2026-06-11 §3] 事件流配置
 const TICKER_MAX = 5;            // 顶栏最多保留 5 条事件
@@ -189,7 +198,7 @@ function attachCopyHandlers(scope) {
       const code = (btn.dataset.code || '').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
       navigator.clipboard.writeText(code).then(() => {
         const orig = btn.textContent;
-        btn.textContent = '✓ copied';
+        btn.textContent = t('stream.copyBtnCopied');
         btn.classList.add('copied');
         setTimeout(() => {
           btn.textContent = orig;
@@ -269,7 +278,7 @@ function renderBanners(sys) {
   els.banners.innerHTML = '';
   const b = document.createElement('span');
   b.className = 'banner warn';
-  b.textContent = `proxy: ${sys.httpProxy ? 'OK' : 'unset'}`;
+  b.textContent = t('banner.proxy', { state: sys.httpProxy ? 'OK' : 'unset' });
   els.banners.appendChild(b);
   for (const w of sys.warnings || []) {
     const wb = document.createElement('span');
@@ -320,7 +329,7 @@ function renderThreads() {
 
     const light = computeStateLight(t);
     const blockedText = t.metadata?.blocked?.question
-      ? ` · 等待: ${escapeHtml(String(t.metadata.blocked.question).slice(0, 60))}`
+      ? window.MateI18n.t('board.waiting', { q: escapeHtml(String(t.metadata.blocked.question).slice(0, 60)) })
       : '';
 
     li.innerHTML = `
@@ -330,7 +339,7 @@ function renderThreads() {
       </div>
       <div class="title">
         <span class="slug-text">${escapeHtml(t.slug)}</span>
-        <button class="copy-slug-btn" data-slug="${escapeHtml(t.slug)}" title="复制线索 ID">📋</button>
+        <button class="copy-slug-btn" data-slug="${escapeHtml(t.slug)}" title="${escapeHtml(window.MateI18n.t('board.copySlugTip'))}">📋</button>
         ${blockedText}
       </div>
       <div class="stage-row">
@@ -365,14 +374,14 @@ function copySlugToClipboard(slug, btn) {
       btn.classList.remove('copied');
     }, 1200);
   }).catch((e) => {
-    alert('复制失败: ' + e.message);
+    alert(t('board.copyFailed', { error: e.message }));
   });
 }
 
 function renderConvHeader() {
-  const t = state.focusedSlug ? state.threads.get(state.focusedSlug) : null;
-  if (!t) {
-    els.convTitle.textContent = '选一条线索开始';
+  const th = state.focusedSlug ? state.threads.get(state.focusedSlug) : null;
+  if (!th) {
+    els.convTitle.textContent = t('convHeader.empty');
     els.stagePicker.hidden = true;
     els.sendBtn.disabled = true;
     // 清掉可能残留的 slug + copy
@@ -380,9 +389,9 @@ function renderConvHeader() {
     if (ex) ex.remove();
     return;
   }
-  els.convTitle.textContent = `${t.title || t.slug}`;
+  els.convTitle.textContent = `${th.title || th.slug}`;
   els.stagePicker.hidden = false;
-  els.stagePicker.value = t.stage;
+  els.stagePicker.value = th.stage;
   els.sendBtn.disabled = false;
   applyBusyUiState();
   // [需求@2026-06-15] conv-header 加 slug + copy 按钮(title 跟 slug 不一样时才显)
@@ -392,10 +401,10 @@ function renderConvHeader() {
     slugEl.className = 'conv-slug';
     els.convTitle.parentNode.insertBefore(slugEl, els.stagePicker);
   }
-  slugEl.innerHTML = `<span class="conv-slug-text">${escapeHtml(t.slug)}</span>
-                      <button class="copy-slug-btn" title="复制线索 ID">📋</button>`;
+  slugEl.innerHTML = `<span class="conv-slug-text">${escapeHtml(th.slug)}</span>
+                      <button class="copy-slug-btn" title="${escapeHtml(t('board.copySlugTip'))}">📋</button>`;
   const btn = slugEl.querySelector('.copy-slug-btn');
-  btn.addEventListener('click', () => copySlugToClipboard(t.slug, btn));
+  btn.addEventListener('click', () => copySlugToClipboard(th.slug, btn));
 }
 
 // [需求@2026-06-13 §18] 焦点 thread 是否 busy(任一绑定实例处于 busy/spawning)
@@ -421,15 +430,15 @@ function applyBusyUiState() {
   if (!state.focusedSlug) {
     els.msgInput.disabled = true;
     els.sendBtn.classList.remove('stop-mode');
-    els.sendBtn.textContent = '发送';
+    els.sendBtn.textContent = t('send.btn');
     return;
   }
   els.msgInput.disabled = busy;
   els.msgInput.placeholder = busy
-    ? '线索执行中… 用顶栏「+ 新线索」开新输入,或点 ■ 停止'
-    : '输入消息发送...(Ctrl+Enter 发送)';
+    ? t('send.placeholderBusy')
+    : t('send.placeholder');
   els.sendBtn.classList.toggle('stop-mode', busy);
-  els.sendBtn.textContent = busy ? '■ 停止' : '发送';
+  els.sendBtn.textContent = busy ? t('send.stopBtn') : t('send.btn');
   // sendBtn 始终 enabled — busy 时点击 = stop;idle 时点击 = submit
   els.sendBtn.disabled = false;
 }
@@ -546,7 +555,7 @@ function renderEventInStream(eventType, raw, autoscroll = true) {
           <details class="streaming-details">
             <summary class="streaming-summary">
               <span class="role">assistant…</span>
-              <span class="streaming-meta">streaming · <span class="streaming-chars">0</span> 字</span>
+              <span class="streaming-meta">${escapeHtml(t('stream.streamingMeta'))} · <span class="streaming-chars">0</span> ${escapeHtml(t('stream.streamingChars'))}</span>
             </summary>
             <div class="body streaming-body"></div>
           </details>
@@ -589,7 +598,7 @@ function startWaitIndicator(source) {
   const div = document.createElement('div');
   div.className = 'waiting-indicator';
   div.dataset.source = source || '';
-  div.innerHTML = `<span class="wi-icon">⌛</span> 等待 LLM 响应… <span class="wi-timer">0s</span>`;
+  div.innerHTML = `<span class="wi-icon">⌛</span> ${escapeHtml(t('stream.waitingLLM'))} <span class="wi-timer">0s</span>`;
   els.stream.appendChild(div);
   els.stream.scrollTop = els.stream.scrollHeight;
   const startedAt = Date.now();
@@ -672,12 +681,13 @@ function makeToolResultBlock(toolResult) {
   const isErr = toolResult.is_error;
   // hint:首行预览 + 大小
   const firstLine = text.split('\n').find((l) => l.trim()) || '';
-  const hint = (firstLine.length > 80 ? firstLine.slice(0, 80) + '…' : firstLine) + `  (${lineCount} 行, ${text.length} 字符)`;
+  const trimmedFirst = (firstLine.length > 80 ? firstLine.slice(0, 80) + '…' : firstLine);
+  const hint = t('stream.toolReturnHint', { firstLine: trimmedFirst, lines: lineCount, chars: text.length });
   div.innerHTML = `
     <details>
       <summary class="tool-summary">
         <span class="tool-icon">${isErr ? '❌' : '↩'}</span>
-        <span class="tool-name">tool 返回${isErr ? ' (ERROR)' : ''}</span>
+        <span class="tool-name">${escapeHtml(isErr ? t('stream.toolReturnError') : t('stream.toolReturn'))}</span>
         <span class="tool-hint">${escapeHtml(hint)}</span>
       </summary>
       <pre class="tool-detail">${escapeHtml(text)}</pre>
@@ -694,19 +704,19 @@ function toolHintFor(t) {
   if (t.name === 'Grep') return `"${inp.pattern || ''}"${inp.path ? ' in ' + inp.path : ''}`;
   if (t.name === 'Bash') return (inp.command || '').slice(0, 80);
   if (t.name === 'WebFetch') return inp.url || '';
-  if (t.name === 'TodoWrite' && Array.isArray(inp.todos)) return `${inp.todos.length} 项`;
+  if (t.name === 'TodoWrite' && Array.isArray(inp.todos)) return window.MateI18n.t('stream.todoItems', { n: inp.todos.length });
   return '';
 }
 
 // ---------------- Environment check (§1.1) ----------------
 async function runHealthcheck() {
   els.hcRun.disabled = true;
-  els.hcResults.innerHTML = '<div class="muted">检测中,请稍候...</div>';
+  els.hcResults.innerHTML = `<div class="muted">${escapeHtml(t('dialog.healthcheck.running'))}</div>`;
   try {
     const result = await api('/system/healthcheck', { method: 'POST' });
     renderHealthcheck(result);
   } catch (e) {
-    els.hcResults.innerHTML = `<div class="error">检测调用失败: ${escapeHtml(e.message)}</div>`;
+    els.hcResults.innerHTML = `<div class="error">${escapeHtml(t('dialog.healthcheck.invokeFailed', { error: e.message }))}</div>`;
   } finally {
     els.hcRun.disabled = false;
   }
@@ -714,7 +724,7 @@ async function runHealthcheck() {
 
 function renderHealthcheck(result) {
   const rows = [
-    `<div class="muted" style="margin-bottom: 8px;">${escapeHtml(result.summary)} · 共 ${result.checks.length} 项</div>`,
+    `<div class="muted" style="margin-bottom: 8px;">${escapeHtml(t('dialog.healthcheck.summary', { summary: result.summary, n: result.checks.length }))}</div>`,
   ];
   for (const c of result.checks) {
     const cls = c.ok ? 'ok' : 'fail';
@@ -797,7 +807,7 @@ function handleWsMsg({ type, payload }) {
       .map((q, i) => `Q${i + 1}: ${q}\n答:`)
       .join('\n\n') + '\n';
     els.msgInput.value = text;
-    els.msgInput.placeholder = `${questions.length} 个待回答问题 — 在每个"答:"后填写,Ctrl+Enter 发送`;
+    els.msgInput.placeholder = window.MateI18n.t('send.placeholderQuestions', { n: questions.length });
     // Focus the input box (so user can start typing immediately)
     els.msgInput.focus();
   } else if (type === 'thread.metadata_updated') {
@@ -826,26 +836,26 @@ function handleWsMsg({ type, payload }) {
       renderHandoffCard(payload, 'ready');
     }
   } else if (type === 'thread.handoff.failed') {
-    pushTickerEvent('blocked', `✗ 派工失败 ${payload.target}: ${payload.error || ''}`.slice(0, 80));
+    pushTickerEvent('blocked', t('ticker.handoffFailed', { target: payload.target, error: payload.error || '' }).slice(0, 80));
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug === state.focusedSlug) {
       renderHandoffCard(payload, 'failed');
     }
   } else if (type === 'thread.done') {
-    pushTickerEvent('done', `✓ ${payload.threadSlug} verified`);
+    pushTickerEvent('done', t('ticker.doneVerified', { slug: payload.threadSlug }));
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug === state.focusedSlug) {
-      const node = makeMsg('system done-card', '✓ 线索完成', payload.summary || '后台自验通过');
+      const node = makeMsg('system done-card', t('stream.threadDoneTitle'), payload.summary || t('stream.threadDoneFallback'));
       els.stream.appendChild(node);
       els.stream.scrollTop = els.stream.scrollHeight;
     }
     state.threads.set(payload.threadSlug, payload.thread);
     renderThreads();
   } else if (type === 'thread.blocked') {
-    pushTickerEvent('blocked', `⚠ ${payload.threadSlug}: ${String(payload.question).slice(0, 40)}`);
+    pushTickerEvent('blocked', t('ticker.blocked', { slug: payload.threadSlug, q: String(payload.question).slice(0, 40) }));
     if (payload.projectId !== state.activeProjectId) return;
     if (payload.threadSlug === state.focusedSlug) {
-      const node = makeMsg('blocked-card', `⚠️ 需要你拍板 (${payload.raisedBy})`,
+      const node = makeMsg('blocked-card', t('stream.blockedTitle', { raisedBy: payload.raisedBy }),
         payload.question);
       els.stream.appendChild(node);
       els.stream.scrollTop = els.stream.scrollHeight;
@@ -854,31 +864,31 @@ function handleWsMsg({ type, payload }) {
     renderThreads();
   } else if (type === 'system.cap_warn') {
     // [需求@2026-06-12 §8.10] 全局软上限超出 — 顶栏红条 banner
-    showSystemBanner('cap_warn', `⚠ 实例数 ${payload.alive}/${payload.cap} — 已达全局软上限,新 spawn 仍允许但请清理空闲实例`);
-    pushTickerEvent('blocked', `⚠ cap ${payload.alive}/${payload.cap}`);
+    showSystemBanner('cap_warn', t('banner.capWarn', { alive: payload.alive, cap: payload.cap }));
+    pushTickerEvent('blocked', t('ticker.capWarn', { alive: payload.alive, cap: payload.cap }));
   } else if (type === 'instance.ttl_soon') {
     // [需求@2026-06-12 §8.10] 黄色提示:即将到期
-    pushTickerEvent('handoff', `⏳ ${payload.displayName} 还有 ${payload.minutesUntilExpiry}m TTL 过期`);
+    pushTickerEvent('handoff', t('ticker.ttlSoon', { name: payload.displayName, minutes: payload.minutesUntilExpiry }));
   } else if (type === 'instance.ttl_expired') {
     // [需求@2026-06-12 §8.10] 已过期:下次 user send 会自动开新 session
-    pushTickerEvent('blocked', `⏰ ${payload.displayName} TTL 过期(idle ${payload.idleHours}h > ${payload.ttlHours}h),下次 send 起新 session`);
+    pushTickerEvent('blocked', t('ticker.ttlExpired', { name: payload.displayName, idleH: payload.idleHours, ttlH: payload.ttlHours }));
   } else if (type === 'instance.unstuck') {
     // [需求@2026-06-12 Phase 2E §4] 自动解卡:status=busy 但长时间无活动 → 翻 idle
-    pushTickerEvent('handoff', `🔓 ${payload.displayName} 卡 ${payload.stuckMinutes}m 自动解(翻 idle)`);
+    pushTickerEvent('handoff', t('ticker.unstuck', { name: payload.displayName, minutes: payload.stuckMinutes }));
     if (payload.projectId === state.activeProjectId && state.focusedSlug) {
       const focused = state.threads.get(state.focusedSlug);
       const boundIds = focused?.metadata?.current_role_instances || {};
       const matches = Object.values(boundIds).includes(payload.instanceId);
       if (matches) {
-        const node = makeMsg('system', '⚠ 自动解卡',
-          `${payload.displayName} 卡 busy ${payload.stuckMinutes} 分钟无活动,已自动 reset 为 idle。`);
+        const node = makeMsg('system', t('stream.unstuckTitle'),
+          t('stream.unstuckBody', { name: payload.displayName, minutes: payload.stuckMinutes }));
         els.stream.appendChild(node);
         els.stream.scrollTop = els.stream.scrollHeight;
       }
     }
   } else if (type === 'instance.aged_out') {
     // [需求@2026-06-12 Phase 2E §13] disconnected 老化:超过保留数 → 标 dead
-    pushTickerEvent('kill', `🗑 ${payload.displayName} 已老化(${payload.ageDays}d 未活动)`);
+    pushTickerEvent('kill', t('ticker.agedOut', { name: payload.displayName, days: payload.ageDays }));
     updateTerminalsCount();
   }
 }
@@ -894,7 +904,7 @@ function showSystemBanner(kind, text) {
     node.style.background = '#5a1f1f';
     node.style.color = '#ffaaaa';
     node.style.cursor = 'pointer';
-    node.title = '点击关闭';
+    node.title = t('banner.closeTip');
     node.addEventListener('click', () => node.remove());
     els.banners.appendChild(node);
   }
@@ -952,10 +962,10 @@ function renderHandoffCard(payload, stage) {
   const reasonEl = card.querySelector('.hf-reason');
   const target = payload.toDisplayName || payload.target;
   const map = {
-    pending:  { icon: '▸', text: `mate 已收到 · 派给 ${target}` },
-    spawning: { icon: '◌', text: `${target} 启动中…` },
-    ready:    { icon: '✓', text: `${target} 已响应` },
-    failed:   { icon: '✗', text: `派工失败: ${payload.error || '(unspecified)'}` },
+    pending:  { icon: '▸', text: t('handoff.pending', { target }) },
+    spawning: { icon: '◌', text: t('handoff.spawning', { target }) },
+    ready:    { icon: '✓', text: t('handoff.ready', { target }) },
+    failed:   { icon: '✗', text: t('handoff.failed', { error: payload.error || t('handoff.failedUnspecified') }) },
   };
   const m = map[stage] || map.pending;
   iconEl.textContent = m.icon;
@@ -1026,18 +1036,18 @@ function wireInputs() {
     if (!v) { els.apInspect.textContent = ''; return; }
     try {
       const info = await api(`/projects/inspect?path=${encodeURIComponent(v)}`);
-      if (!info.exists) els.apInspect.textContent = '目录不存在';
-      else if (!info.isDirectory) els.apInspect.textContent = '路径不是目录';
+      if (!info.exists) els.apInspect.textContent = t('dialog.addProject.inspectNotExist');
+      else if (!info.isDirectory) els.apInspect.textContent = t('dialog.addProject.inspectNotDir');
       else {
         const tags = [];
         if (info.hasClaude) tags.push('.claude/');
         if (info.hasGit) tags.push('git');
         if (info.hasPackageJson) tags.push('package.json');
         if (info.hasClaudeMd) tags.push('CLAUDE.md');
-        els.apInspect.textContent = tags.length ? `识别到: ${tags.join(', ')}` : '(空目录)';
+        els.apInspect.textContent = tags.length ? t('dialog.addProject.inspectFound', { tags: tags.join(', ') }) : t('dialog.addProject.inspectEmpty');
       }
     } catch (e) {
-      els.apInspect.textContent = `inspect 失败: ${e.message}`;
+      els.apInspect.textContent = t('dialog.addProject.inspectFailed', { error: e.message });
     }
   });
   els.apForm.addEventListener('submit', async (ev) => {
@@ -1064,7 +1074,7 @@ function wireInputs() {
 
   // [需求@2026-06-10 §1.1] Healthcheck
   els.healthcheckBtn.addEventListener('click', () => {
-    els.hcResults.innerHTML = '<div class="muted">点击下方"开始检测"...</div>';
+    els.hcResults.innerHTML = `<div class="muted">${escapeHtml(t('dialog.healthcheck.placeholder'))}</div>`;
     els.hcDialog.showModal();
   });
   els.hcRun.addEventListener('click', runHealthcheck);
@@ -1077,7 +1087,7 @@ function wireInputs() {
 
   // [需求@2026-06-10 §1.4] 新线索 dialog(slug 由 backend 自动生成)
   els.newThreadBtn.addEventListener('click', () => {
-    if (!state.activeProjectId) { alert('先选个 project'); return; }
+    if (!state.activeProjectId) { alert(t('dialog.newThread.needProject')); return; }
     els.ntTitle.value = '';
     els.ntError.textContent = '';
     els.newThreadDialog.showModal();
@@ -1113,7 +1123,7 @@ function wireInputs() {
       renderThreads();
       renderConvHeader();
     } catch (e) {
-      alert('stage 切换失败: ' + e.message);
+      alert(t('convHeader.stageFailed', { error: e.message }));
     }
   });
 
@@ -1122,19 +1132,19 @@ function wireInputs() {
     if (!state.focusedSlug) return;
     // [需求@2026-06-13 §18] busy 状态下 sendBtn 是 ■ 停止 — 点击触发 stop 而非 send
     if (isFocusedThreadBusy()) {
-      if (!confirm('确认停止当前线索的执行?\n会 kill 绑定的 busy 实例,下次发消息自动起新 session。')) return;
+      if (!confirm(t('send.stopConfirm'))) return;
       els.sendBtn.disabled = true;
       try {
         const out = await api(`/threads/${encodeURIComponent(state.focusedSlug)}/stop?projectId=${state.activeProjectId}`, { method: 'POST' });
         const n = (out.killed || []).length;
         const names = (out.killed || []).map((k) => k.displayName || k.id).join(', ');
-        pushTickerEvent('kill', `■ 停止 ${state.focusedSlug}: ${n} 实例${names ? ' (' + names + ')' : ''}`);
-        const sys = makeMsg('system', '■ 已停止', n > 0 ? `kill: ${names}` : 'no busy instances to stop');
+        pushTickerEvent('kill', t('ticker.stopThread', { slug: state.focusedSlug, n, names: names ? ' (' + names + ')' : '' }));
+        const sys = makeMsg('system', t('send.stopped'), n > 0 ? t('send.stoppedKill', { names }) : t('send.stoppedNone'));
         els.stream.appendChild(sys);
         els.stream.scrollTop = els.stream.scrollHeight;
         stopWaitIndicator();
       } catch (e) {
-        alert('停止失败: ' + e.message);
+        alert(t('send.stopFailed', { error: e.message }));
       } finally {
         els.sendBtn.disabled = false;
       }
@@ -1162,7 +1172,7 @@ function wireInputs() {
     } catch (e) {
       bubble.classList.remove('msg-sending');
       bubble.classList.add('msg-failed');
-      bubble.title = `发送失败: ${e.message} · 点击复制原文重新发送`;
+      bubble.title = t('send.failedTip', { error: e.message });
       bubble.addEventListener('click', () => {
         els.msgInput.value = sentText;
         els.msgInput.focus();
@@ -1191,6 +1201,22 @@ function wireInputs() {
         }
         state.streamingAssistants.clear();
       }
+    });
+  }
+
+  // i18n 语言切换
+  if (els.langBtn && window.MateI18n) {
+    applyLangBtnLabel();
+    els.langBtn.addEventListener('click', () => {
+      const cur = window.MateI18n.getLang();
+      window.MateI18n.setLang(cur === 'zh' ? 'en' : 'zh');
+    });
+    window.MateI18n.onChange(() => {
+      applyLangBtnLabel();
+      // 重新渲染动态产生的 UI(threads list, conv header, busy state)
+      renderThreads();
+      renderConvHeader();
+      applyBusyUiState();
     });
   }
 }

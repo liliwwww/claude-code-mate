@@ -25,41 +25,43 @@
 </head>
 <body>
   <header id="topbar">
-    <div class="brand">Claude Code Mate <span class="phase">Phase 2C</span></div>
+    <div class="brand"><span data-i18n="topbar.brand">Claude Code Mate</span> <span class="phase" data-i18n="topbar.phase">Phase 2C</span></div>
     <div class="project-switcher">
-      <label>Project:</label>
+      <label data-i18n="topbar.project">Project:</label>
       <select id="project-picker"></select>
-      <button id="add-project-btn" title="Add or import a project">+</button>
+      <button id="add-project-btn" data-i18n-attr-title="topbar.addProject" title="Add or import a project">+</button>
     </div>
     <div class="banners" id="banners"></div>
     <!-- [需求@2026-06-12 Phase 2E §14] 实时运行态 chip -->
     <div id="runtime-chip-mount"></div>
     <div class="actions">
       <!-- [需求@2026-06-10 §1.1] 环境检测 -->
-      <button id="healthcheck-btn" title="环境检测(手动触发,失败不阻塞)">环境检测</button>
+      <button id="healthcheck-btn" data-i18n="topbar.healthcheck" data-i18n-attr-title="topbar.healthcheckTip" title="环境检测(手动触发,失败不阻塞)">环境检测</button>
       <!-- [需求@2026-06-11 §2 + 2026-06-12 §8.6] 仪表盘按钮(原"终端"升级成"系统")-->
-      <button id="terminals-btn" title="Mate 系统仪表盘:终端实时 / 任务队列 / H 派工时序 / 对话控制">系统 <span id="terminals-count">0</span></button>
+      <button id="terminals-btn" data-i18n-attr-title="topbar.terminalsTip" title="Mate 系统仪表盘:终端实时 / 任务队列 / H 派工时序 / 对话控制"><span data-i18n="topbar.terminals">系统</span> <span id="terminals-count">0</span></button>
       <!-- [需求@2026-06-10 §1.3] 亮/暗主题切换 -->
-      <button id="theme-btn" title="切换亮/暗主题">🌙</button>
-      <button id="new-thread-btn">+ 新线索</button>
+      <button id="theme-btn" data-i18n-attr-title="topbar.themeTip" title="切换亮/暗主题">🌙</button>
+      <!-- i18n 语言切换 -->
+      <button id="lang-btn" data-i18n-attr-title="topbar.langTip" title="切换语言 / Toggle language">中/EN</button>
+      <button id="new-thread-btn" data-i18n="topbar.newThread">+ 新线索</button>
     </div>
   </header>
 
   <!-- [需求@2026-06-11 §3] 顶栏下方动态事件流 — spawn/kill/handoff/done/blocked 实时流 -->
-  <div id="event-ticker" aria-label="终端事件流">
-    <span class="ticker-label">EVENTS</span>
+  <div id="event-ticker" data-i18n-attr-aria-label="topbar.eventsAria" aria-label="终端事件流">
+    <span class="ticker-label" data-i18n="topbar.eventsLabel">EVENTS</span>
     <div id="ticker-events"></div>
   </div>
 
   <dialog id="add-project-dialog">
     <form id="add-project-form" method="dialog">
-      <h3>添加 / 导入项目</h3>
-      <label>名字 <input id="ap-name" required placeholder="kb_backend" /></label>
-      <label>根目录 <input id="ap-root" required placeholder="D:\dev\kb_backend" /></label>
+      <h3 data-i18n="dialog.addProject.title">添加 / 导入项目</h3>
+      <label><span data-i18n="dialog.addProject.name">名字</span> <input id="ap-name" required placeholder="kb_backend" /></label>
+      <label><span data-i18n="dialog.addProject.root">根目录</span> <input id="ap-root" required placeholder="D:\dev\kb_backend" /></label>
       <div id="ap-inspect" class="muted"></div>
       <div class="dialog-actions">
-        <button type="button" id="ap-cancel">取消</button>
-        <button type="submit" id="ap-submit">添加</button>
+        <button type="button" id="ap-cancel" data-i18n="dialog.addProject.cancel">取消</button>
+        <button type="submit" id="ap-submit" data-i18n="dialog.addProject.submit">添加</button>
       </div>
       <div id="ap-error" class="error"></div>
     </form>
@@ -68,14 +70,14 @@
   <!-- [需求@2026-06-10 §1.4] 新线索 dialog:slug 砍掉,只剩可选 title -->
   <dialog id="new-thread-dialog">
     <form id="new-thread-form" method="dialog">
-      <h3>新建线索</h3>
-      <label>标题(可选)
-        <input id="nt-title" placeholder="留空 → 首轮对话后系统自动摘要" />
+      <h3 data-i18n="dialog.newThread.title">新建线索</h3>
+      <label><span data-i18n="dialog.newThread.titleLabel">标题(可选)</span>
+        <input id="nt-title" data-i18n-attr-placeholder="dialog.newThread.titlePlaceholder" placeholder="留空 → 首轮对话后系统自动摘要" />
       </label>
-      <div class="muted">系统自动生成内部 ID,你只看 title。</div>
+      <div class="muted" data-i18n="dialog.newThread.hint">系统自动生成内部 ID,你只看 title。</div>
       <div class="dialog-actions">
-        <button type="button" id="nt-cancel">取消</button>
-        <button type="submit" id="nt-submit">创建</button>
+        <button type="button" id="nt-cancel" data-i18n="dialog.newThread.cancel">取消</button>
+        <button type="submit" id="nt-submit" data-i18n="dialog.newThread.submit">创建</button>
       </div>
       <div id="nt-error" class="error"></div>
     </form>
@@ -84,11 +86,11 @@
   <!-- [需求@2026-06-10 §1.1] 环境检测结果 dialog -->
   <dialog id="healthcheck-dialog">
     <form method="dialog">
-      <h3>环境检测</h3>
-      <div id="hc-results">点击下方"开始检测"...</div>
+      <h3 data-i18n="dialog.healthcheck.title">环境检测</h3>
+      <div id="hc-results" data-i18n="dialog.healthcheck.placeholder">点击下方"开始检测"...</div>
       <div class="dialog-actions">
-        <button type="button" id="hc-run">开始检测</button>
-        <button type="submit">关闭</button>
+        <button type="button" id="hc-run" data-i18n="dialog.healthcheck.run">开始检测</button>
+        <button type="submit" data-i18n="dialog.healthcheck.close">关闭</button>
       </div>
     </form>
   </dialog>
@@ -97,16 +99,16 @@
 
   <main>
     <aside id="thread-board">
-      <h2>线索 (Threads)</h2>
+      <h2 data-i18n="board.heading">线索 (Threads)</h2>
       <ul id="threads"></ul>
-      <div id="thread-empty" class="empty-state" hidden>
+      <div id="thread-empty" class="empty-state" hidden data-i18n-html="board.empty">
         还没有线索。点击 <strong>+ 新线索</strong> 开始第一条。
       </div>
     </aside>
 
     <section id="conversation">
       <header id="conv-header">
-        <span id="conv-title">选一条线索开始</span>
+        <span id="conv-title" data-i18n="convHeader.empty">选一条线索开始</span>
         <select id="stage-picker" hidden>
           <option value="discussing">discussing</option>
           <option value="designing">designing</option>
@@ -116,21 +118,23 @@
           <option value="closed">closed</option>
         </select>
         <!-- [需求@2026-06-13 §17] 流式渲染开关 — off 时不渲染 partial,等 final 一次性显示 -->
-        <label class="streaming-toggle" title="实时显示 LLM 生成过程(关闭可减少噪声 & 性能开销)">
+        <label class="streaming-toggle" data-i18n-attr-title="convHeader.streamingTip" title="实时显示 LLM 生成过程(关闭可减少噪声 & 性能开销)">
           <input type="checkbox" id="streaming-toggle-input" checked />
-          <span>📺 实时</span>
+          <span data-i18n="convHeader.streamingLabel">📺 实时</span>
         </label>
       </header>
       <div id="stream"></div>
       <form id="send-form">
-        <textarea id="msg-input" placeholder="输入消息发送...(Ctrl+Enter 发送)" rows="3"></textarea>
-        <button type="submit" id="send-btn">发送</button>
+        <textarea id="msg-input" data-i18n-attr-placeholder="send.placeholder" placeholder="输入消息发送...(Ctrl+Enter 发送)" rows="3"></textarea>
+        <button type="submit" id="send-btn" data-i18n="send.btn">发送</button>
       </form>
     </section>
   </main>
 
   <!-- [arch §9] ws-client 单例必须最先加载 -->
   <script src="/components/ws-client.js"></script>
+  <script src="/components/messages.js"></script>
+  <script src="/components/i18n.js"></script>
   <script src="/components/runtime-chip.js"></script>
   <script src="/app.js"></script>
 </body>

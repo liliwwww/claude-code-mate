@@ -3,49 +3,51 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Mate 系统监控</title>
+  <title data-i18n="dashboard.title">Mate 系统监控</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <!-- [需求@2026-06-12 §8.6.5] 独立 URL 页面 + 10s 自动刷新 -->
   <header id="topbar">
-    <div class="brand">Mate 系统监控 <span class="phase">/dashboard</span></div>
+    <div class="brand"><span data-i18n="dashboard.title">Mate 系统监控</span> <span class="phase">/dashboard</span></div>
     <div class="banners">
-      <span class="banner warn" id="db-last-refresh" style="background:#1f3a1f;color:#88dd88">最后刷新: —</span>
+      <span class="banner warn" id="db-last-refresh" style="background:#1f3a1f;color:#88dd88" data-i18n="dashboard.lastRefreshNone">最后刷新: —</span>
       <!-- [需求@2026-06-12 §8.10] cap warn 红条;隐藏直到 system.cap_warn 事件 -->
-      <span class="banner" id="db-cap-banner" hidden style="background:#5a1f1f;color:#ffaaaa;cursor:pointer" title="点击关闭"></span>
+      <span class="banner" id="db-cap-banner" hidden style="background:#5a1f1f;color:#ffaaaa;cursor:pointer" data-i18n-attr-title="banner.closeTip" title="点击关闭"></span>
     </div>
     <!-- [需求@2026-06-12 Phase 2E §14] 实时运行态 chip(dashboard 也挂一份)-->
     <div id="runtime-chip-mount"></div>
     <div class="actions">
       <label style="font-size:11px;color:var(--text-secondary)">
-        <input type="checkbox" id="db-autorefresh" checked /> 10s 自动刷新
+        <input type="checkbox" id="db-autorefresh" checked /> <span data-i18n="dashboard.autoRefresh">10s 自动刷新</span>
       </label>
-      <button id="db-refresh-btn">立即刷新</button>
-      <a href="/" style="font-size:11px;color:var(--accent);text-decoration:underline;margin-left:8px">← 回主视图</a>
+      <button id="db-refresh-btn" data-i18n="dashboard.refreshNow">立即刷新</button>
+      <!-- i18n 语言切换 -->
+      <button id="lang-btn" data-i18n-attr-title="topbar.langTip" title="切换语言 / Toggle language" style="font-size:11px">中/EN</button>
+      <a href="/" style="font-size:11px;color:var(--accent);text-decoration:underline;margin-left:8px" data-i18n="dashboard.backToMain">← 回主视图</a>
     </div>
   </header>
 
   <main style="display:block;padding:16px;overflow-y:auto">
     <div class="dashboard-tabs" id="dashboard-tabs" style="margin:0 0 16px">
-      <button type="button" class="tab-btn active" data-tab="terminals">终端实时</button>
-      <button type="button" class="tab-btn" data-tab="queue">任务队列</button>
-      <button type="button" class="tab-btn" data-tab="dispatch">H 派工时序</button>
-      <button type="button" class="tab-btn" data-tab="control">对话控制</button>
+      <button type="button" class="tab-btn active" data-tab="terminals" data-i18n="dashboard.tabs.terminals">终端实时</button>
+      <button type="button" class="tab-btn" data-tab="queue" data-i18n="dashboard.tabs.queue">任务队列</button>
+      <button type="button" class="tab-btn" data-tab="dispatch" data-i18n="dashboard.tabs.dispatch">H 派工时序</button>
+      <button type="button" class="tab-btn" data-tab="control" data-i18n="dashboard.tabs.control">对话控制</button>
       <!-- [需求@2026-06-14] tab 5:全局日志流 -->
-      <button type="button" class="tab-btn" data-tab="logs">日志流</button>
+      <button type="button" class="tab-btn" data-tab="logs" data-i18n="dashboard.tabs.logs">日志流</button>
     </div>
 
     <div class="tab-content" data-tab="terminals">
       <div class="terminals-toolbar">
-        <label><input type="checkbox" id="term-include-dead" /> 显示已死亡(dead)</label>
+        <label><input type="checkbox" id="term-include-dead" /> <span data-i18n="dashboard.terminals.showDead">显示已死亡(dead)</span></label>
       </div>
       <div id="terminals-list"></div>
     </div>
 
     <div class="tab-content" data-tab="queue" hidden>
       <div class="queue-toolbar">
-        <label><input type="checkbox" id="queue-include-closed" /> 显示已 closed</label>
+        <label><input type="checkbox" id="queue-include-closed" /> <span data-i18n="dashboard.queue.showClosed">显示已 closed</span></label>
       </div>
       <div id="queue-list"></div>
     </div>
@@ -54,11 +56,11 @@
       <div class="dispatch-toolbar">
         <label>
           <input type="radio" name="dispatch-view" id="dispatch-view-thread" value="thread" checked />
-          按线索分组
+          <span data-i18n="dashboard.dispatch.viewByThread">按线索分组</span>
         </label>
         <label>
           <input type="radio" name="dispatch-view" id="dispatch-view-global" value="global" />
-          全局时序倒序
+          <span data-i18n="dashboard.dispatch.viewGlobal">全局时序倒序</span>
         </label>
       </div>
       <div id="dispatch-list"></div>
@@ -67,32 +69,32 @@
     <!-- [需求@2026-06-14] tab 5 — 全局日志流(所有 claude 终端 stream 事件聚合)-->
     <div class="tab-content" data-tab="logs" hidden>
       <div class="logs-toolbar">
-        <label>实例:<select id="logs-instance"><option value="">所有</option></select></label>
-        <label>线索:<select id="logs-thread"><option value="">所有</option></select></label>
-        <label>类型:
+        <label><span data-i18n="dashboard.logs.instance">实例:</span><select id="logs-instance"><option value="" data-i18n="dashboard.logs.all">所有</option></select></label>
+        <label><span data-i18n="dashboard.logs.thread">线索:</span><select id="logs-thread"><option value="" data-i18n="dashboard.logs.all">所有</option></select></label>
+        <label><span data-i18n="dashboard.logs.eventtype">类型:</span>
           <select id="logs-eventtype">
-            <option value="all">所有</option>
-            <option value="assistant">assistant</option>
-            <option value="user">user (含 tool_result)</option>
-            <option value="result">result/* (turn 结束)</option>
-            <option value="system">system/* (init / status / etc)</option>
-            <option value="stream_event">stream_event (token 增量)</option>
-            <option value="rate_limit_event">rate_limit_event</option>
+            <option value="all" data-i18n="dashboard.logs.all">所有</option>
+            <option value="assistant" data-i18n="dashboard.logs.evt.assistant">assistant</option>
+            <option value="user" data-i18n="dashboard.logs.evt.user">user (含 tool_result)</option>
+            <option value="result" data-i18n="dashboard.logs.evt.result">result/* (turn 结束)</option>
+            <option value="system" data-i18n="dashboard.logs.evt.system">system/* (init / status / etc)</option>
+            <option value="stream_event" data-i18n="dashboard.logs.evt.streamEvent">stream_event (token 增量)</option>
+            <option value="rate_limit_event" data-i18n="dashboard.logs.evt.rateLimit">rate_limit_event</option>
           </select>
         </label>
-        <label>窗口:
+        <label><span data-i18n="dashboard.logs.window">窗口:</span>
           <select id="logs-window">
-            <option value="3600000">最近 1h</option>
-            <option value="21600000">最近 6h</option>
-            <option value="86400000" selected>最近 24h</option>
-            <option value="604800000">最近 7d</option>
-            <option value="0">全部</option>
+            <option value="3600000" data-i18n="dashboard.logs.win.1h">最近 1h</option>
+            <option value="21600000" data-i18n="dashboard.logs.win.6h">最近 6h</option>
+            <option value="86400000" selected data-i18n="dashboard.logs.win.24h">最近 24h</option>
+            <option value="604800000" data-i18n="dashboard.logs.win.7d">最近 7d</option>
+            <option value="0" data-i18n="dashboard.logs.win.all">全部</option>
           </select>
         </label>
-        <label style="flex:1">搜索:
-          <input id="logs-search" type="text" placeholder="文本/工具名/session id..." style="width:100%" />
+        <label style="flex:1"><span data-i18n="dashboard.logs.search">搜索:</span>
+          <input id="logs-search" type="text" data-i18n-attr-placeholder="dashboard.logs.searchPlaceholder" placeholder="文本/工具名/session id..." style="width:100%" />
         </label>
-        <label><input type="checkbox" id="logs-live" checked /> 实时</label>
+        <label><input type="checkbox" id="logs-live" checked /> <span data-i18n="dashboard.logs.live">实时</span></label>
         <button id="logs-refresh" type="button">⟳</button>
         <span id="logs-count" class="muted" style="font-size:11px"></span>
       </div>
@@ -102,29 +104,31 @@
     <!-- [需求@2026-06-12 §9 mateTerm] tab 4 — 直接对指定终端说话 -->
     <div class="tab-content" data-tab="control" hidden>
       <div class="mateterm-bar">
-        <label>终端:
+        <label><span data-i18n="dashboard.control.terminalLabel">终端:</span>
           <select id="mt-instance"></select>
         </label>
-        <label>模式:
-          <input type="radio" name="mt-mode" value="direct" checked /> 直连
-          <input type="radio" name="mt-mode" value="intervention" /> 干预
+        <label><span data-i18n="dashboard.control.modeLabel">模式:</span>
+          <input type="radio" name="mt-mode" value="direct" checked /> <span data-i18n="dashboard.control.modeDirect">直连</span>
+          <input type="radio" name="mt-mode" value="intervention" /> <span data-i18n="dashboard.control.modeIntervention">干预</span>
         </label>
-        <label id="mt-thread-row" hidden>Thread:
+        <label id="mt-thread-row" hidden><span data-i18n="dashboard.control.threadLabel">Thread:</span>
           <select id="mt-thread"></select>
         </label>
-        <button id="mt-refresh" type="button" title="重新加载选项">↻</button>
+        <button id="mt-refresh" type="button" data-i18n-attr-title="dashboard.control.refreshTip" title="重新加载选项">↻</button>
       </div>
       <div class="mateterm-hint" id="mt-hint"></div>
       <div id="mt-stream" class="mateterm-stream"></div>
       <form id="mt-form" class="mateterm-form">
-        <textarea id="mt-input" placeholder="给该终端发消息(Ctrl+Enter 发送)" rows="3"></textarea>
-        <button type="submit" id="mt-send">发送</button>
+        <textarea id="mt-input" data-i18n-attr-placeholder="dashboard.control.placeholder" placeholder="给该终端发消息(Ctrl+Enter 发送)" rows="3"></textarea>
+        <button type="submit" id="mt-send" data-i18n="dashboard.control.sendBtn">发送</button>
       </form>
     </div>
   </main>
 
   <!-- [arch §9] ws-client 单例必须最先加载 -->
   <script src="/components/ws-client.js"></script>
+  <script src="/components/messages.js"></script>
+  <script src="/components/i18n.js"></script>
   <script src="/components/runtime-chip.js"></script>
   <script src="/dashboard.js"></script>
 </body>

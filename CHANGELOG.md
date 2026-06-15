@@ -2,6 +2,85 @@
 
 所有重要改动记录在这里。版本格式遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/),改动类别参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.4.0] — 2026-06-15 · 首个 GitHub release(i18n + Phase 2E/2F/2G 累积)
+
+**首次 git tag 发布**。涵盖自 Phase 2C 之后 ~3 个月的累积工作:角色系统从 planA-* 改名 mate-R/H/B/C,marker 派工协议落地,主视图 Phase 2F 平滑性改造,日志流 tab,session TTL 默认 720h(实质永不过期),per-role/per-instance 模型切换,以及本次发布的国际化(中英文)。
+
+### 新增 · 国际化 i18n(本次重点)
+- **支持中文/英文** 切换 — 顶栏新增「中/EN」按钮,localStorage 持久化,无需重启 mate
+- `public/components/i18n.js`:核心 i18n 运行时(`t()` / `setLang()` / `applyDom()` / `onChange()`)
+- `public/components/messages.js`:238 个 key,中英文完全对称
+- HTML 用 `data-i18n` / `data-i18n-attr-<attr>` 声明翻译
+- JS 用 `t('key', {params})` 调用;切换语言时自动 re-render 主视图 + dashboard + chip
+- 覆盖率:
+  - 100% — index.html / dashboard.html / runtime-chip.js
+  - ~80% — app.js(高频 UI 路径全部翻译)
+  - ~70% — dashboard.js(主要 tab + 交互)
+- 不翻译:`roles/*.md`(给 LLM 的 prompt)、后端错误消息、console.log、代码注释、`答:` 协议字段
+
+### 新增 · 角色 / 派工(2E/2F 累积)
+- **角色重命名**:`planA-R/planA-H/execB/testC` → `mate-R/mate-H/mate-B/mate-C`,mate 跟 sibling project 角色定义彻底分离
+- **Marker 派工协议**:`<mate:handoff target="..." reason="..." />` / `<mate:done summary="..." />` / `<mate:blocked question="..." severity="..." />`
+- **派工状态机卡片**:pending → spawning → ready → failed,主视图实时显示
+- **PoolAllocator + ScanRecycler + HandoffTracker + MarkerDispatcher** 拆分(Phase 2E arch §1.4)
+- **Marker 失败可观测性**:malformed marker 单独事件 + 测试 fixture 17 个 adversarial case
+- **eventType 谓词中心化**(arch-debt §14):`isResult`/`isAssistantFinal`/etc
+
+### 新增 · UI / 主视图(Phase 2F 平滑性)
+- **流式 assistant 气泡默认折叠**(§16),`<details>` 包裹,字数实时计数
+- **流式渲染开关**(§17):conv-header 加 `📺 实时` checkbox
+- **busy 时输入框 disable + 红色 ■停止 按钮**(§18):`POST /threads/:slug/stop`
+- **LLM 等待 indicator**(§19):`⌛ 等待 LLM 响应... <秒数>`
+- **system noise 静音**:`hook_started`/`hook_response`/`status` 不进主对话流
+- **派工沉默修复**(§10):4 阶段 handoff card,失败也提示
+- **user bubble dedup**(§12 + §15):乐观 UI 立即渲染,WS echo 通过 clientMessageId 去重
+- **chip busy term inline currentActivity**:`busy:[H-1 · 🔧 Grep]`
+- **线索 ID copy 按钮**:左板每行 + conv-header 旁,一键复制 slug
+- **tool_result 折叠琥珀色块**:之前误显大段蓝色 user bubble,现在跟 tool_use 配色一致
+
+### 新增 · Dashboard / 系统监控
+- **第 5 tab 日志流**:全局聚合所有 claude 终端 stream 事件,4 维过滤(实例/线索/类型/时间窗)+ 文本搜索 + WS 实时追加
+- **终端实时加 model 列**:9 列布局,model 改为下拉选择
+- **skill / slash 指令对话框**:每行 skill 按钮 → 弹窗 8 个常用 slash + 自由输入
+- **批量 instance 操作 endpoint** `POST /api/instances/:id/slash` + `POST /api/instances/:id/switch-model`
+
+### 新增 · model 切换
+- **role frontmatter 加 model 字段**:每个 role 可指定 claude model(如 mate-R 用 haiku 省钱)
+- **per-instance 运行时切换**:dashboard 下拉框 → `inst.preferredModel` 覆盖 → kill child → 下次 sendUserText 时按新 model 起 fresh session
+- **schema 加 model**;`buildSpawnArgs` 支持 `modelOverride`
+
+### 新增 · TTL / Session
+- **默认 session TTL: 4h → 720h**(30 天,实质永不过期),user 反馈日常 claude session 不需要自动过期
+- `role.session_ttl_hours` schema max 168 → 8760(1 年)
+- ENV `DEFAULT_SESSION_TTL_HOURS` 仍可覆盖
+
+### 新增 · 工具
+- `scripts/kill-port.ps1` 加 **busy 检查**:kill mate 前先扫 busy/spawning 实例,非交互模式拒绝默 yes(防误杀)
+- `POST /api/threads/:slug/retry-handoff`:marker 派工卡住时手动 trigger,不用从新线索来
+
+### 改进 · 工具权限
+- **mate-R 砍 Edit/Write**,加"shell 不许写文件"硬约束 — R 只查不改
+- 4 个 role 都加 `mcp__ssh-monitor__*` 工具(可选用)
+- mate-H/mate-B/mate-C 默认含 Bash + PowerShell
+
+### 改进 · 架构
+- **mate 文件不许写到 sibling project**(架构红线 §11)
+- **arch-debt §12-§15** 全部完成:adversarial fixture + marker 可观测性 + 谓词中心化 + marker 协议设计审视
+- **§5 reading model 已上,改 model 留下轮**
+
+### Bug 修复
+- `currentActivity:[object Object]` 修复(`texts.map(t=>t.text||'').join`)
+- thread 自动 title 摘要漂移:user 显式设的 title 加 `metadata.title_locked=true`,SystemAgent 不再覆盖
+- model 切换 `/model slash` 不灵 → 改 kill+respawn 路径
+- `sendUserText` disconnected + sessionId=null 不再抛错(switchModel 路径打通)
+- `result/*` event 在前端漏渲染(`=== 'result'` → `startsWith('result')`)
+- §18 红 ■停止 按钮 claude 完 turn 后不还原,得切线索才翻绿(`status_change` WS 分支漏 `applyBusyUiState()`)
+- marker regex truncation:reason 含 `"` 会截断 → 改 `.*?` 非贪婪 + `s` flag
+
+### 已知限制(下个版本目标)
+- **多 R 派工给同一 H 时无队列、无并发追踪**:H `parallelism_limit: 1`,busy H 收第二个 marker 直接写 stdin,`inst.threadSlug` 被覆盖导致 thread1 状态灯熄(详见 docs/discussions/2026-06-15-multi-r-handoff.md)
+- **PendingSends 表存在但未启用**:Phase 2D 未完成的队列化派工
+
 ## [Unreleased]
 
 ### 进行中

@@ -9,6 +9,14 @@ const AUTO_REFRESH_MS = 10000;
 
 const el = (sel) => document.querySelector(sel);
 
+// ---------------- i18n helper ----------------
+const t = (key, params) => (window.MateI18n ? window.MateI18n.t(key, params) : key);
+function applyDashboardLangBtn() {
+  const btn = el('#lang-btn');
+  if (!btn || !window.MateI18n) return;
+  btn.textContent = window.MateI18n.getLang() === 'zh' ? 'EN' : '中';
+}
+
 let currentTab = 'terminals';
 let refreshTimer = null;
 
@@ -32,7 +40,7 @@ function fmtTs(ts) {
 }
 
 function updateLastRefresh() {
-  el('#db-last-refresh').textContent = `最后刷新: ${fmtTs(Date.now())}`;
+  el('#db-last-refresh').textContent = t('dashboard.lastRefresh', { time: fmtTs(Date.now()) });
 }
 
 // ============================== Tab 1: terminals ==============================
@@ -50,26 +58,26 @@ async function refreshTerminalsList(preserveScroll = true) {
     renderTerminalsList(instances);
     if (preserveScroll) listEl.scrollTop = scrollY;
   } catch (e) {
-    listEl.innerHTML = `<div class="term-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    listEl.innerHTML = `<div class="term-empty">${escapeHtml(t('dashboard.terminals.loadFailed', { error: e.message }))}</div>`;
   }
 }
 
 function renderTerminalsList(instances) {
   const listEl = el('#terminals-list');
   if (!instances.length) {
-    listEl.innerHTML = `<div class="term-empty">当前没有 claude 终端实例</div>`;
+    listEl.innerHTML = `<div class="term-empty">${escapeHtml(t('dashboard.terminals.empty'))}</div>`;
     return;
   }
   const head = `
     <div class="term-row head">
       <div></div>
-      <div>名字</div>
-      <div>Slot</div>
-      <div>Project</div>
-      <div>Model</div>
-      <div>PID</div>
-      <div>当前活动</div>
-      <div>Memory</div>
+      <div>${escapeHtml(t('dashboard.terminals.col.name'))}</div>
+      <div>${escapeHtml(t('dashboard.terminals.col.slot'))}</div>
+      <div>${escapeHtml(t('dashboard.terminals.col.project'))}</div>
+      <div>${escapeHtml(t('dashboard.terminals.col.model'))}</div>
+      <div>${escapeHtml(t('dashboard.terminals.col.pid'))}</div>
+      <div>${escapeHtml(t('dashboard.terminals.col.activity'))}</div>
+      <div>${escapeHtml(t('dashboard.terminals.col.memory'))}</div>
       <div></div>
     </div>
   `;
@@ -77,14 +85,14 @@ function renderTerminalsList(instances) {
     const canKill = !['dead', 'disconnected'].includes(i.status);
     const canSkill = !['dead', 'disconnected'].includes(i.status);
     const slotText = i.poolSlot != null ? String(i.poolSlot) : '-';
-    const activity = i.latestActivity || '(no data)';
+    const activity = i.latestActivity || t('dashboard.terminals.noActivity');
     // [需求@2026-06-14 B + 2026-06-15] 模型列 — 下拉切模型
     //   优先显 preferredModel(user 设的),否则 currentModel(claude 自报)
     //   disconnected 可以改 — 下次 send 时按 preferredModel spawn
     const modelFull = i.preferredModel || i.currentModel || '';
     const canSwitchModel = !['dead', 'spawning', 'busy'].includes(i.status);
     const memoryText = i.memory && i.memory.fileCount > 0
-      ? `${i.memory.fileCount} files${i.memory.latestMtime ? ' · ' + relTime(i.memory.latestMtime) : ''}`
+      ? `${t('dashboard.terminals.memUnit', { n: i.memory.fileCount })}${i.memory.latestMtime ? ' · ' + relTime(i.memory.latestMtime) : ''}`
       : '—';
     return `
       <div class="term-row">
@@ -97,9 +105,9 @@ function renderTerminalsList(instances) {
         <div title="${escapeHtml(activity)}">${escapeHtml(activity)}</div>
         <div title="${i.memory ? 'latest: ' + (i.memory.latestMtime ? new Date(i.memory.latestMtime).toLocaleString() : '-') : ''}">${escapeHtml(memoryText)}</div>
         <div class="term-actions">${canSkill
-          ? `<button class="term-skill" data-id="${escapeHtml(i.id)}" data-name="${escapeHtml(i.displayName || i.id)}" title="发 slash 指令(/clear, /help, etc.)">skill</button>`
+          ? `<button class="term-skill" data-id="${escapeHtml(i.id)}" data-name="${escapeHtml(i.displayName || i.id)}" title="${escapeHtml(t('dashboard.terminals.skillTip'))}">skill</button>`
           : ''}${canKill
-          ? `<button class="term-kill" data-id="${escapeHtml(i.id)}">kill</button>`
+          ? `<button class="term-kill" data-id="${escapeHtml(i.id)}">${escapeHtml(t('dashboard.terminals.killTip'))}</button>`
           : `<button class="term-kill" disabled>-</button>`}
         </div>
       </div>
@@ -111,13 +119,13 @@ function renderTerminalsList(instances) {
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
       const id = btn.dataset.id;
-      if (!confirm(`Kill ${id}?`)) return;
+      if (!confirm(t('dashboard.terminals.killConfirm', { id }))) return;
       try {
         const r = await fetch(`/api/instances/${encodeURIComponent(id)}`, { method: 'DELETE' });
         if (!r.ok) throw new Error('kill failed');
         await refreshTerminalsList();
       } catch (err) {
-        alert('kill failed: ' + err.message);
+        alert(t('dashboard.terminals.killFailed', { error: err.message }));
       }
     });
   });
@@ -138,7 +146,7 @@ function renderTerminalsList(instances) {
       const newModel = sel.value;
       const prevModel = sel.dataset.prev || '';
       if (!newModel || newModel === prevModel) return;
-      if (!confirm(`切换 ${id} 到 ${newModel}?\n\n会 kill 当前 child 进程,下次发消息时按新 model 起全新 session(老对话上下文保留在 mate 数据库,但 claude session 重起)。\n\nbusy 实例会被拒绝(先 stop 再切)。\nmate 重启后还原 role 默认(永久改请改 roles/<role>.md frontmatter)。`)) {
+      if (!confirm(t('dashboard.terminals.switchModelConfirm', { id, model: newModel }))) {
         sel.value = prevModel;  // 还原
         return;
       }
@@ -157,7 +165,7 @@ function renderTerminalsList(instances) {
         // 等 2 秒重新拉,看 status 翻 disconnected
         setTimeout(() => refreshTerminalsList(), 2000);
       } catch (err) {
-        alert('切换 model 失败: ' + err.message);
+        alert(t('dashboard.terminals.switchModelFailed', { error: err.message }));
         sel.value = prevModel;
       } finally {
         sel.disabled = false;
@@ -189,19 +197,20 @@ function makeModelSelectorHtml(instanceId, currentFull, canSwitch) {
   }).join('');
   // 如果 currentModel 不在 KNOWN 列表 → 加个 "(其它)" option 占位
   const otherOpt = !matchedId && cur ? `<option value="" selected disabled>${escapeHtml(cur.slice(0, 20))}</option>` : '';
-  return `<select class="term-model-sel" data-id="${escapeHtml(instanceId)}" data-prev="${escapeHtml(matchedId)}" title="切模型(发 /model 到 claude session)">${otherOpt}${opts}</select>`;
+  return `<select class="term-model-sel" data-id="${escapeHtml(instanceId)}" data-prev="${escapeHtml(matchedId)}" title="${escapeHtml(t('dashboard.terminals.modelTip'))}">${otherOpt}${opts}</select>`;
 }
 
 // [需求@2026-06-14 D] skill 指令对话框
+//   desc 改成 key,渲染时再翻(便于语言切换)
 const COMMON_SLASH = [
-  { cmd: '/clear',   desc: '清空当前 session 上下文' },
-  { cmd: '/resume',  desc: '恢复上次 session' },
-  { cmd: '/compact', desc: '让 claude 压缩当前对话' },
-  { cmd: '/memory',  desc: '查看/编辑 claude memory' },
-  { cmd: '/status',  desc: '看当前 session 状态' },
-  { cmd: '/help',    desc: '看所有 slash 命令' },
-  { cmd: '/cost',    desc: '查看当前 token 消耗' },
-  { cmd: '/model',   desc: '查看/切换当前 model' },
+  { cmd: '/clear',   descKey: 'skill.preset.clear' },
+  { cmd: '/resume',  descKey: 'skill.preset.resume' },
+  { cmd: '/compact', descKey: 'skill.preset.compact' },
+  { cmd: '/memory',  descKey: 'skill.preset.memory' },
+  { cmd: '/status',  descKey: 'skill.preset.status' },
+  { cmd: '/help',    descKey: 'skill.preset.help' },
+  { cmd: '/cost',    descKey: 'skill.preset.cost' },
+  { cmd: '/model',   descKey: 'skill.preset.model' },
 ];
 
 function openSkillDialog(instanceId, displayName) {
@@ -209,24 +218,27 @@ function openSkillDialog(instanceId, displayName) {
   document.querySelector('#skill-dialog')?.remove();
   const dlg = document.createElement('dialog');
   dlg.id = 'skill-dialog';
+  // skill.dialog.title 含 <code>{name}</code> — 用 raw replace 保留 HTML
+  const titleHtml = t('skill.dialog.title').replace('{name}', escapeHtml(displayName));
+  const hintText = t('skill.dialog.hint', { name: displayName });
   dlg.innerHTML = `
     <form method="dialog" id="skill-form">
-      <h3>对 <code>${escapeHtml(displayName)}</code> 发指令</h3>
-      <label>常用 slash:
+      <h3>${titleHtml}</h3>
+      <label>${escapeHtml(t('skill.dialog.presetLabel'))}
         <select id="skill-preset">
-          <option value="">— 选一个 —</option>
-          ${COMMON_SLASH.map((s) => `<option value="${escapeHtml(s.cmd)}">${escapeHtml(s.cmd)} · ${escapeHtml(s.desc)}</option>`).join('')}
+          <option value="">${escapeHtml(t('skill.dialog.presetEmpty'))}</option>
+          ${COMMON_SLASH.map((s) => `<option value="${escapeHtml(s.cmd)}">${escapeHtml(s.cmd)} · ${escapeHtml(t(s.descKey))}</option>`).join('')}
         </select>
       </label>
-      <label>或自由输入(slash / 自然语言都可):
-        <textarea id="skill-text" rows="3" placeholder="/clear\n或: 把当前 todos 全标 done" autofocus></textarea>
+      <label>${escapeHtml(t('skill.dialog.freeInputLabel'))}
+        <textarea id="skill-text" rows="3" placeholder="${escapeHtml(t('skill.dialog.placeholder'))}" autofocus></textarea>
       </label>
       <div class="muted" style="font-size:12px;margin:6px 0">
-        指令会作为 user 消息写入 ${escapeHtml(displayName)} 的 stdin。注意:slash 命令是否生效取决于 claude headless 的支持。
+        ${escapeHtml(hintText)}
       </div>
       <div class="dialog-actions">
-        <button type="button" id="skill-cancel">取消</button>
-        <button type="submit" id="skill-send">发送</button>
+        <button type="button" id="skill-cancel">${escapeHtml(t('skill.dialog.cancel'))}</button>
+        <button type="submit" id="skill-send">${escapeHtml(t('skill.dialog.send'))}</button>
       </div>
       <div id="skill-error" class="error" style="color:#d44;margin-top:6px"></div>
     </form>
@@ -286,14 +298,14 @@ async function refreshQueueList(preserveScroll = true) {
     renderQueueList(threads);
     if (preserveScroll) listEl.scrollTop = scrollY;
   } catch (e) {
-    listEl.innerHTML = `<div class="queue-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    listEl.innerHTML = `<div class="queue-empty">${escapeHtml(t('dashboard.queue.loadFailed', { error: e.message }))}</div>`;
   }
 }
 
 function renderQueueList(threads) {
   const listEl = el('#queue-list');
   if (!threads.length) {
-    listEl.innerHTML = `<div class="queue-empty">当前没有活跃线索</div>`;
+    listEl.innerHTML = `<div class="queue-empty">${escapeHtml(t('dashboard.queue.empty'))}</div>`;
     return;
   }
   const groups = new Map(STAGE_ORDER.map((s) => [s, []]));
@@ -315,9 +327,9 @@ function renderQueueList(threads) {
           <div class="slug" title="${escapeHtml(t.slug)}">${escapeHtml(t.title || t.slug)}</div>
           <div class="project">${escapeHtml(t.projectName || '?')}</div>
           <div class="title" title="${escapeHtml(t.slug)}">${escapeHtml(t.slug)}</div>
-          <div class="bindings" title="${escapeHtml(bindings)}">${escapeHtml(bindings || '(no bindings)')}</div>
+          <div class="bindings" title="${escapeHtml(bindings)}">${escapeHtml(bindings || window.MateI18n.t('dashboard.queue.noBindings'))}</div>
           <div>${canArchive
-            ? `<button class="archive-btn" data-slug="${escapeHtml(t.slug)}" data-pid="${t.projectId}">archive</button>`
+            ? `<button class="archive-btn" data-slug="${escapeHtml(t.slug)}" data-pid="${t.projectId}">${escapeHtml(window.MateI18n.t('dashboard.queue.archiveBtn'))}</button>`
             : ''}</div>
         </div>
       `);
@@ -331,7 +343,7 @@ function renderQueueList(threads) {
       e.preventDefault();
       const slug = btn.dataset.slug;
       const projectId = btn.dataset.pid;
-      if (!confirm(`Archive thread "${slug}"?`)) return;
+      if (!confirm(t('dashboard.queue.archiveConfirm', { slug }))) return;
       try {
         const r = await fetch(`/api/threads/${encodeURIComponent(slug)}?projectId=${projectId}`, {
           method: 'PATCH',
@@ -341,7 +353,7 @@ function renderQueueList(threads) {
         if (!r.ok) throw new Error('archive failed');
         await refreshQueueList();
       } catch (err) {
-        alert('archive failed: ' + err.message);
+        alert(t('dashboard.queue.archiveFailed', { error: err.message }));
       }
     });
   });
@@ -361,7 +373,7 @@ async function refreshDispatchHistory(preserveScroll = true) {
     else renderDispatchByThread(events);
     if (preserveScroll) listEl.scrollTop = scrollY;
   } catch (e) {
-    listEl.innerHTML = `<div class="dispatch-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    listEl.innerHTML = `<div class="dispatch-empty">${escapeHtml(t('dashboard.dispatch.loadFailed', { error: e.message }))}</div>`;
   }
 }
 
@@ -372,9 +384,9 @@ function renderDispatchEvent(e) {
     const target = e.payload.target || e.payload.resolvedRole || '?';
     arrow = `<span class="arrow">${escapeHtml(from)} → ${escapeHtml(target)}</span>`;
   } else if (e.kind === 'thread.done') {
-    arrow = `<span class="arrow">✓ done</span>`;
+    arrow = `<span class="arrow">${escapeHtml(t('dashboard.dispatch.done'))}</span>`;
   } else if (e.kind === 'thread.blocked') {
-    arrow = `<span class="arrow">⚠ blocked</span>`;
+    arrow = `<span class="arrow">${escapeHtml(t('dashboard.dispatch.blocked'))}</span>`;
   }
   const reason = e.payload.reason || e.payload.summary || e.payload.question || '';
   const kindShort = e.kind === 'thread.handoff' ? 'h-o' : e.kind === 'thread.done' ? 'done' : 'blkd';
@@ -392,7 +404,7 @@ function renderDispatchEvent(e) {
 function renderDispatchByThread(events) {
   const listEl = el('#dispatch-list');
   if (!events.length) {
-    listEl.innerHTML = `<div class="dispatch-empty">还没有派工记录</div>`;
+    listEl.innerHTML = `<div class="dispatch-empty">${escapeHtml(t('dashboard.dispatch.empty'))}</div>`;
     return;
   }
   const groups = new Map();
@@ -418,7 +430,7 @@ function renderDispatchByThread(events) {
 function renderDispatchGlobal(events) {
   const listEl = el('#dispatch-list');
   if (!events.length) {
-    listEl.innerHTML = `<div class="dispatch-empty">还没有派工记录</div>`;
+    listEl.innerHTML = `<div class="dispatch-empty">${escapeHtml(t('dashboard.dispatch.empty'))}</div>`;
     return;
   }
   const html = ['<div class="dispatch-thread">'];
@@ -470,7 +482,7 @@ async function refreshMatetermInstances() {
     if (!r.ok) throw new Error('fetch failed: ' + r.status);
     MT_STATE.instances = await r.json();
   } catch (e) {
-    el('#mt-hint').textContent = '加载实例失败: ' + e.message;
+    el('#mt-hint').textContent = t('dashboard.control.loadInstFailed', { error: e.message });
     return;
   }
   renderMatetermInstanceOptions();
@@ -498,7 +510,7 @@ function renderMatetermInstanceOptions() {
     const name = i.displayName || i.id;
     const proj = i.projectName || '?';
     return `<option value="${escapeHtml(i.id)}">${escapeHtml(name)} · ${escapeHtml(proj)} · ${escapeHtml(i.status)}</option>`;
-  }).join('') || '<option value="">(无可用实例)</option>';
+  }).join('') || `<option value="">${escapeHtml(t('dashboard.control.noInstances'))}</option>`;
   // Restore selection if still present
   if (prev && list.some((i) => i.id === prev)) {
     sel.value = prev;
@@ -523,29 +535,37 @@ async function refreshMatetermThreads() {
     MT_STATE.threadsByProject[projectId] = threads;
     const active = threads.filter((t) => t.stage !== 'closed');
     const sel = el('#mt-thread');
-    sel.innerHTML = active.map((t) => `<option value="${escapeHtml(t.slug)}">${escapeHtml(t.title || t.slug)} (${escapeHtml(t.stage)})</option>`).join('')
-      || '<option value="">(该 project 暂无活跃线索)</option>';
-    if (MT_STATE.selectedThreadSlug && active.some((t) => t.slug === MT_STATE.selectedThreadSlug)) {
+    sel.innerHTML = active.map((th) => `<option value="${escapeHtml(th.slug)}">${escapeHtml(th.title || th.slug)} (${escapeHtml(th.stage)})</option>`).join('')
+      || `<option value="">${escapeHtml(t('dashboard.control.noThreads'))}</option>`;
+    if (MT_STATE.selectedThreadSlug && active.some((th) => th.slug === MT_STATE.selectedThreadSlug)) {
       sel.value = MT_STATE.selectedThreadSlug;
     } else {
       MT_STATE.selectedThreadSlug = sel.value || null;
     }
   } catch (e) {
-    el('#mt-hint').textContent = '加载 thread 失败: ' + e.message;
+    el('#mt-hint').textContent = t('dashboard.control.loadThreadFailed', { error: e.message });
   }
 }
 
 function updateMatetermHint() {
   const inst = MT_STATE.instances.find((i) => i.id === MT_STATE.selectedInstanceId);
   if (!inst) {
-    el('#mt-hint').textContent = '选一个终端开始对话';
+    el('#mt-hint').textContent = t('dashboard.control.pickHint');
     return;
   }
+  const name = escapeHtml(inst.displayName || inst.id);
   if (MT_STATE.selectedMode === 'direct') {
-    el('#mt-hint').innerHTML = `<span class="hint-direct">📡 直连 <b>${escapeHtml(inst.displayName || inst.id)}</b> — 不挂 thread,marker 不触发派工(仅灰色展示)。</span>`;
+    // hintDirect 含 <b>{name}</b> — 保留 HTML
+    const html = t('dashboard.control.hintDirect').replace('{name}', name);
+    el('#mt-hint').innerHTML = `<span class="hint-direct">${html}</span>`;
   } else {
-    const tInfo = MT_STATE.selectedThreadSlug ? ` · 干预 thread <b>${escapeHtml(MT_STATE.selectedThreadSlug)}</b>` : '';
-    el('#mt-hint').innerHTML = `<span class="hint-interv">⚡ 干预模式 ${escapeHtml(inst.displayName || inst.id)}${tInfo} — 走正常派工链路,marker 会真生效。</span>`;
+    const tInfo = MT_STATE.selectedThreadSlug
+      ? t('dashboard.control.hintInterventionTInfo').replace('{slug}', escapeHtml(MT_STATE.selectedThreadSlug))
+      : '';
+    const html = t('dashboard.control.hintIntervention')
+      .replace('{name}', name)
+      .replace('{tInfo}', tInfo);
+    el('#mt-hint').innerHTML = `<span class="hint-interv">${html}</span>`;
   }
 }
 
@@ -577,7 +597,7 @@ function renderMatetermMessage(m) {
     if (!text) return '';
     return `
       <div class="mt-msg user">
-        <div class="mt-msg-head"><span class="who">you</span><span class="ts">${ts}</span></div>
+        <div class="mt-msg-head"><span class="who">${escapeHtml(window.MateI18n.t('dashboard.control.userWho'))}</span><span class="ts">${ts}</span></div>
         <div class="mt-msg-body">${escapeHtml(text)}</div>
       </div>
     `;
@@ -595,7 +615,7 @@ function renderMatetermMessage(m) {
     const cleaned = escapeHtml(text);
     // direct mode: show gray "marker won't fire" hint
     const hintHtml = (MT_STATE.selectedMode === 'direct' && markerHints.length)
-      ? `<div class="mt-marker-hint">⚠ 检测到 ${markerHints.length} 个 marker(${markerHints.map((h) => h.kind).join(', ')})— 直连模式不触发派工 / 状态机。</div>`
+      ? `<div class="mt-marker-hint">${escapeHtml(window.MateI18n.t('dashboard.control.markerHint', { n: markerHints.length, kinds: markerHints.map((h) => h.kind).join(', ') }))}</div>`
       : '';
     return `
       <div class="mt-msg assistant">
@@ -606,7 +626,7 @@ function renderMatetermMessage(m) {
     `;
   }
   if (m.eventType?.startsWith('result')) {
-    return `<div class="mt-msg system">— 一轮结束 · ${ts} —</div>`;
+    return `<div class="mt-msg system">${escapeHtml(window.MateI18n.t('dashboard.control.turnEnded', { ts }))}</div>`;
   }
   return '';
 }
@@ -614,10 +634,10 @@ function renderMatetermMessage(m) {
 async function reloadMatetermHistory() {
   const streamEl = el('#mt-stream');
   if (!MT_STATE.selectedInstanceId) {
-    streamEl.innerHTML = '<div class="mt-empty">选一个终端开始</div>';
+    streamEl.innerHTML = `<div class="mt-empty">${escapeHtml(t('dashboard.control.pickHintEmpty'))}</div>`;
     return;
   }
-  streamEl.innerHTML = '<div class="mt-empty">加载历史 ...</div>';
+  streamEl.innerHTML = `<div class="mt-empty">${escapeHtml(t('dashboard.control.history.loading'))}</div>`;
   try {
     let rows = [];
     if (MT_STATE.selectedMode === 'direct') {
@@ -626,19 +646,19 @@ async function reloadMatetermHistory() {
       rows = await r.json();
     } else if (MT_STATE.selectedMode === 'intervention' && MT_STATE.selectedThreadSlug) {
       const inst = MT_STATE.instances.find((i) => i.id === MT_STATE.selectedInstanceId);
-      if (!inst) throw new Error('实例不存在');
+      if (!inst) throw new Error(t('dashboard.control.instMissing'));
       const r = await fetch(`/api/threads/${encodeURIComponent(MT_STATE.selectedThreadSlug)}/history?projectId=${inst.projectId}&limit=200`);
       if (!r.ok) throw new Error('fetch failed: ' + r.status);
       rows = await r.json();
     }
     if (!rows.length) {
-      streamEl.innerHTML = '<div class="mt-empty">(无历史)</div>';
+      streamEl.innerHTML = `<div class="mt-empty">${escapeHtml(t('dashboard.control.history.empty'))}</div>`;
       return;
     }
     streamEl.innerHTML = rows.map(renderMatetermMessage).filter(Boolean).join('');
     streamEl.scrollTop = streamEl.scrollHeight;
   } catch (e) {
-    streamEl.innerHTML = `<div class="mt-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    streamEl.innerHTML = `<div class="mt-empty">${escapeHtml(t('dashboard.control.history.loadFailed', { error: e.message }))}</div>`;
   }
 }
 
@@ -653,7 +673,7 @@ function appendMtOptimisticBubble(text, clientMessageId) {
   node.className = 'mt-msg user mt-msg-sending';
   node.dataset.clientId = clientMessageId;
   node.innerHTML = `
-    <div class="mt-msg-head"><span class="who">you</span><span class="ts">…</span></div>
+    <div class="mt-msg-head"><span class="who">${escapeHtml(t('dashboard.control.userWho'))}</span><span class="ts">…</span></div>
     <div class="mt-msg-body"></div>
     <span class="mt-msg-status">· sending</span>
   `;
@@ -666,7 +686,7 @@ function appendMtOptimisticBubble(text, clientMessageId) {
 async function sendMatetermMessage() {
   const text = el('#mt-input').value.trim();
   if (!text) return;
-  if (!MT_STATE.selectedInstanceId) return alert('请先选一个终端');
+  if (!MT_STATE.selectedInstanceId) return alert(t('dashboard.control.needTerm'));
   const sendBtn = el('#mt-send');
   sendBtn.disabled = true;
   // [需求@2026-06-12 Phase 2E §12] 乐观 UI:立即 bubble + clientMessageId dedup
@@ -685,7 +705,7 @@ async function sendMatetermMessage() {
         throw new Error(err.error || `HTTP ${r.status}`);
       }
     } else {
-      if (!MT_STATE.selectedThreadSlug) throw new Error('请先选一条 thread');
+      if (!MT_STATE.selectedThreadSlug) throw new Error(t('dashboard.control.needThread'));
       const inst = MT_STATE.instances.find((i) => i.id === MT_STATE.selectedInstanceId);
       const r = await fetch(`/api/threads/${encodeURIComponent(MT_STATE.selectedThreadSlug)}/message?projectId=${inst.projectId}`, {
         method: 'POST',
@@ -702,7 +722,7 @@ async function sendMatetermMessage() {
   } catch (e) {
     bubble.classList.remove('mt-msg-sending');
     bubble.classList.add('mt-msg-failed');
-    bubble.title = `发送失败: ${e.message} · 点击重填`;
+    bubble.title = t('dashboard.control.sendFailedTip', { error: e.message });
     bubble.addEventListener('click', () => {
       el('#mt-input').value = text;
       el('#mt-input').focus();
@@ -724,7 +744,7 @@ function setupMatetermWS() {
     const b = el('#db-cap-banner');
     if (b) {
       b.hidden = false;
-      b.textContent = `⚠ 实例数 ${msg.payload.alive}/${msg.payload.cap} — 软上限,清理空闲`;
+      b.textContent = t('dashboard.control.capBanner', { alive: msg.payload.alive, cap: msg.payload.cap });
       b.onclick = () => { b.hidden = true; };
     }
   });
@@ -893,6 +913,23 @@ function wireUI() {
     if (document.hidden) stopAutoRefresh();
     else if (el('#db-autorefresh').checked) startAutoRefresh();
   });
+
+  // i18n 语言切换
+  if (window.MateI18n) {
+    applyDashboardLangBtn();
+    const langBtn = el('#lang-btn');
+    if (langBtn) {
+      langBtn.addEventListener('click', () => {
+        const cur = window.MateI18n.getLang();
+        window.MateI18n.setLang(cur === 'zh' ? 'en' : 'zh');
+      });
+    }
+    window.MateI18n.onChange(() => {
+      applyDashboardLangBtn();
+      // 触发当前 tab 重渲(因 cell text 都来自 t())
+      refreshActiveTab();
+    });
+  }
 }
 
 // ============================== Tab 5: log-stream ==============================
@@ -925,7 +962,7 @@ async function populateLogStreamDropdowns() {
     const insts = await r.json();
     const sel = el('#logs-instance');
     const cur = LOG_STATE.filters.instanceId;
-    sel.innerHTML = '<option value="">所有实例</option>' + insts
+    sel.innerHTML = `<option value="">${escapeHtml(t('dashboard.logs.allInstances'))}</option>` + insts
       .sort((a, b) => (a.displayName || a.id).localeCompare(b.displayName || b.id))
       .map((i) => `<option value="${escapeHtml(i.id)}">${escapeHtml(i.displayName || i.id)} (${escapeHtml(i.projectName || '?')})</option>`)
       .join('');
@@ -939,8 +976,8 @@ async function populateLogStreamDropdowns() {
     const threads = await r.json();
     const sel = el('#logs-thread');
     const cur = LOG_STATE.filters.threadSlug;
-    sel.innerHTML = '<option value="">所有线索</option>' + threads
-      .map((t) => `<option value="${escapeHtml(t.slug)}">${escapeHtml(t.title || t.slug)} · ${escapeHtml(t.projectName || '?')}</option>`)
+    sel.innerHTML = `<option value="">${escapeHtml(t('dashboard.logs.allThreads'))}</option>` + threads
+      .map((th) => `<option value="${escapeHtml(th.slug)}">${escapeHtml(th.title || th.slug)} · ${escapeHtml(th.projectName || '?')}</option>`)
       .join('');
     sel.value = cur;
   } catch (e) {
@@ -971,7 +1008,7 @@ async function refreshLogStream() {
     LOG_STATE.rows = rows;
     renderLogStream();
   } catch (e) {
-    el('#logs-list').innerHTML = `<div class="logs-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    el('#logs-list').innerHTML = `<div class="logs-empty">${escapeHtml(t('dashboard.logs.loadFailed', { error: e.message }))}</div>`;
   }
 }
 
@@ -985,9 +1022,9 @@ function renderLogStream() {
       return json.includes(search) || (m.instanceId || '').toLowerCase().includes(search) || (m.eventType || '').toLowerCase().includes(search);
     });
   }
-  el('#logs-count').textContent = `${rows.length} 条${search ? ' (搜索后)' : ''} · ${LOG_STATE.rows.length} 总缓存`;
+  el('#logs-count').textContent = t('dashboard.logs.count', { n: rows.length, suffix: search ? t('dashboard.logs.countAfterSearch') : '', total: LOG_STATE.rows.length });
   if (!rows.length) {
-    listEl.innerHTML = `<div class="logs-empty">无匹配事件</div>`;
+    listEl.innerHTML = `<div class="logs-empty">${escapeHtml(t('dashboard.logs.empty'))}</div>`;
     return;
   }
   listEl.innerHTML = rows.map(makeLogRowHtml).join('');
@@ -1000,14 +1037,14 @@ function makeLogRowHtml(m) {
   const etCls = (m.eventType || '').replace(/[\/.]/g, '_');
   const payloadStr = JSON.stringify(m.payload, null, 2);
   // 不全部把 payload 渲到 DOM(太大),只显前 8KB,details 展开时按 data-* 取
-  const preview = payloadStr.length > 8000 ? payloadStr.slice(0, 8000) + `\n... (+${payloadStr.length - 8000} 字符)` : payloadStr;
+  const preview = payloadStr.length > 8000 ? payloadStr.slice(0, 8000) + t('dashboard.logs.truncated', { n: payloadStr.length - 8000 }) : payloadStr;
   return `
     <details class="logs-row logs-et-${escapeHtml(etCls)}">
       <summary>
         <span class="logs-ts">${tsStr}</span>
         <span class="logs-inst" title="${escapeHtml(m.instanceId || '')}">${escapeHtml((m.instanceId || '').replace(/^mate-/, ''))}</span>
         <span class="logs-et">${escapeHtml(m.eventType || '')}</span>
-        <span class="logs-thread">${escapeHtml(m.threadSlug || (m.directTarget ? '→direct' : '-'))}</span>
+        <span class="logs-thread">${escapeHtml(m.threadSlug || (m.directTarget ? t('dashboard.logs.directTarget') : '-'))}</span>
         <span class="logs-sum">${escapeHtml(summary)}</span>
       </summary>
       <pre class="logs-raw">${escapeHtml(preview)}</pre>
@@ -1024,14 +1061,14 @@ function logRowSummary(m) {
     const texts = content.filter((c) => c.type === 'text').map((c) => c.text).join(' ').trim();
     if (tools.length) return `🔧 ${tools.map((t) => t.name).join(', ')}`;
     if (texts) return texts.length > 100 ? texts.slice(0, 100) + '…' : texts;
-    return '(empty assistant)';
+    return t('dashboard.logs.emptyAssistant');
   }
   if (m.eventType === 'user') {
     const content = p.message?.content || [];
     const trs = Array.isArray(content) ? content.filter((c) => c.type === 'tool_result') : [];
-    if (trs.length) return `↩ tool_result × ${trs.length}${trs.some((tr) => tr.is_error) ? ' (含 ERROR)' : ''}`;
-    const t = Array.isArray(content) ? content.filter((c) => c.type === 'text').map((c) => c.text).join(' ') : (typeof content === 'string' ? content : '');
-    return t.length > 100 ? t.slice(0, 100) + '…' : (t || '(empty user)');
+    if (trs.length) return t('dashboard.logs.toolResultHas', { n: trs.length, err: trs.some((tr) => tr.is_error) ? t('dashboard.logs.toolResultErr') : '' });
+    const txt = Array.isArray(content) ? content.filter((c) => c.type === 'text').map((c) => c.text).join(' ') : (typeof content === 'string' ? content : '');
+    return txt.length > 100 ? txt.slice(0, 100) + '…' : (txt || t('dashboard.logs.emptyUser'));
   }
   if (m.eventType?.startsWith('result')) {
     const ok = p.is_error !== true;
@@ -1101,7 +1138,7 @@ function setupLogStreamWS() {
     }
     const wasAtTop = listEl.scrollTop < 30;
     listEl.insertAdjacentHTML('afterbegin', makeLogRowHtml(m));
-    el('#logs-count').textContent = `${LOG_STATE.rows.length} 条 · 实时`;
+    el('#logs-count').textContent = t('dashboard.logs.countLive', { n: LOG_STATE.rows.length });
     if (wasAtTop) listEl.scrollTop = 0;
   });
 }

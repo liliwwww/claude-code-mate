@@ -41,6 +41,9 @@
   const QUOTA_DANGER_RED = 0.95;
   const QUOTA_WARN_YELLOW = 0.6;
 
+  // ---------------- i18n helper ----------------
+  const t = (key, params) => (window.MateI18n ? window.MateI18n.t(key, params) : key);
+
   const state = {
     projectId: null,    // null = 全局视图(dashboard 用),number = 当前 project
     snapshot: null,
@@ -108,9 +111,10 @@
 
   function renderChip() {
     if (!state.chipEl) return;
+    state.chipEl.setAttribute('title', t('chip.title'));
     const snap = state.snapshot;
     if (!snap) {
-      state.chipEl.innerHTML = '<span class="rc-loading">…</span>';
+      state.chipEl.innerHTML = `<span class="rc-loading">${escapeHtml(t('chip.loading'))}</span>`;
       return;
     }
     const counts = snap.counts || {};
@@ -124,9 +128,9 @@
       ? activeTerms.map((i) => {
           const titleParts = [
             `${i.displayName}`,
-            i.threadSlug ? `thread: ${i.threadSlug}` : '(unbound)',
-            i.currentModel ? `model: ${i.currentModel}` : '',
-            i.currentActivity ? `近活: ${i.currentActivity}` : '',
+            i.threadSlug ? t('chip.thread', { slug: i.threadSlug }) : t('chip.unbound'),
+            i.currentModel ? t('chip.model', { model: i.currentModel }) : '',
+            i.currentActivity ? t('chip.recentActivity', { act: i.currentActivity }) : '',
             `${fmtAgo(i.lastActiveAt)}`,
           ].filter(Boolean).join('\n');
           // [需求@2026-06-13 §14] chip inline 显近活提示 — busy 实例后面带 "· 🔧 Grep" 之类,
@@ -138,7 +142,7 @@
           }
           return `<span class="rc-term rc-term-${i._kind}" title="${escapeHtml(titleParts)}">${escapeHtml(i.displayName)}<span class="rc-term-act">${escapeHtml(actInline)}</span></span>`;
         }).join('')
-      : '<span class="rc-no-busy">(无)</span>';
+      : `<span class="rc-no-busy">${escapeHtml(t('chip.noBusy'))}</span>`;
 
     // pending
     const pendingTotal = snap.pending?.total || 0;
@@ -156,21 +160,21 @@
       const utilStr = util != null ? `${Math.round(util * 100)}%` : '?';
       quotaHtml = `<span class="rc-quota ${cls}" title="${escapeHtml(JSON.stringify(snap.quota))}">${typeLabel}:${utilStr}${pausedMark}↘${reset}</span>`;
     } else {
-      quotaHtml = `<span class="rc-quota quota-ok">quota:ok</span>`;
+      quotaHtml = `<span class="rc-quota quota-ok">${escapeHtml(t('chip.quotaOk'))}</span>`;
     }
 
     // cap (atCap 时红色)
     const cap = snap.cap || {};
     const capClass = cap.atCap ? 'rc-cap rc-cap-warn' : 'rc-cap';
-    const capHtml = `<span class="${capClass}" title="${cap.alive}/${cap.cap} 真活实例">${cap.alive}/${cap.cap}</span>`;
+    const capHtml = `<span class="${capClass}" title="${escapeHtml(t('chip.capTip', { alive: cap.alive, cap: cap.cap }))}">${cap.alive}/${cap.cap}</span>`;
 
     // chip 主体
     state.chipEl.innerHTML = `
-      <span class="rc-counts">${counts.idle || 0} idle</span>
-      <span class="rc-sep">·</span>
-      <span class="rc-busy-label">busy:</span>
+      <span class="rc-counts">${counts.idle || 0} ${escapeHtml(t('chip.idle'))}</span>
+      <span class="rc-sep">${escapeHtml(t('chip.sep'))}</span>
+      <span class="rc-busy-label">${escapeHtml(t('chip.busyLabel'))}</span>
       <span class="rc-terms">${termChips}</span>
-      <span class="rc-pending ${pendingClass}" title="排队中(busy 排队 + quota 暂停期间排队)">排队:${pendingTotal}</span>
+      <span class="rc-pending ${pendingClass}" title="${escapeHtml(t('chip.pendingTip'))}">${escapeHtml(t('chip.pending', { n: pendingTotal }))}</span>
       ${quotaHtml}
       ${capHtml}
     `;
@@ -194,7 +198,7 @@
   function renderPopover() {
     const p = ensurePopover();
     const snap = state.snapshot;
-    if (!snap) { p.innerHTML = '<div class="rp-loading">加载中…</div>'; return; }
+    if (!snap) { p.innerHTML = `<div class="rp-loading">${escapeHtml(t('popover.loading'))}</div>`; return; }
 
     // 4 列 by roleType
     const byType = { requirements: [], orchestrator: [], executor: [], validator: [] };
@@ -211,16 +215,18 @@
     }
 
     const cols = [
-      { type: 'requirements', label: 'R (planA-R)' },
-      { type: 'orchestrator', label: 'H (planA-H)' },
-      { type: 'executor',     label: 'B (execB)' },
-      { type: 'validator',    label: 'C (testC)' },
+      { type: 'requirements', label: t('popover.col.r') },
+      { type: 'orchestrator', label: t('popover.col.h') },
+      { type: 'executor',     label: t('popover.col.b') },
+      { type: 'validator',    label: t('popover.col.c') },
     ];
 
-    const projLabel = snap.project ? `Project: ${escapeHtml(snap.project.name)}` : 'Global view';
+    const projLabel = snap.project
+      ? escapeHtml(t('popover.project', { name: snap.project.name }))
+      : escapeHtml(t('popover.globalView'));
     let html = `<div class="rp-header"><div>${projLabel}</div>`;
     if (snap.quota?.paused) {
-      html += `<button class="rp-quota-override" type="button">解除暂停 ×</button>`;
+      html += `<button class="rp-quota-override" type="button">${escapeHtml(t('popover.quotaOverride'))}</button>`;
     }
     html += `</div>`;
     html += `<div class="rp-cols">`;
@@ -229,7 +235,7 @@
       const live = items.filter((i) => i.status !== 'disconnected');
       const disc = items.filter((i) => i.status === 'disconnected');
       html += `<div class="rp-col"><h4>${escapeHtml(col.label)}</h4>`;
-      if (live.length === 0) html += `<div class="rp-empty">(无活实例)</div>`;
+      if (live.length === 0) html += `<div class="rp-empty">${escapeHtml(t('popover.colEmpty'))}</div>`;
       for (const i of live) {
         const blink = i.status === 'busy' ? ' rp-blink' : '';
         const statusBadge = `<span class="rp-status rp-status-${i.status}">${i.status}</span>`;
@@ -243,7 +249,7 @@
         </div>`;
       }
       if (disc.length) {
-        html += `<div class="rp-disc-header">disconnected (${disc.length})</div>`;
+        html += `<div class="rp-disc-header">${escapeHtml(t('popover.discHeader', { n: disc.length }))}</div>`;
         for (const i of disc.slice(0, 5)) {
           html += `<div class="rp-inst rp-inst-disc">
             <div class="rp-inst-head"><span class="rp-status rp-status-disconnected">disc</span> <span class="rp-name">${escapeHtml(i.displayName)}</span></div>
@@ -251,7 +257,7 @@
             <div class="rp-ago">${escapeHtml(fmtAgo(i.lastActiveAt))}</div>
           </div>`;
         }
-        if (disc.length > 5) html += `<div class="rp-more">+ ${disc.length - 5} 更老</div>`;
+        if (disc.length > 5) html += `<div class="rp-more">${escapeHtml(t('popover.moreOlder', { n: disc.length - 5 }))}</div>`;
       }
       html += `</div>`;
     }
@@ -260,9 +266,14 @@
     // 排队详情
     if (snap.pending?.total > 0) {
       html += `<div class="rp-pending-section">
-        <h4>排队中 (${snap.pending.total})</h4>`;
-      for (const t of (snap.pending.byTarget || []).slice(0, 10)) {
-        html += `<div class="rp-pending-item">${escapeHtml(t.targetKind)}: <code>${escapeHtml(t.targetId)}</code> · ${t.n} 条</div>`;
+        <h4>${escapeHtml(t('popover.pendingHeader', { n: snap.pending.total }))}</h4>`;
+      for (const it of (snap.pending.byTarget || []).slice(0, 10)) {
+        // popover.pendingItem 含 <code> — 用 raw replace 保留 HTML
+        const itemHtml = t('popover.pendingItem')
+          .replace('{kind}', escapeHtml(it.targetKind))
+          .replace('{id}', `<code>${escapeHtml(it.targetId)}</code>`)
+          .replace('{n}', String(it.n));
+        html += `<div class="rp-pending-item">${itemHtml}</div>`;
       }
       html += `</div>`;
     }
@@ -273,11 +284,11 @@
     const ovBtn = p.querySelector('.rp-quota-override');
     if (ovBtn) {
       ovBtn.addEventListener('click', async () => {
-        if (!confirm('确认强制解除 quota 暂停?\n下次发送可能直接撞墙(manual override)')) return;
+        if (!confirm(t('popover.quotaOverrideConfirm'))) return;
         try {
           await fetch('/api/runtime/quota/override', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
           refresh();
-        } catch (e) { alert('override failed: ' + e.message); }
+        } catch (e) { alert(t('popover.quotaOverrideFailed', { error: e.message })); }
       });
     }
   }
@@ -352,7 +363,7 @@
       return;
     }
     // build chip element
-    state.chipEl = el('div', { class: 'runtime-chip', title: 'mate 实时运行态(点击展开)' });
+    state.chipEl = el('div', { class: 'runtime-chip', title: t('chip.title') });
     state.chipEl.addEventListener('click', (ev) => {
       ev.stopPropagation();
       if (state.popoverOpen) hidePopover();
@@ -372,6 +383,14 @@
     setupWS();
     if (state.pollTimer) clearInterval(state.pollTimer);
     state.pollTimer = setInterval(refresh, POLL_INTERVAL_MS);
+
+    // 语言切换 → 重渲 chip + popover
+    if (window.MateI18n) {
+      window.MateI18n.onChange(() => {
+        renderChip();
+        if (state.popoverOpen) renderPopover();
+      });
+    }
 
     refresh();
   }
