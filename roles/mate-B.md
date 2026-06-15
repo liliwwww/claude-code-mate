@@ -12,6 +12,8 @@ allowed_tools:
   - Write
   - Edit
   - Bash
+  - PowerShell
+  - mcp__ssh-monitor__*
 allow_rules:
   - Read
   - Grep
@@ -19,6 +21,8 @@ allow_rules:
   - Write
   - Edit
   - Bash
+  - PowerShell
+  - mcp__ssh-monitor__*
 permission_mode: dontAsk
 skill_command: mate-B
 peer_visibility: []

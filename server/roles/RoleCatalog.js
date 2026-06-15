@@ -38,6 +38,10 @@ const ROLE_SCHEMA = {
   permission_mode:   { type: 'string', default: 'dontAsk', enum: ['dontAsk', 'ask', 'denyAll'] },
   skill_command:     { type: 'string', default: null },  // null = fallback to name
   peer_visibility:   { type: 'array', default: [] },
+  // [需求@2026-06-15] 每个 role 独立指定 claude model;null = 跟 claude code 默认(usually Opus)
+  //   合法 ID 见 https://docs.anthropic.com — 当前用得到的:
+  //   claude-opus-4-8 / claude-opus-4-7 / claude-sonnet-4-6 / claude-haiku-4-5 / claude-fable-5
+  model:             { type: 'string', default: null },
 };
 
 const REQUIRED_FIELDS = Object.entries(ROLE_SCHEMA).filter(([, s]) => s.required).map(([k]) => k);
@@ -143,6 +147,8 @@ class RoleCatalog {
         permissionMode: validated.permission_mode ?? ROLE_SCHEMA.permission_mode.default,
         skillCommand: validated.skill_command ?? validated.name,
         peerVisibility: validated.peer_visibility ?? ROLE_SCHEMA.peer_visibility.default,
+        // [需求@2026-06-15] role 级 model 覆盖;null 时不传 --model,跟 claude 默认
+        model: validated.model ?? null,
         body: parsed.content.trim(),
         sourcePath: full,
       };

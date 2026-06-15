@@ -78,11 +78,10 @@ function renderTerminalsList(instances) {
     const canSkill = !['dead', 'disconnected'].includes(i.status);
     const slotText = i.poolSlot != null ? String(i.poolSlot) : '-';
     const activity = i.latestActivity || '(no data)';
-    // [需求@2026-06-14 B] 模型列 — currentModel 后端已有,extract short name
+    // [需求@2026-06-14 B + 2026-06-15] 模型列 — currentModel 后端已有,改为下拉切模型
+    //   下拉 onChange 调 /api/instances/:id/slash 发 /model <id>(claude 内部切)
     const modelFull = i.currentModel || '';
-    const modelShort = modelFull
-      ? modelFull.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-\d{4}$/, '')
-      : '—';
+    const canSwitchModel = !['dead', 'disconnected'].includes(i.status);
     const memoryText = i.memory && i.memory.fileCount > 0
       ? `${i.memory.fileCount} files${i.memory.latestMtime ? ' · ' + relTime(i.memory.latestMtime) : ''}`
       : '—';
@@ -92,7 +91,7 @@ function renderTerminalsList(instances) {
         <div title="${escapeHtml(i.id)} · session ${i.sessionId || '-'}">${escapeHtml(i.displayName || i.id)}</div>
         <div>${slotText}</div>
         <div>${escapeHtml(i.projectName || '?')}</div>
-        <div title="${escapeHtml(modelFull || '(unknown)')}">${escapeHtml(modelShort)}</div>
+        <div title="${escapeHtml(modelFull || '(unknown)')}">${makeModelSelectorHtml(i.id, modelFull, canSwitchModel)}</div>
         <div>${i.pid ?? '-'}</div>
         <div title="${escapeHtml(activity)}">${escapeHtml(activity)}</div>
         <div title="${i.memory ? 'latest: ' + (i.memory.latestMtime ? new Date(i.memory.latestMtime).toLocaleString() : '-') : ''}">${escapeHtml(memoryText)}</div>
@@ -129,6 +128,66 @@ function renderTerminalsList(instances) {
       openSkillDialog(btn.dataset.id, btn.dataset.name);
     });
   });
+
+  // [需求@2026-06-15] model 下拉切换 — onChange 发 /model <id> 到 instance
+  listEl.querySelectorAll('.term-model-sel[data-id]').forEach((sel) => {
+    sel.addEventListener('change', async (e) => {
+      const id = sel.dataset.id;
+      const newModel = sel.value;
+      const prevModel = sel.dataset.prev || '';
+      if (!newModel || newModel === prevModel) return;
+      if (!confirm(`切换 ${id} 到 ${newModel}?\n\n会发 /model 命令到 claude session。生效要看 claude headless 是否接 /model slash。\n下次实例 spawn 时仍用 role 默认模型(若要永久改,改 roles/<role>.md frontmatter model 字段)。`)) {
+        sel.value = prevModel;  // 还原
+        return;
+      }
+      sel.disabled = true;
+      try {
+        const r = await fetch(`/api/instances/${encodeURIComponent(id)}/slash`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: `/model ${newModel}` }),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({ error: r.statusText }));
+          throw new Error(err.error || r.statusText);
+        }
+        sel.dataset.prev = newModel;
+        // 等 5 秒重新拉,看 currentModel 是否真翻了
+        setTimeout(() => refreshTerminalsList(), 5000);
+      } catch (err) {
+        alert('切换 model 失败: ' + err.message);
+        sel.value = prevModel;
+      } finally {
+        sel.disabled = false;
+      }
+    });
+  });
+}
+
+// [需求@2026-06-15] 终端实时 model 下拉 — 当前 model 在列表里就标 selected
+const KNOWN_MODELS = [
+  { id: 'claude-opus-4-8',   label: 'opus-4-8' },
+  { id: 'claude-opus-4-7',   label: 'opus-4-7' },
+  { id: 'claude-sonnet-4-6', label: 'sonnet-4-6' },
+  { id: 'claude-haiku-4-5',  label: 'haiku-4-5' },
+  { id: 'claude-fable-5',    label: 'fable-5' },
+];
+function makeModelSelectorHtml(instanceId, currentFull, canSwitch) {
+  if (!canSwitch) {
+    // disconnected/dead 不能切,显短名
+    const short = (currentFull || '').replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-\d{4}$/, '') || '—';
+    return `<span class="muted">${escapeHtml(short)}</span>`;
+  }
+  // 找最匹配的(currentFull 可能带 -20251xxx 后缀,匹配前缀)
+  const cur = currentFull || '';
+  const matchedId = KNOWN_MODELS.find((m) => cur.startsWith(m.id))?.id || '';
+  const opts = KNOWN_MODELS.map((m) => {
+    const sel = m.id === matchedId ? ' selected' : '';
+    return `<option value="${escapeHtml(m.id)}"${sel}>${escapeHtml(m.label)}</option>`;
+  }).join('');
+  // 如果 currentModel 不在 KNOWN 列表 → 加个 "(其它)" option 占位
+  const otherOpt = !matchedId && cur ? `<option value="" selected disabled>${escapeHtml(cur.slice(0, 20))}</option>` : '';
+  return `<select class="term-model-sel" data-id="${escapeHtml(instanceId)}" data-prev="${escapeHtml(matchedId)}" title="切模型(发 /model 到 claude session)">${otherOpt}${opts}</select>`;
 }
 
 // [需求@2026-06-14 D] skill 指令对话框

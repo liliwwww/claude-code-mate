@@ -63,6 +63,10 @@ function buildSpawnArgs({ role, sessionId, resumeSessionId, forkSession, cwd }) 
       permissions: { allow: role.allowRules },
     }));
   }
+  // [需求@2026-06-15] role 级 model 覆盖 — null 不传,跟 claude 默认(usually Opus)
+  if (role.model) {
+    args.push('--model', role.model);
+  }
   if (resumeSessionId) {
     args.push('--resume', resumeSessionId);
     if (forkSession) args.push('--fork-session');

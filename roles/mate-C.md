@@ -11,12 +11,14 @@ allowed_tools:
   - Glob
   - Bash
   - PowerShell
+  - mcp__ssh-monitor__*
 allow_rules:
   - Read
   - Grep
   - Glob
   - Bash
   - PowerShell
+  - mcp__ssh-monitor__*
 permission_mode: dontAsk
 skill_command: mate-C
 peer_visibility: []

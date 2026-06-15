@@ -735,3 +735,18 @@ main { flex: 1; display: flex; min-height: 0; }
 .logs-et-system_init .logs-et, .logs-et-system_api_retry .logs-et { color: var(--accent); }
 .logs-et-stream_event .logs-et { color: var(--text-muted); }
 .logs-et-rate_limit_event .logs-et { color: var(--accent-yellow); }
+
+/* [需求@2026-06-15] 终端实时 model 列下拉 */
+.term-row .term-model-sel {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 10px;
+  font-family: ui-monospace, Consolas, monospace;
+  width: 100%;
+  cursor: pointer;
+}
+.term-row .term-model-sel:hover { border-color: var(--accent); }
+.term-row .term-model-sel:disabled { opacity: 0.5; cursor: wait; }
