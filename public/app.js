@@ -599,13 +599,20 @@ function renderEventInStream(eventType, raw, autoscroll = true) {
 //   只一个全局 indicator(focused thread 的 stream 末尾);切 thread 自动清。
 function startWaitIndicator(source) {
   if (state.waitIndicator) return;  // 已有,别叠
-  els.stream.querySelectorAll('.waiting-indicator').forEach((n) => n.remove());  // 防泄漏
+  // [需求@2026-06-15 Phase 2G] 移到 stream 底部独立位置(send-form 上方,跟面包屑同区),
+  //   不再追加到 #stream 内,跟消息流分开
+  document.querySelectorAll('.waiting-indicator').forEach((n) => n.remove());  // 防泄漏(全文搜)
   const div = document.createElement('div');
   div.className = 'waiting-indicator';
   div.dataset.source = source || '';
   div.innerHTML = `<span class="wi-icon">⌛</span> ${escapeHtml(t('stream.waitingLLM'))} <span class="wi-timer">0s</span>`;
-  els.stream.appendChild(div);
-  els.stream.scrollTop = els.stream.scrollHeight;
+  // 插到 send-form 前面;若无 send-form 兜底 stream 末尾
+  const sendForm = document.querySelector('#send-form');
+  if (sendForm && sendForm.parentNode) {
+    sendForm.parentNode.insertBefore(div, sendForm);
+  } else {
+    els.stream.appendChild(div);
+  }
   const startedAt = Date.now();
   const intervalId = setInterval(() => {
     if (!div.isConnected) { clearInterval(intervalId); return; }
@@ -1004,9 +1011,11 @@ function renderBreadcrumb() {
   if (!host) {
     host = document.createElement('div');
     host.id = 'dispatch-breadcrumb';
-    const convHeader = document.querySelector('#conv-header');
-    if (convHeader && convHeader.parentNode) {
-      convHeader.parentNode.insertBefore(host, convHeader.nextSibling);
+    // [需求@2026-06-15 Phase 2G] 移到 stream 底部 — send-form 上面,跟等待 indicator 同区
+    //   user 反馈:派工链贴底显示更直观,注意力跟着当前活动跑
+    const sendForm = document.querySelector('#send-form');
+    if (sendForm && sendForm.parentNode) {
+      sendForm.parentNode.insertBefore(host, sendForm);
     }
   }
   const chain = t2?.metadata?.dispatch_chain || [];
