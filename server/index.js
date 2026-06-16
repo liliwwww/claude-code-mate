@@ -59,6 +59,14 @@ QuotaState.start();
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
+// [需求@2026-06-16] no-cache header — 前端文件每次都 revalidate(304 仍有效),
+//   不然 user 改完代码刷不出来(`<script src="/app.js">` 走 browser cache)
+app.use((req, res, next) => {
+  if (/\.(js|css|html)$/.test(req.url)) {
+    res.set('Cache-Control', 'no-cache, must-revalidate');
+  }
+  next();
+});
 app.use(express.static(config.paths.public));
 app.use('/api', buildRouter());
 
