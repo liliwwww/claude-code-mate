@@ -494,6 +494,26 @@ if (curVersion < 10) {
   curVersion = 10;
 }
 
+// [需求@2026-06-16 RFC 栈模型] v10 -> v11: threads 表加 call_stack_json + outcome
+//   Phase 1 数据模型并行 — 字段加上,业务层暂不读不写(冷字段),
+//   Phase 2 才 replay dispatch_chain 填进去,Phase 3 切 SSOT。
+//   call_stack_json: 栈帧列表(LIFO),栈底 = 栈起点(通常 R)
+//   outcome: thread 终态 ('verified' | 'aborted' | null=进行中)。
+//     stage 仍保留(派生 UI 用),outcome 是栈空后真终态。
+if (curVersion < 11) {
+  console.log('[db] migrating v10 -> v11(call_stack_json + outcome 冷字段)');
+  // 加列(SQLite ALTER ADD COLUMN 不能加 NOT NULL without default — 用 NULL 默认 OK,Phase 1 冷字段)
+  // 已经存在的列(老库已升级)会抛错,catch 容错
+  try { db.exec(`ALTER TABLE threads ADD COLUMN call_stack_json TEXT`); } catch (e) {
+    if (!/duplicate column/.test(e.message)) throw e;
+  }
+  try { db.exec(`ALTER TABLE threads ADD COLUMN outcome TEXT`); } catch (e) {
+    if (!/duplicate column/.test(e.message)) throw e;
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '11');
+  curVersion = 11;
+}
+
 function ensureSystemProject() {
   const existing = db.prepare(`SELECT id FROM projects WHERE name = 'System'`).get();
   if (existing) return existing.id;
