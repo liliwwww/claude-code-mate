@@ -1325,10 +1325,27 @@ function setupLogStreamWS() {
 //   数据源:GET /api/runtime/snapshot + GET /api/queue?status=all
 //   增量更新:WS instance.status_change / queue.* / backlog.* / dispatch.* → 防抖 refresh
 
+// [需求@2026-06-16] scope / showDisc 持久化到 localStorage,刷新不丢
+const GRAPH_LS_SCOPE = 'mate.dashboard.graph.scope';
+const GRAPH_LS_SHOWDISC = 'mate.dashboard.graph.showDisc';
+function _loadGraphScope() {
+  try {
+    const v = localStorage.getItem(GRAPH_LS_SCOPE);
+    if (v == null) return 'global';
+    if (v === 'global') return 'global';
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : 'global';
+  } catch { return 'global'; }
+}
+function _loadGraphShowDisc() {
+  try { return localStorage.getItem(GRAPH_LS_SHOWDISC) === '1'; }
+  catch { return false; }
+}
+
 const GRAPH_STATE = {
   inited: false,
-  scope: 'global',         // 'global' | <projectId number>
-  showDisc: false,
+  scope: _loadGraphScope(),
+  showDisc: _loadGraphShowDisc(),
   defaultProjectId: 1,
   projects: [],
   snapshot: null,
@@ -1392,12 +1409,17 @@ function wireGraphUI() {
   el('#graph-scope').addEventListener('change', (e) => {
     const v = e.target.value;
     GRAPH_STATE.scope = v === 'global' ? 'global' : parseInt(v, 10);
+    try { localStorage.setItem(GRAPH_LS_SCOPE, String(GRAPH_STATE.scope)); } catch {}
     refreshGraph();
   });
   el('#graph-show-disc').addEventListener('change', (e) => {
     GRAPH_STATE.showDisc = e.target.checked;
+    try { localStorage.setItem(GRAPH_LS_SHOWDISC, e.target.checked ? '1' : '0'); } catch {}
     renderGraph();
   });
+  // checkbox 初值用 GRAPH_STATE 状态
+  const cb = el('#graph-show-disc');
+  if (cb) cb.checked = GRAPH_STATE.showDisc;
   el('#graph-refresh').addEventListener('click', () => refreshGraph());
 }
 
@@ -1451,7 +1473,16 @@ function renderGraph() {
     ...(snap.instances?.busy || []),
     ...(snap.instances?.spawning || []),
   ];
-  if (GRAPH_STATE.showDisc) allInsts.push(...(snap.instances?.disconnected || []));
+  const discAll = snap.instances?.disconnected || [];
+  if (GRAPH_STATE.showDisc) allInsts.push(...discAll);
+  // [bug@2026-06-16] R 是 per-thread,线索回 verified 后 R 即 disconnect。
+  //   disconnected 是 R 的常态(不像 H/B/C 池化常驻)— 总是显示 R,
+  //   否则用户进 graph 永远看不到"发起方",误以为系统只有 H/B/C。
+  else {
+    for (const i of discAll) {
+      if (i.roleType === 'requirements') allInsts.push(i);
+    }
+  }
   for (const i of allInsts) {
     const g = groups[i.roleType];
     if (g) g.push(i);
