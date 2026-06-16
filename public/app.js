@@ -414,15 +414,25 @@ function renderConvHeader() {
 }
 
 // [需求@2026-06-13 §18] 焦点 thread 是否 busy(任一绑定实例处于 busy/spawning)
+// [bug@2026-06-16] 池化 H/B/C 完成本线索后会被复用到下一条线索 — thread.metadata.
+//   current_role_instances 没及时清,会留着引用。如果只看 inst.status,
+//   会把"H 在跑别人"误判成"当前线索 busy"。
+//   修:只算 inst.threadSlug === focusedSlug 的实例(实例真的还在为本线索服务)。
 function isFocusedThreadBusy() {
   if (!state.focusedSlug) return false;
   const t = state.threads.get(state.focusedSlug);
   if (!t) return false;
+  // [bug@2026-06-16] verified 线索一定不 busy(防元数据漂移)
+  if (t.stage === 'verified' || t.stage === 'closed') return false;
   const bound = t.metadata?.current_role_instances || {};
   for (const id of Object.values(bound)) {
     if (!id) continue;
     const inst = state.instances.get(id);
-    if (inst && (inst.status === 'busy' || inst.status === 'spawning')) return true;
+    if (!inst) continue;
+    if (inst.status !== 'busy' && inst.status !== 'spawning') continue;
+    // 实例可能已经被复用去跑别的线索,只算还绑在本线索上的
+    if (inst.threadSlug && inst.threadSlug !== state.focusedSlug) continue;
+    return true;
   }
   return false;
 }
