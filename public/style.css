@@ -983,3 +983,102 @@ main { flex: 1; display: flex; min-height: 0; }
 .term-row .term-ctx-warn { color: var(--accent-yellow); }
 .term-row .term-ctx-danger { color: var(--accent-red); animation: ctx-blink 1.4s ease-in-out infinite; }
 @keyframes ctx-blink { 0%,100% { opacity: 0.7; } 50% { opacity: 1; } }
+
+/* [需求@2026-06-16 B3] 顶栏全文检索框 + 结果 popover */
+#search-box-wrap {
+  position: relative;
+  margin-right: 4px;
+}
+#search-input {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-size: 12px;
+  width: 200px;
+  font-family: inherit;
+}
+#search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  width: 280px;
+  transition: width 0.15s;
+}
+.search-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 480px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px var(--shadow);
+  z-index: 1000;
+  font-size: 11px;
+}
+.search-results .sr-head {
+  padding: 6px 10px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.search-results .sr-row {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.search-results .sr-row:hover {
+  background: var(--bg-card-hover);
+}
+.search-results .sr-row:last-child {
+  border-bottom: none;
+}
+.search-results .sr-meta {
+  color: var(--text-secondary);
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+.search-results .sr-snippet {
+  color: var(--text-primary);
+  font-family: ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+}
+.search-results .sr-snippet mark {
+  background: var(--accent-yellow);
+  color: #000;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+.search-results .sr-empty,
+.search-results .sr-error {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* [需求@2026-06-16 B1] 看更早历史按钮 */
+.load-more-btn {
+  display: block;
+  margin: 8px auto;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border: 1px dashed var(--border-light);
+  border-radius: 3px;
+  padding: 4px 14px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.load-more-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.load-more-btn:disabled { opacity: 0.5; cursor: wait; }

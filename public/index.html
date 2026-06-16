@@ -35,6 +35,11 @@
     <!-- [需求@2026-06-12 Phase 2E §14] 实时运行态 chip -->
     <div id="runtime-chip-mount"></div>
     <div class="actions">
+      <!-- [需求@2026-06-16 B3] 全文检索框 — 跨 thread / 跨 project 搜对话内容 -->
+      <div id="search-box-wrap">
+        <input id="search-input" type="text" data-i18n-attr-placeholder="search.placeholder" placeholder="搜索全文..." />
+        <div id="search-results" class="search-results" hidden></div>
+      </div>
       <!-- [需求@2026-06-10 §1.1] 环境检测 -->
       <button id="healthcheck-btn" data-i18n="topbar.healthcheck" data-i18n-attr-title="topbar.healthcheckTip" title="环境检测(手动触发,失败不阻塞)">环境检测</button>
       <!-- [需求@2026-06-11 §2 + 2026-06-12 §8.6] 仪表盘按钮(原"终端"升级成"系统")-->

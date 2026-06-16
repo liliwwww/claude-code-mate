@@ -583,15 +583,31 @@ function buildRouter() {
     }
   });
 
+  // [需求@2026-06-16] limit 默认 200 → 500;max 2000 → 10000
+  //   加 before=<ts> 参数支持分页查"看更早"(降序拉,从 before 之前再拉 N 条)
   r.get('/threads/:slug/history', requireProjectId, (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 2000);
-    const rows = db.prepare(`
-      SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json
-      FROM messages
-      WHERE project_id = ? AND thread_slug = ?
-      ORDER BY ts ASC, id ASC
-      LIMIT ?
-    `).all(req.project.id, req.params.slug, limit);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 10000);
+    const before = req.query.before ? parseInt(req.query.before, 10) : null;
+    let rows;
+    if (before && Number.isFinite(before)) {
+      // 分页:拉 ts < before 的最后 N 条,然后再 reverse 成升序
+      rows = db.prepare(`
+        SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json
+        FROM messages
+        WHERE project_id = ? AND thread_slug = ? AND ts < ?
+        ORDER BY ts DESC, id DESC
+        LIMIT ?
+      `).all(req.project.id, req.params.slug, before, limit);
+      rows.reverse();
+    } else {
+      rows = db.prepare(`
+        SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json
+        FROM messages
+        WHERE project_id = ? AND thread_slug = ?
+        ORDER BY ts ASC, id ASC
+        LIMIT ?
+      `).all(req.project.id, req.params.slug, limit);
+    }
     res.json(rows.map((m) => ({
       id: m.id,
       instanceId: m.instance_id,
@@ -756,6 +772,96 @@ function buildRouter() {
       });
     } catch (e) {
       res.status(500).json({ error: e.message, stack: e.stack });
+    }
+  });
+
+  // ============================== B2: FTS5 全文检索 ==============================
+  // [需求@2026-06-16] GET /api/search?q=<text>&projectId=N&threadSlug=xx&eventType=type&limit=50
+  //   FTS5 MATCH 查询(unicode61 分词);返回带 snippet 高亮
+  r.get('/search', (req, res) => {
+    const q = (req.query.q || '').trim();
+    if (!q) return res.json([]);
+    const projectId = req.query.projectId ? parseInt(req.query.projectId, 10) : null;
+    const threadSlug = req.query.threadSlug || null;
+    const eventType = req.query.eventType || null;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 500);
+
+    // [2026-06-16] hybrid 策略:
+    //   - query >= 3 字符 → FTS5 MATCH(快,trigram 索引)
+    //   - query < 3 字符  → LIKE 全表扫(慢但准,trigram 索引最小单位 3 字符)
+    //   - 查询字符串包含 -, :, " 等 FTS5 特殊字符 → 用 phrase 形式 "..." 包装
+    const useFts = q.length >= 3;
+    let sql;
+    const params = [];
+
+    if (useFts) {
+      // FTS5 phrase 形式自动 escape:把 q 里的双引号转义,然后用 " 包整段
+      const ftsQ = '"' + q.replace(/"/g, '""') + '"';
+      sql = `
+        SELECT m.id, m.project_id, m.thread_slug, m.instance_id, m.role_name,
+               m.ts, m.event_type, m.direction,
+               snippet(messages_fts, 0, '<mark>', '</mark>', '...', 16) AS snippet
+        FROM messages_fts
+        JOIN messages m ON m.id = messages_fts.rowid
+        WHERE messages_fts MATCH ?
+      `;
+      params.push(ftsQ);
+    } else {
+      // LIKE fallback:短 query(包括 2 字中文)用 payload_json LIKE
+      const likeQ = '%' + q.replace(/[%_]/g, '\\$&') + '%';
+      sql = `
+        SELECT m.id, m.project_id, m.thread_slug, m.instance_id, m.role_name,
+               m.ts, m.event_type, m.direction,
+               substr(m.payload_json, 1, 200) AS snippet
+        FROM messages m
+        WHERE m.payload_json LIKE ? ESCAPE '\\\\'
+      `;
+      params.push(likeQ);
+    }
+
+    if (projectId) { sql += ` AND m.project_id = ?`; params.push(projectId); }
+    if (threadSlug) { sql += ` AND m.thread_slug = ?`; params.push(threadSlug); }
+    if (eventType && eventType !== 'all') { sql += ` AND m.event_type = ?`; params.push(eventType); }
+    sql += ` ORDER BY m.ts DESC LIMIT ?`;
+    params.push(limit);
+
+    try {
+      const rows = db.prepare(sql).all(...params);
+      // 加 thread.title 给 UI 显得友好
+      const ProjectStore2 = require('../projects/ProjectStore');
+      const projectsCache = new Map();
+      const threadsCache = new Map();
+      const enriched = rows.map((row) => {
+        let projectName = projectsCache.get(row.project_id);
+        if (projectName === undefined) {
+          const p = ProjectStore2.get(row.project_id);
+          projectName = p?.name || `#${row.project_id}`;
+          projectsCache.set(row.project_id, projectName);
+        }
+        const tKey = `${row.project_id}::${row.thread_slug}`;
+        let threadTitle = threadsCache.get(tKey);
+        if (threadTitle === undefined && row.thread_slug) {
+          const t = ThreadStore.get(row.project_id, row.thread_slug);
+          threadTitle = t?.title || row.thread_slug;
+          threadsCache.set(tKey, threadTitle);
+        }
+        return {
+          id: row.id,
+          projectId: row.project_id,
+          projectName,
+          threadSlug: row.thread_slug,
+          threadTitle: threadTitle || row.thread_slug,
+          instanceId: row.instance_id,
+          roleName: row.role_name,
+          ts: row.ts,
+          eventType: row.event_type,
+          direction: row.direction,
+          snippet: row.snippet,
+        };
+      });
+      res.json(enriched);
+    } catch (e) {
+      res.status(400).json({ error: `search failed: ${e.message}` });
     }
   });
 

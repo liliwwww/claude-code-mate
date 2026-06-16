@@ -64,6 +64,9 @@ const els = {
   sendBtn: el('#send-btn'),
   // [需求@2026-06-13 §17] 流式渲染开关
   streamingToggle: el('#streaming-toggle-input'),
+  // [需求@2026-06-16 B3] 全文检索
+  searchInput: el('#search-input'),
+  searchResults: el('#search-results'),
 };
 
 // ---------------- i18n helper ----------------
@@ -460,10 +463,74 @@ async function focusThread(slug) {
   refreshQueueForFocusedThread();
 }
 
+// [需求@2026-06-16 B1] "看更早" 按钮 — 长跑线索一次 5000 events 还不够,加分页
+function renderLoadMoreButton() {
+  let btn = document.querySelector('#load-more-history');
+  if (state.fullHistoryLoaded || !state.earliestLoadedTs) {
+    if (btn) btn.remove();
+    return;
+  }
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'load-more-history';
+    btn.className = 'load-more-btn';
+    btn.addEventListener('click', loadEarlierHistory);
+    els.stream.insertBefore(btn, els.stream.firstChild);
+  }
+  btn.textContent = t('history.loadMore');
+}
+
+async function loadEarlierHistory() {
+  const btn = document.querySelector('#load-more-history');
+  if (!btn || !state.earliestLoadedTs) return;
+  btn.disabled = true;
+  btn.textContent = t('history.loading');
+  try {
+    const msgs = await api(`/threads/${encodeURIComponent(state.focusedSlug)}/history?projectId=${state.activeProjectId}&limit=5000&before=${state.earliestLoadedTs}`);
+    if (!msgs.length) {
+      state.fullHistoryLoaded = true;
+      btn.remove();
+      return;
+    }
+    // 保留滚动位置(从 anchor 测量)
+    const anchorTop = els.stream.scrollHeight - els.stream.scrollTop;
+    // 插到 button 后面(顺序倒插法:msgs 已升序,从最后一条往前 insert)
+    const anchor = btn.nextSibling;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const tmp = document.createElement('div');
+      tmp.dataset.tmp = '1';
+      els.stream.insertBefore(tmp, anchor);
+      // 复用 renderEventInStream:先 append 到尾,再移到 tmp 位置
+      const startCount = els.stream.children.length;
+      renderEventInStream(msgs[i].eventType, msgs[i].payload, false);
+      // 找新增的 children(最后几个),移到 tmp 之前
+      while (els.stream.children.length > startCount) {
+        const node = els.stream.lastChild;
+        els.stream.insertBefore(node, tmp);
+      }
+      tmp.remove();
+    }
+    state.earliestLoadedTs = msgs[0].ts;
+    state.fullHistoryLoaded = msgs.length < 5000;
+    els.stream.scrollTop = els.stream.scrollHeight - anchorTop;
+  } catch (e) {
+    console.error('load earlier history failed:', e);
+    btn.textContent = t('history.loadMore');
+    btn.disabled = false;
+  } finally {
+    renderLoadMoreButton();
+  }
+}
+
 async function loadThreadHistory(slug) {
   try {
-    const msgs = await api(`/threads/${encodeURIComponent(slug)}/history?projectId=${state.activeProjectId}&limit=500`);
+    // [需求@2026-06-16 B1] 默认 5000 events(长跑线索 + reset 周期保留所有)
+    const msgs = await api(`/threads/${encodeURIComponent(slug)}/history?projectId=${state.activeProjectId}&limit=5000`);
     for (const m of msgs) renderEventInStream(m.eventType, m.payload, false);
+    // 记最早 ts 给"看更早"按钮用
+    state.earliestLoadedTs = msgs.length ? msgs[0].ts : null;
+    state.fullHistoryLoaded = msgs.length < 5000;
+    renderLoadMoreButton();
     els.stream.scrollTop = els.stream.scrollHeight;
   } catch (e) {
     console.error('history load failed:', e);
@@ -1437,7 +1504,85 @@ function wireInputs() {
   }
 }
 
-init().catch((e) => {
+// [需求@2026-06-16 B3] 全文检索 — 顶栏搜索框 → /api/search → 结果 popover
+let searchDebounce = null;
+function wireSearch() {
+  if (!els.searchInput) return;
+  els.searchInput.addEventListener('input', () => {
+    if (searchDebounce) clearTimeout(searchDebounce);
+    const q = els.searchInput.value.trim();
+    if (!q) { els.searchResults.hidden = true; els.searchResults.innerHTML = ''; return; }
+    searchDebounce = setTimeout(() => doSearch(q), 300);
+  });
+  els.searchInput.addEventListener('focus', () => {
+    if (els.searchResults.children.length) els.searchResults.hidden = false;
+  });
+  // 外部点击关闭
+  document.addEventListener('click', (ev) => {
+    if (els.searchResults.hidden) return;
+    if (els.searchResults.contains(ev.target) || els.searchInput === ev.target) return;
+    els.searchResults.hidden = true;
+  });
+}
+
+async function doSearch(q) {
+  try {
+    // 默认当前 project;按需可加全局选项
+    const url = `/api/search?q=${encodeURIComponent(q)}&projectId=${state.activeProjectId}&limit=30`;
+    const rows = await api(url);
+    renderSearchResults(rows, q);
+  } catch (e) {
+    els.searchResults.innerHTML = `<div class="sr-error">${escapeHtml(e.message)}</div>`;
+    els.searchResults.hidden = false;
+  }
+}
+
+function renderSearchResults(rows, q) {
+  if (!rows.length) {
+    els.searchResults.innerHTML = `<div class="sr-empty">${escapeHtml(t('search.empty'))}</div>`;
+    els.searchResults.hidden = false;
+    return;
+  }
+  const head = `<div class="sr-head">${escapeHtml(t('search.resultCount', { n: rows.length }))}</div>`;
+  const body = rows.map((r) => {
+    const ts = new Date(r.ts);
+    const time = `${ts.getMonth()+1}-${ts.getDate()} ${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}`;
+    const sub = t('search.resultRow', {
+      thread: escapeHtml(r.threadTitle || r.threadSlug || '-'),
+      role: escapeHtml(r.roleName || r.eventType || '-'),
+      time,
+    });
+    // r.snippet 可能含 <mark> 高亮 — 不转义内层 mark,但其它 HTML 要 escape
+    //   snippet 来自 FTS5 snippet(),格式安全;LIKE fallback 走纯文本要 escape
+    const safeSnippet = (r.snippet || '').replace(/<(?!\/?mark>)/g, '&lt;').slice(0, 240);
+    return `<div class="sr-row" data-slug="${escapeHtml(r.threadSlug || '')}" data-pid="${r.projectId}">
+      <div class="sr-meta">${sub}</div>
+      <div class="sr-snippet">${safeSnippet}</div>
+    </div>`;
+  }).join('');
+  els.searchResults.innerHTML = head + body;
+  els.searchResults.hidden = false;
+  els.searchResults.querySelectorAll('.sr-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      const slug = row.dataset.slug;
+      const pid = parseInt(row.dataset.pid, 10);
+      if (!slug) return;
+      els.searchResults.hidden = true;
+      els.searchInput.value = '';
+      // 如果不同 project 要先切
+      if (pid !== state.activeProjectId) {
+        state.activeProjectId = pid;
+        localStorage.setItem(LS_KEY, String(pid));
+        els.projectPicker.value = String(pid);
+        reloadProjectScopedData().then(() => focusThread(slug));
+      } else {
+        focusThread(slug);
+      }
+    });
+  });
+}
+
+init().then(() => wireSearch()).catch((e) => {
   console.error('init failed:', e);
   document.body.innerHTML = `<div style="padding:40px;color:#f88">init failed: ${e.message}</div>`;
 });

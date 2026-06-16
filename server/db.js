@@ -309,6 +309,191 @@ if (curVersion < 7) {
   console.log('[db v7] mate_pending_sends extended for queue state machine');
 }
 
+// [需求@2026-06-16] v7 -> v8:FTS5 全文检索
+//   messages_fts:虚拟表,external content 模式(content=messages, content_rowid=id)
+//   - INSERT INTO messages_fts(rowid, content) VALUES (msg.id, extracted_text)
+//   - 搜索:SELECT m.* FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid WHERE messages_fts MATCH ?
+//   - tokenize=unicode61:支持中英文混合搜索(基本 unicode 分词)
+//   recordMessage 同步:每写 messages 就 INSERT INTO messages_fts(rowid, content)
+//   backfill:扫所有现有 messages 提取 text 灌入(可能跑 5-30 秒,看数据量)
+if (curVersion < 8) {
+  try {
+    // 不用 external content 模式(messages 没有 content 列);用普通 FTS5
+    //   FTS5 自己维护 content,~4 MB 额外占用(8813 × 平均 500 bytes 估算)
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+        content,
+        tokenize='unicode61'
+      );
+    `);
+
+    // Backfill — 扫所有 messages 提取 search_text
+    const extractSearchText = (eventType, payloadStr) => {
+      try {
+        const p = JSON.parse(payloadStr);
+        // user / assistant: 提 content[].text + tool_use.name+input + tool_result.content
+        if (eventType === 'assistant') {
+          const c = p.message?.content || [];
+          return c.map((x) => {
+            if (x.type === 'text') return x.text || '';
+            if (x.type === 'tool_use') return `[${x.name||''}] ${JSON.stringify(x.input||{})}`;
+            return '';
+          }).join(' ');
+        }
+        if (eventType === 'user') {
+          const c = p.message?.content || [];
+          return c.map((x) => {
+            if (x.type === 'text') return x.text || '';
+            if (x.type === 'tool_result') {
+              return typeof x.content === 'string' ? x.content : JSON.stringify(x.content||'');
+            }
+            return '';
+          }).join(' ');
+        }
+        if (eventType === 'system/init') {
+          return `session ${p.session_id||''} model ${p.model||''}`;
+        }
+        if (typeof eventType === 'string' && eventType.startsWith('result')) {
+          return p.result || p.error || '';
+        }
+        return '';
+      } catch { return ''; }
+    };
+
+    const all = db.prepare(`SELECT id, event_type, payload_json FROM messages`).all();
+    const insertFts = db.prepare(`INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`);
+    let n = 0, skipped = 0;
+    const tx = db.transaction(() => {
+      for (const row of all) {
+        const text = extractSearchText(row.event_type, row.payload_json);
+        if (!text || !text.trim()) { skipped++; continue; }
+        try { insertFts.run(row.id, text.trim()); n++; } catch (e) { skipped++; }
+      }
+    });
+    tx();
+    console.log(`[db v8] FTS5 backfill: ${n} indexed, ${skipped} skipped (empty text)`);
+  } catch (e) {
+    console.warn(`[db v8] FTS5 setup failed: ${e.message}`);
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '8');
+  curVersion = 8;
+  console.log('[db v8] messages_fts table + backfill done');
+}
+
+// [需求@2026-06-16 fix] v8 -> v9:重建 messages_fts
+//   v8 第一次用了 external content 模式 (content='messages') 但 messages 没 content 列,
+//   导致 snippet() 查询报 "no such column: T.content"。改成 contentless FTS5。
+//   tokenize='trigram':3-char sliding window,**中英文都能搜**(unicode61 中文要整段精确匹配)
+//   代价:index 体积约 3-5x,但 15MB 数据级别可接受
+if (curVersion < 9) {
+  try {
+    db.exec(`DROP TABLE IF EXISTS messages_fts`);
+    db.exec(`
+      CREATE VIRTUAL TABLE messages_fts USING fts5(
+        content,
+        tokenize='trigram'
+      );
+    `);
+    const extractSearchTextLocal = (eventType, payloadStr) => {
+      try {
+        const p = JSON.parse(payloadStr);
+        if (eventType === 'assistant') {
+          const c = p.message?.content || [];
+          return c.map((x) => {
+            if (x.type === 'text') return x.text || '';
+            if (x.type === 'tool_use') return `[${x.name||''}] ${JSON.stringify(x.input||{})}`;
+            return '';
+          }).join(' ');
+        }
+        if (eventType === 'user') {
+          const c = p.message?.content || [];
+          return c.map((x) => {
+            if (x.type === 'text') return x.text || '';
+            if (x.type === 'tool_result') {
+              return typeof x.content === 'string' ? x.content : JSON.stringify(x.content||'');
+            }
+            return '';
+          }).join(' ');
+        }
+        if (eventType === 'system/init') return `session ${p.session_id||''} model ${p.model||''}`;
+        if (typeof eventType === 'string' && eventType.startsWith('result')) return p.result || p.error || '';
+        return '';
+      } catch { return ''; }
+    };
+    const all = db.prepare(`SELECT id, event_type, payload_json FROM messages`).all();
+    const insertFts = db.prepare(`INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`);
+    let n = 0, skipped = 0;
+    const tx = db.transaction(() => {
+      for (const row of all) {
+        const text = extractSearchTextLocal(row.event_type, row.payload_json);
+        if (!text || !text.trim()) { skipped++; continue; }
+        try { insertFts.run(row.id, text.trim()); n++; } catch { skipped++; }
+      }
+    });
+    tx();
+    console.log(`[db v9] FTS5 rebuilt: ${n} indexed, ${skipped} skipped`);
+  } catch (e) {
+    console.warn(`[db v9] FTS5 rebuild failed: ${e.message}`);
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '9');
+  curVersion = 9;
+}
+
+// [需求@2026-06-16] v9 -> v10:tokenizer unicode61 → trigram(中英文都能搜)
+if (curVersion < 10) {
+  try {
+    db.exec(`DROP TABLE IF EXISTS messages_fts`);
+    db.exec(`
+      CREATE VIRTUAL TABLE messages_fts USING fts5(
+        content,
+        tokenize='trigram'
+      );
+    `);
+    const extractSearchTextLocal = (eventType, payloadStr) => {
+      try {
+        const p = JSON.parse(payloadStr);
+        if (eventType === 'assistant') {
+          const c = p.message?.content || [];
+          return c.map((x) => {
+            if (x.type === 'text') return x.text || '';
+            if (x.type === 'tool_use') return `[${x.name||''}] ${JSON.stringify(x.input||{})}`;
+            return '';
+          }).join(' ');
+        }
+        if (eventType === 'user') {
+          const c = p.message?.content || [];
+          return c.map((x) => {
+            if (x.type === 'text') return x.text || '';
+            if (x.type === 'tool_result') {
+              return typeof x.content === 'string' ? x.content : JSON.stringify(x.content||'');
+            }
+            return '';
+          }).join(' ');
+        }
+        if (eventType === 'system/init') return `session ${p.session_id||''} model ${p.model||''}`;
+        if (typeof eventType === 'string' && eventType.startsWith('result')) return p.result || p.error || '';
+        return '';
+      } catch { return ''; }
+    };
+    const all = db.prepare(`SELECT id, event_type, payload_json FROM messages`).all();
+    const insertFts = db.prepare(`INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`);
+    let n = 0, skipped = 0;
+    const tx = db.transaction(() => {
+      for (const row of all) {
+        const text = extractSearchTextLocal(row.event_type, row.payload_json);
+        if (!text || !text.trim()) { skipped++; continue; }
+        try { insertFts.run(row.id, text.trim()); n++; } catch { skipped++; }
+      }
+    });
+    tx();
+    console.log(`[db v10] FTS5 rebuilt with trigram tokenizer: ${n} indexed, ${skipped} skipped`);
+  } catch (e) {
+    console.warn(`[db v10] FTS5 trigram rebuild failed: ${e.message}`);
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '10');
+  curVersion = 10;
+}
+
 function ensureSystemProject() {
   const existing = db.prepare(`SELECT id FROM projects WHERE name = 'System'`).get();
   if (existing) return existing.id;
@@ -433,7 +618,46 @@ const stmts = {
   qsGet:  db.prepare(`SELECT * FROM mate_quota_state WHERE rate_limit_type = ?`),
   qsDelete: db.prepare(`DELETE FROM mate_quota_state WHERE rate_limit_type = ?`),
   qsClearAll: db.prepare(`DELETE FROM mate_quota_state`),
+
+  // [需求@2026-06-16 B2] FTS5 — recordMessage 同步索引,/api/search 用
+  insertFts: db.prepare(`INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`),
 };
+
+// [需求@2026-06-16 B2] FTS5 — 从 payload 提取可搜索文本
+//   - assistant:concat all text + tool_use name/input
+//   - user:concat text + tool_result content
+//   - system/init:session + model
+//   - result/*:.result or .error
+function extractSearchText(eventType, payloadStr) {
+  try {
+    const p = typeof payloadStr === 'string' ? JSON.parse(payloadStr) : payloadStr;
+    if (eventType === 'assistant') {
+      const c = p.message?.content || [];
+      return c.map((x) => {
+        if (x.type === 'text') return x.text || '';
+        if (x.type === 'tool_use') return `[${x.name || ''}] ${JSON.stringify(x.input || {})}`;
+        return '';
+      }).join(' ');
+    }
+    if (eventType === 'user') {
+      const c = p.message?.content || [];
+      return c.map((x) => {
+        if (x.type === 'text') return x.text || '';
+        if (x.type === 'tool_result') {
+          return typeof x.content === 'string' ? x.content : JSON.stringify(x.content || '');
+        }
+        return '';
+      }).join(' ');
+    }
+    if (eventType === 'system/init') {
+      return `session ${p.session_id || ''} model ${p.model || ''}`;
+    }
+    if (typeof eventType === 'string' && eventType.startsWith('result')) {
+      return p.result || p.error || '';
+    }
+    return '';
+  } catch { return ''; }
+}
 
 module.exports = {
   db,
@@ -442,6 +666,7 @@ module.exports = {
   // [需求@2026-06-10] 所有持久化必须带 project_id
   recordMessage(msg) {
     // [需求@2026-06-12 Phase 2E §12] 返回 SQLite autoincrement id,用于乐观 UI dedup
+    const payloadStr = typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload ?? {});
     const r = stmts.insertMessage.run({
       project_id: msg.projectId,
       thread_slug: msg.threadSlug || null,
@@ -451,10 +676,23 @@ module.exports = {
       claude_session_id: msg.claudeSessionId || null,
       ts: msg.ts ?? Date.now(),
       event_type: msg.eventType || null,
-      payload_json: typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload ?? {}),
+      payload_json: payloadStr,
       // [需求@2026-06-12 §9] mateTerm 直连消息标记;为 null 时表示普通 thread 消息
       direct_target: msg.directTarget || null,
     });
+    // [需求@2026-06-16 B2] 同步插入 FTS5 索引(失败不影响主写入)
+    try {
+      const text = extractSearchText(msg.eventType, payloadStr);
+      if (text && text.trim()) {
+        stmts.insertFts.run(r.lastInsertRowid, text.trim());
+      }
+    } catch (e) {
+      // FTS 失败不阻塞主写入
+      if (!recordMessage._ftsWarned) {
+        console.warn(`[db] FTS5 insert failed (will only warn once): ${e.message}`);
+        recordMessage._ftsWarned = true;
+      }
+    }
     return r.lastInsertRowid;
   },
   recordEvent(kind, payload, opts = {}) {
