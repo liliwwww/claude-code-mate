@@ -55,14 +55,35 @@ async function refreshTerminalsList(preserveScroll = true) {
     const r = await fetch(`/api/instances/all?${params.join('&')}`);
     if (!r.ok) throw new Error('fetch failed: ' + r.status);
     const instances = await r.json();
-    renderTerminalsList(instances);
+    // [需求@2026-06-16] 按 project 分组 + 排序
+    const sortBy = (el('#term-sort-by') && el('#term-sort-by').value) || 'project';
+    if (sortBy === 'project') {
+      instances.sort((a, b) => {
+        const pa = (a.projectName || '').toLowerCase();
+        const pb = (b.projectName || '').toLowerCase();
+        if (pa !== pb) return pa.localeCompare(pb);
+        // 同 project 内:先 role(R/H/B/C),再 slot/displayName
+        const ra = a.roleName || '';
+        const rb = b.roleName || '';
+        if (ra !== rb) return ra.localeCompare(rb);
+        return (a.poolSlot || 99) - (b.poolSlot || 99) ||
+               (a.displayName || a.id).localeCompare(b.displayName || b.id);
+      });
+    } else if (sortBy === 'status') {
+      const order = { busy: 0, spawning: 1, idle: 2, disconnected: 3, dead: 4 };
+      instances.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+    } else if (sortBy === 'role') {
+      instances.sort((a, b) => (a.roleName || '').localeCompare(b.roleName || '') ||
+        (a.projectName || '').localeCompare(b.projectName || ''));
+    }
+    renderTerminalsList(instances, sortBy);
     if (preserveScroll) listEl.scrollTop = scrollY;
   } catch (e) {
     listEl.innerHTML = `<div class="term-empty">${escapeHtml(t('dashboard.terminals.loadFailed', { error: e.message }))}</div>`;
   }
 }
 
-function renderTerminalsList(instances) {
+function renderTerminalsList(instances, sortBy = 'project') {
   const listEl = el('#terminals-list');
   if (!instances.length) {
     listEl.innerHTML = `<div class="term-empty">${escapeHtml(t('dashboard.terminals.empty'))}</div>`;
@@ -81,7 +102,15 @@ function renderTerminalsList(instances) {
       <div></div>
     </div>
   `;
+  // [需求@2026-06-16] sortBy='project' 时在 project 切换处插分组 header
+  let lastProject = null;
   const rows = instances.map((i) => {
+    let groupHeader = '';
+    if (sortBy === 'project' && i.projectName !== lastProject) {
+      lastProject = i.projectName;
+      const cnt = instances.filter((x) => x.projectName === i.projectName).length;
+      groupHeader = `<div class="term-group-header">${escapeHtml(i.projectName || '(unknown)')} <span class="muted">(${cnt})</span></div>`;
+    }
     const canKill = !['dead', 'disconnected'].includes(i.status);
     const canSkill = !['dead', 'disconnected'].includes(i.status);
     const slotText = i.poolSlot != null ? String(i.poolSlot) : '-';
@@ -107,7 +136,7 @@ function renderTerminalsList(instances) {
             cost: (ss.totalCostUsd||0).toFixed(3),
           }))}">${ctxLevel === 'danger' ? '⚠' : '○'}</span>`
       : '';
-    return `
+    return `${groupHeader}
       <div class="term-row">
         <div><span class="term-status ${i.status}">${i.status[0]}</span></div>
         <div title="${escapeHtml(i.id)} · session ${i.sessionId || '-'}">${escapeHtml(i.displayName || i.id)}${ctxBadge}</div>
@@ -1029,6 +1058,9 @@ function wireUI() {
 
   // Tab 1 toolbar
   el('#term-include-dead').addEventListener('change', () => refreshTerminalsList(false));
+  if (el('#term-sort-by')) {
+    el('#term-sort-by').addEventListener('change', () => refreshTerminalsList(false));
+  }
 
   // Tab 2 toolbar
   el('#queue-include-closed').addEventListener('change', () => refreshQueueList(false));

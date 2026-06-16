@@ -42,6 +42,13 @@
 
     <div class="tab-content" data-tab="terminals">
       <div class="terminals-toolbar">
+        <label><span data-i18n="dashboard.terminals.sortBy">排序:</span>
+          <select id="term-sort-by">
+            <option value="project" data-i18n="dashboard.terminals.sortProject">按 project</option>
+            <option value="status" data-i18n="dashboard.terminals.sortStatus">按状态</option>
+            <option value="role" data-i18n="dashboard.terminals.sortRole">按角色</option>
+          </select>
+        </label>
         <label><input type="checkbox" id="term-include-dead" /> <span data-i18n="dashboard.terminals.showDead">显示已死亡(dead)</span></label>
       </div>
       <div id="terminals-list"></div>

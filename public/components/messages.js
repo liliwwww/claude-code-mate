@@ -144,6 +144,10 @@
 
     // ---------------- Dashboard terminals tab ----------------
     'dashboard.terminals.showDead': '显示已死亡(dead)',
+    'dashboard.terminals.sortBy': '排序:',
+    'dashboard.terminals.sortProject': '按 project',
+    'dashboard.terminals.sortStatus': '按状态',
+    'dashboard.terminals.sortRole': '按角色',
     'dashboard.terminals.col.name': '名字',
     'dashboard.terminals.col.slot': 'Slot',
     'dashboard.terminals.col.project': 'Project',
@@ -485,6 +489,10 @@
 
     // ---------------- Dashboard terminals tab ----------------
     'dashboard.terminals.showDead': 'Show dead',
+    'dashboard.terminals.sortBy': 'Sort:',
+    'dashboard.terminals.sortProject': 'by project',
+    'dashboard.terminals.sortStatus': 'by status',
+    'dashboard.terminals.sortRole': 'by role',
     'dashboard.terminals.col.name': 'Name',
     'dashboard.terminals.col.slot': 'Slot',
     'dashboard.terminals.col.project': 'Project',

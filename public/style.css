@@ -1158,3 +1158,24 @@ main { flex: 1; display: flex; min-height: 0; }
 #dispatch-breadcrumb .bc-d3 { opacity: 0.75; }
 #dispatch-breadcrumb .bc-d4 { opacity: 0.65; }
 #dispatch-breadcrumb .bc-d5 { opacity: 0.55; }
+
+/* [需求@2026-06-16] 终端实时 — project 分组 header */
+.term-group-header {
+  background: var(--bg-card);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 12px;
+  margin-top: 6px;
+  border-left: 3px solid var(--accent);
+  border-radius: 2px;
+}
+.term-group-header .muted { color: var(--text-muted); font-weight: normal; margin-left: 4px; }
+.terminals-toolbar select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 11px;
+}
