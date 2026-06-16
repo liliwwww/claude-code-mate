@@ -1181,10 +1181,12 @@ function renderBreadcrumb() {
           stack[0] = { label: seg.toDisplayName || seg.toRole, instanceId: seg.toInstanceId, roleType: 'requirements' };
         }
       } else {
-        // push — 栈底如果空,先加 from 当根
-        if (stack.length === 0) {
+        // push — 自愈:栈顶不是 from 就补 push 一个 from(老 chain 可能因
+        //   isTerminal 缺失被 pop 多了,新 handoff 进来时栈顶残缺)
+        const topInstId = stack[stack.length - 1]?.instanceId;
+        if (stack.length === 0 || topInstId !== seg.fromInstanceId) {
           stack.push({
-            label: seg.fromRole,  // 通常 mate-R
+            label: seg.fromRole,
             instanceId: seg.fromInstanceId,
             roleType: fromType,
           });
@@ -1217,8 +1219,10 @@ function renderBreadcrumb() {
     }
   }
 
-  // [bug@2026-06-16] 兜底:线索 stage=verified 说明真完成了,即使老 chain 数据丢 isTerminal
-  if (!isComplete && t2?.stage === 'verified') isComplete = true;
+  // [bug@2026-06-16] stage 是 SSOT — 决定 🎉 的唯一标准
+  //   verified 一定 done;其它 stage(executing/discussing/...)一定不 done
+  //   防 chain 里有遗留 isTerminal=true 但线索后来又重新激活的情况
+  isComplete = (t2?.stage === 'verified');
 
   // 渲染当前栈
   const depthBadge = maxDepth > 0 ? `<span class="bc-max-depth" title="max stack depth reached">[${maxDepth}]</span>` : '';
