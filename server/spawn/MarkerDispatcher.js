@@ -248,20 +248,35 @@ function _performDone(fromInst, summary, { sendToThread }) {
   // 取 chain + 倒推 caller
   const thread = ThreadStore.get(projectId, threadSlug);
   const chain = thread?.metadata?.dispatch_chain || [];
-  // caller = chain 里最后一个 push fromInst 的 segment 的 fromInstance
-  // 链结构:[{kind:'handoff', fromRole, fromInstanceId, toRole, toInstanceId, ...}, ...]
-  // 找最后一段 toInstanceId === fromInst.id 的(那就是 caller → fromInst 那一 push)
+  // [bug@2026-06-16] caller 查找必须跳过 callback handoff
+  //   chain 里 toInstanceId===fromInst.id 的段有两种:
+  //     ① 原始派工(把 fromInst 推上栈)— 比如 R→H 或 H→B,这才是 caller
+  //     ② callback(子工返回给 fromInst)— B/C→H,fromInst 是接受方,不是被推
+  //   原算法取"最后一段 to=me",会把 callback 当 caller。
+  //   后果:H done 时 caller 被识为 B,POP 分支送 msg 回 H 自己,H 又跑一轮 done,死循环。
+  //   修:fromType 是 executor/validator 且 toType 是 orchestrator → callback,跳过。
+  function _inferRoleType(name) {
+    if (!name) return null;
+    const n = String(name).toLowerCase();
+    if (n.includes('mate-r') || n.includes('requirements')) return 'requirements';
+    if (n.includes('mate-h') || n.includes('orchestrator')) return 'orchestrator';
+    if (n.includes('mate-b') || n.includes('executor')) return 'executor';
+    if (n.includes('mate-c') || n.includes('validator')) return 'validator';
+    return null;
+  }
   let callerInstId = null;
   let callerRoleType = null;
   for (let i = chain.length - 1; i >= 0; i--) {
     const seg = chain[i];
-    if (seg.kind === 'handoff' && seg.toInstanceId === fromInst.id) {
-      callerInstId = seg.fromInstanceId;
-      // 推断 caller role type:从 chain 里找该 instance 第一次出现的 fromRole / toRole
-      // 简化:从 caller 实际实例反查(SpawnManager 内会有 method)
-      callerRoleType = seg.fromRole || null;
-      break;
-    }
+    if (seg.kind !== 'handoff') continue;
+    if (seg.toInstanceId !== fromInst.id) continue;
+    const fromType = _inferRoleType(seg.fromRole);
+    const toType = _inferRoleType(seg.toRole);
+    const isCallback = (fromType === 'executor' || fromType === 'validator') && toType === 'orchestrator';
+    if (isCallback) continue;  // 跳过子工 callback,继续找真正的 push
+    callerInstId = seg.fromInstanceId;
+    callerRoleType = seg.fromRole || null;
+    break;
   }
 
   // append done segment to chain(无论 pop 还是 terminal)
@@ -328,10 +343,13 @@ function _performDone(fromInst, summary, { sendToThread }) {
     try {
       const project = require('../db').stmts.getProject.get(projectId);
       if (project) {
+        // [bug@2026-06-16] callback 派回 caller 的 roleType 必须按 callerRoleType 推断
+        //   原来硬编码 'orchestrator' 两边一样,导致 caller 是 B 时也送给 H 自己 → 死循环
+        const callerRoleTypeNorm = _inferRoleType(callerRoleType) || 'orchestrator';
         sendToThread({
           projectId, projectRootDir: project.root_dir, threadSlug,
           text: `[<callback from ${fromInst.displayName}>] ${summary || '(no summary)'}\n\nYour delegated sub-work returned with the above summary. Per the H Verification Protocol, you MUST verify the claim before accepting:\n- Use Read / Grep / Bash to spot-check the key claims\n- If verified ✅ → emit <mate:done summary="..." /> with evidence pointers (pop to caller)\n- If partial ⚠️ → handoff back to ${fromInst.displayName} with specifics of what's missing\n- If failed ❌ (hallucination) → handoff back to redo, or <mate:reject reason="..." bounce_to="mate-R" />`,
-          roleType: callerRoleType === 'mate-H' ? 'orchestrator' : 'orchestrator',  // 默认 H,后续可扩展
+          roleType: callerRoleTypeNorm,
           fromMarker: true,
           markerFromInst: fromInst,
           markerSpec: callerInstId,
