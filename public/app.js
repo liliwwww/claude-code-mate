@@ -1125,10 +1125,25 @@ function renderBreadcrumb() {
   }
   const chain = t2?.metadata?.dispatch_chain || [];
   if (!chain.length) { host.innerHTML = ''; host.hidden = true; return; }
-  // [Phase 2I] 折叠相邻同 instanceId + 跟踪 stack depth(push 加深,done 减深)
+  // [Phase 2I 修] 折叠相邻同 instanceId + 跟踪 stack depth
+  //   关键:handoff 区分 push vs pop:
+  //     R → H, H → B/C        = push (down or new request)
+  //     B/C → H, H → R         = pop (callback or bounce back)
+  //   done                     = pop (除非 terminal)
+  //   reject                   = pop(放弃这层)
   const collapsed = [];
   let depth = 0;
   let maxDepth = 0;
+  // role name → role type 映射
+  function inferRoleType(name) {
+    if (!name) return null;
+    const n = name.toLowerCase();
+    if (n.includes('mate-r') || n.includes('requirements')) return 'requirements';
+    if (n.includes('mate-h') || n.includes('orchestrator')) return 'orchestrator';
+    if (n.includes('mate-b') || n.includes('executor')) return 'executor';
+    if (n.includes('mate-c') || n.includes('validator')) return 'validator';
+    return null;
+  }
   for (const seg of chain) {
     const last = collapsed[collapsed.length - 1];
     if (last && last.instanceId && last.instanceId === (seg.toInstanceId || seg.fromInstanceId)) {
@@ -1136,10 +1151,23 @@ function renderBreadcrumb() {
       continue;
     }
     if (seg.kind === 'handoff') {
-      depth++;
-      maxDepth = Math.max(maxDepth, depth);
+      // 推断方向
+      const fromType = inferRoleType(seg.fromRole);
+      const toType = inferRoleType(seg.toRole);
+      let isPop = false;
+      if (fromType && toType) {
+        // pop:executor/validator → orchestrator(callback);orchestrator → requirements(bounce)
+        if ((fromType === 'executor' || fromType === 'validator') && toType === 'orchestrator') isPop = true;
+        else if (fromType === 'orchestrator' && toType === 'requirements') isPop = true;
+      }
+      if (isPop) {
+        depth = Math.max(0, depth - 1);
+      } else {
+        depth++;
+        maxDepth = Math.max(maxDepth, depth);
+      }
       collapsed.push({
-        kind: 'handoff',
+        kind: isPop ? 'pop' : 'handoff',
         label: seg.toDisplayName || seg.toInstanceId || seg.toRole,
         instanceId: seg.toInstanceId,
         depth,
@@ -1169,9 +1197,11 @@ function renderBreadcrumb() {
       collapsed.unshift({ kind: 'start', label: firstSeg.fromRole, instanceId: firstSeg.fromInstanceId, depth: 0 });
     }
   }
-  const depthBadge = maxDepth > 0 ? `<span class="bc-max-depth" title="max stack depth">[${maxDepth}]</span>` : '';
+  const depthBadge = maxDepth > 0 ? `<span class="bc-max-depth" title="max stack depth reached">[${maxDepth}]</span>` : '';
   const html = `<span class="bc-label">${t('breadcrumb.label')}:</span>${depthBadge}` + collapsed.map((c, i) => {
-    const sep = i > 0 ? (c.kind === 'done' ? '<span class="bc-sep bc-pop-sep">↑</span>' : '<span class="bc-sep">→</span>') : '';
+    // sep:done / pop → ↑ 反向;handoff / start → → 正向
+    const isPopArrow = (c.kind === 'done' && !c.isTerminal) || c.kind === 'pop';
+    const sep = i > 0 ? (isPopArrow ? '<span class="bc-sep bc-pop-sep">↑</span>' : '<span class="bc-sep">→</span>') : '';
     const cls = `bc-seg bc-${c.kind}` + (c.depth ? ` bc-d${Math.min(c.depth, 5)}` : '');
     const repeat = c.repeat ? `<span class="bc-repeat">× ${c.repeat}</span>` : '';
     return `${sep}<span class="${cls}" title="${escapeHtml(c.instanceId || '')} (depth ${c.depth || 0})">${escapeHtml(c.label)}${repeat}</span>`;
