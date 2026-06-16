@@ -800,18 +800,12 @@ async function reloadMatetermHistory() {
   }
   streamEl.innerHTML = `<div class="mt-empty">${escapeHtml(t('dashboard.control.history.loading'))}</div>`;
   try {
-    let rows = [];
-    if (MT_STATE.selectedMode === 'direct') {
-      const r = await fetch(`/api/instances/${encodeURIComponent(MT_STATE.selectedInstanceId)}/direct-history?limit=200`);
-      if (!r.ok) throw new Error('fetch failed: ' + r.status);
-      rows = await r.json();
-    } else if (MT_STATE.selectedMode === 'intervention' && MT_STATE.selectedThreadSlug) {
-      const inst = MT_STATE.instances.find((i) => i.id === MT_STATE.selectedInstanceId);
-      if (!inst) throw new Error(t('dashboard.control.instMissing'));
-      const r = await fetch(`/api/threads/${encodeURIComponent(MT_STATE.selectedThreadSlug)}/history?projectId=${inst.projectId}&limit=200`);
-      if (!r.ok) throw new Error('fetch failed: ' + r.status);
-      rows = await r.json();
-    }
+    // [需求@2026-06-16] 实例视角全量历史 — 不分 thread/direct,看 claude 进程跑啥
+    //   原 direct 模式只拉 direct_target=me 的,intervention 模式拉 thread 历史,
+    //   都不是"这个终端到底跑了啥"的全景。改用 /all-history 拉实例所有事件。
+    const r = await fetch(`/api/instances/${encodeURIComponent(MT_STATE.selectedInstanceId)}/all-history?limit=200`);
+    if (!r.ok) throw new Error('fetch failed: ' + r.status);
+    const rows = await r.json();
     if (!rows.length) {
       streamEl.innerHTML = `<div class="mt-empty">${escapeHtml(t('dashboard.control.history.empty'))}</div>`;
       return;
@@ -912,12 +906,9 @@ function setupMatetermWS() {
   window.MateWS.subscribe('instance.event', (msg) => {
     const p = msg.payload;
     if (!p || p.instanceId !== MT_STATE.selectedInstanceId) return;
-    // 模式过滤:direct 模式只看 directTarget 非 null;intervention 只看挂 thread 的
-    if (MT_STATE.selectedMode === 'direct' && !p.directTarget) return;
-    if (MT_STATE.selectedMode === 'intervention') {
-      if (p.directTarget) return;
-      if (MT_STATE.selectedThreadSlug && p.threadSlug && p.threadSlug !== MT_STATE.selectedThreadSlug) return;
-    }
+    // [需求@2026-06-16] 显示不再受模式过滤 — 选实例 = 看该 claude 进程所有交互
+    //   (H 喂 user msg / B 处理过程 / B 输出 / direct 注入 / thread 交互 都显)
+    //   mode 只控发送行为(direct 走 /direct-message,intervention 走 /threads/:slug/message)
     if (p.eventType === 'stream_event') return;  // 跳过高频 partial
     const streamEl = el('#mt-stream');
     // [需求@2026-06-12 Phase 2E §12] user echo dedup

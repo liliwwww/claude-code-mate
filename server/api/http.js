@@ -432,6 +432,34 @@ function buildRouter() {
     })));
   });
 
+  // [需求@2026-06-16] 实例视角全量历史 — 拉该 claude 进程所有 user/assistant 事件
+  //   不分 thread / 不分 direct,纯进程视角:H 喂给它的 user msg + 它的 assistant 输出 + tool_use 等
+  //   服务于 dashboard 对话控制 tab 的"看实时流"需求
+  r.get('/instances/:id/all-history', (req, res) => {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
+    // 反序拿最近 N 条,再正序输出(避免漏最新)
+    const rows = db.prepare(`
+      SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json, direct_target, thread_slug
+      FROM messages
+      WHERE instance_id = ?
+      ORDER BY ts DESC, id DESC
+      LIMIT ?
+    `).all(req.params.id, limit);
+    rows.reverse();
+    res.json(rows.map((m) => ({
+      id: m.id,
+      instanceId: m.instance_id,
+      roleName: m.role_name,
+      direction: m.direction,
+      claudeSessionId: m.claude_session_id,
+      ts: m.ts,
+      eventType: m.event_type,
+      payload: JSON.parse(m.payload_json),
+      directTarget: m.direct_target,
+      threadSlug: m.thread_slug,
+    })));
+  });
+
   // [需求@2026-06-14] 日志流 — dashboard tab 5
   //   全局多维度过滤 messages 表(SSOT 所有 claude stream 事件)。
   //   - instanceId / projectId / threadSlug / eventType / since
