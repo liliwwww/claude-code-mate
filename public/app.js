@@ -1187,12 +1187,16 @@ function renderBreadcrumb() {
         maxDepth = Math.max(maxDepth, stack.length);
       }
     } else if (seg.kind === 'done') {
-      if (seg.isTerminal) {
-        // terminal done — 真 verified
+      // [bug@2026-06-16] 老 chain 数据没存 isTerminal 字段(undefined)— 兜底:
+      //   ① isTerminal===true → terminal
+      //   ② 栈只剩 R(或栈本身已空)→ 推断 terminal(再 pop 等于错)
+      const onlyRLeft = stack.length === 0
+        || (stack.length === 1 && stack[0]?.roleType === 'requirements');
+      const inferredTerminal = seg.isTerminal === true || onlyRLeft;
+      if (inferredTerminal) {
         isComplete = true;
-        stack = stack.length ? [stack[0]] : stack;  // 只留 R
+        if (stack.length > 1) stack = [stack[0]];
       } else {
-        // 非 terminal pop top
         stack.pop();
       }
     } else if (seg.kind === 'blocked') {
@@ -1203,9 +1207,12 @@ function renderBreadcrumb() {
     }
   }
 
+  // [bug@2026-06-16] 兜底:线索 stage=verified 说明真完成了,即使老 chain 数据丢 isTerminal
+  if (!isComplete && t2?.stage === 'verified') isComplete = true;
+
   // 渲染当前栈
   const depthBadge = maxDepth > 0 ? `<span class="bc-max-depth" title="max stack depth reached">[${maxDepth}]</span>` : '';
-  const completeBadge = isComplete ? '<span class="bc-complete">🎉 done</span>' : '';
+  const completeBadge = isComplete ? `<span class="bc-complete" title="thread verified">🎉 done</span>` : '';
   const eventBadge = lastEvent?.kind === 'blocked' ? '<span class="bc-blocked">⚠ blocked</span>'
                   : lastEvent?.kind === 'reject' ? '<span class="bc-reject">✗ rejected</span>'
                   : '';
