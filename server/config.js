@@ -63,10 +63,14 @@ const config = {
   logLevel: (process.env.LOG_LEVEL || 'info').toLowerCase(),
 
   // Default session TTL — overridden per-role via role frontmatter
-  // [需求@2026-06-14 user] 日常使用发现 claude session 不需要自动过期 —
-  //   2h/4h TTL 反复 kill+lazy-resurrect 反而打断上下文。提到 720h(30 天)实际等价
-  //   "永不过期"。需要 per-role 短 TTL 仍在 frontmatter 写 session_ttl_hours 覆盖。
-  defaultSessionTtlHours: int(process.env.DEFAULT_SESSION_TTL_HOURS, 720),
+  // [需求@2026-06-14] 4h → 720h(30 天)实际等价"永不过期"
+  // [需求@2026-06-16] 进一步:**0 = 永不过期**(user 反馈:每个 term 应该是固定身份,
+  //   像 PowerShell 窗口一样长期持有 + 累积上下文)。
+  //   - sendUserText 看到 ttl=0 跳过 idle 检查,直接 --resume
+  //   - ScanRecycler 不扫 ttl=0 的 instance
+  //   - per-role 仍可在 frontmatter 写正值覆盖(快迭代场景)
+  //   - context window 物理上限由 claude 自己处理(/compact 或 user 手动 Reset)
+  defaultSessionTtlHours: int(process.env.DEFAULT_SESSION_TTL_HOURS, 0),
 
   // [需求@2026-06-12 §8.10 + Phase 2E §13 + 2026-06-15 Phase 2G M1.5] 全局并发软上限
   //   超出 emit cap_warn,前端红条 banner,不硬拒

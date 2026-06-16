@@ -123,6 +123,8 @@ class RoleInstance {
     }
     this.exitCode = null;
     this.exitSignal = null;
+    // [需求@2026-06-16 A4] 累计 session 内 turn + token,reset 归零
+    this.sessionStats = { turns: 0, inputTokens: 0, outputTokens: 0, totalCostUsd: 0 };
     // [需求@2026-06-12 Phase 2E §5] currentModel:claude system/init 时填充,disconnect 保留
     this.currentModel = null;
     this.claudeCodeVersion = null;
@@ -287,6 +289,17 @@ class RoleInstance {
     } else if (isResult(eventType)) {
       // terminal of this turn — back to idle (or surface error)
       const isErr = raw.is_error === true;
+      // [需求@2026-06-16 A4] 累积 token + turn 计数(给 context 容量提示)
+      //   sessionStats 在 reset/sessionId-change 时归零
+      if (!this.sessionStats) this.sessionStats = { turns: 0, inputTokens: 0, outputTokens: 0, totalCostUsd: 0 };
+      this.sessionStats.turns += 1;
+      // claude 在 result event 里报 usage(可能没有,看版本)
+      const usage = raw.usage || raw.message?.usage;
+      if (usage) {
+        this.sessionStats.inputTokens += (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+        this.sessionStats.outputTokens += usage.output_tokens || 0;
+      }
+      if (typeof raw.total_cost_usd === 'number') this.sessionStats.totalCostUsd += raw.total_cost_usd;
       this._emit(isErr ? 'turn_error' : 'turn_done', raw);
       this._setStatus('idle');
     }
@@ -313,7 +326,16 @@ class RoleInstance {
       }
       // [需求@2026-06-12 §8.10] TTL 防生锈:idle 太久 → session 内的代码/文件记忆已陈腐,
       //   --resume 续上反而是负资产。丢 session_id 起全新会话,role 靠 system prompt 重建认知。
-      const ttlMs = (this.role.sessionTtlHours || 4) * 3600 * 1000;
+      // [需求@2026-06-16] sessionTtlHours=0 → 永不过期,直接 resume(short-circuit 跳过检查)
+      const ttlHours = this.role.sessionTtlHours;
+      if (ttlHours === 0 || ttlHours == null) {
+        // 永不过期路径:直接续 session,不丢
+        this._pendingUserText = text;
+        this.spawn({ resumeSessionId: this.sessionId, suppressGreeting: true });
+        this._setStatus('busy');
+        return;
+      }
+      const ttlMs = ttlHours * 3600 * 1000;
       const idleMs = Date.now() - this.lastActiveAt;
       if (idleMs > ttlMs) {
         const oldSessionId = this.sessionId;
@@ -378,6 +400,37 @@ class RoleInstance {
       }
     }
     return { ok: true, previousModel: prev, newModel, nextSpawnUsesNewModel: true };
+  }
+
+  // [需求@2026-06-16] Reset Terminal — user 主动给 term 清账(claude 累积错误 / context 太满)
+  //   行为:同 switchModel 但 model 不变 — kill child + 丢 session_id + 翻 disconnected
+  //   下次 sendUserText → fresh spawn,claude 重新从 system prompt 起
+  //   busy/spawning 时拒绝(让 user 显式 stop 再 reset)
+  //   memory(~/.claude/projects/<encoded>/memory/)保留 — 那是跨 session 长期记忆,reset 只清当前 session 对话历史
+  async resetSession() {
+    if (this.status === 'dead') {
+      throw new Error(`instance ${this.id} is dead`);
+    }
+    if (this.status === 'busy' || this.status === 'spawning') {
+      throw new Error(`instance ${this.id} is ${this.status} — stop it first then reset`);
+    }
+    const prevSessionId = this.sessionId;
+    const prevStats = { ...this.sessionStats };
+    // [A4] reset 归零 stats
+    this.sessionStats = { turns: 0, inputTokens: 0, outputTokens: 0, totalCostUsd: 0 };
+    if (this._child) {
+      this._softKillForRestart = true;
+      try { this._child.stdin.end(); } catch {}
+      const exited = await this._waitExit(this._child, 2000);
+      if (!exited && this._child) {
+        try { this._child.kill('SIGTERM'); } catch {}
+      }
+    } else {
+      // 已经 disconnected,直接清 session_id 即可
+      this.sessionId = null;
+      this._setStatus('disconnected');
+    }
+    return { ok: true, previousSessionId: prevSessionId, previousStats: prevStats, nextSpawnIsFresh: true };
   }
 
   // [需求@2026-06-13 §18] thread stop 用 — 软中断:发 SIGINT 让 child 自然终止当前 turn,
@@ -457,6 +510,8 @@ class RoleInstance {
       currentTaskSlug: this.currentTaskSlug || null,
       // [需求@2026-06-12 Phase 2E §5] 当前 child 实际用的模型(claude 自报)
       currentModel: this.currentModel || null,
+      // [需求@2026-06-16 A4] context 容量统计 — 给 UI 显示 + warn
+      sessionStats: { ...this.sessionStats },
       // [需求@2026-06-15] UI 显:user 设的 preferredModel + role.md 默认 model
       //   前端下拉框可以正确显"用户期望 vs claude 实跑"两者
       preferredModel: this.preferredModel || null,

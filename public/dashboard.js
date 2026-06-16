@@ -94,10 +94,23 @@ function renderTerminalsList(instances) {
     const memoryText = i.memory && i.memory.fileCount > 0
       ? `${t('dashboard.terminals.memUnit', { n: i.memory.fileCount })}${i.memory.latestMtime ? ' · ' + relTime(i.memory.latestMtime) : ''}`
       : '—';
+    // [需求@2026-06-16 A4] context 容量徽章 — turns > 100 或 inputTokens > 100k 提示考虑 reset
+    const ss = i.sessionStats || {};
+    const ctxLevel = (ss.inputTokens > 150_000 || ss.turns > 200) ? 'danger'
+                   : (ss.inputTokens > 80_000  || ss.turns > 100) ? 'warn'
+                   : null;
+    const ctxBadge = ctxLevel
+      ? `<span class="term-ctx-${ctxLevel}" title="${escapeHtml(t('dashboard.terminals.ctxTip', {
+            turns: ss.turns || 0,
+            inTok: Math.round((ss.inputTokens||0)/1000),
+            outTok: Math.round((ss.outputTokens||0)/1000),
+            cost: (ss.totalCostUsd||0).toFixed(3),
+          }))}">${ctxLevel === 'danger' ? '⚠' : '○'}</span>`
+      : '';
     return `
       <div class="term-row">
         <div><span class="term-status ${i.status}">${i.status[0]}</span></div>
-        <div title="${escapeHtml(i.id)} · session ${i.sessionId || '-'}">${escapeHtml(i.displayName || i.id)}</div>
+        <div title="${escapeHtml(i.id)} · session ${i.sessionId || '-'}">${escapeHtml(i.displayName || i.id)}${ctxBadge}</div>
         <div>${slotText}</div>
         <div>${escapeHtml(i.projectName || '?')}</div>
         <div title="${escapeHtml(modelFull || '(unknown)')}">${makeModelSelectorHtml(i.id, modelFull, canSwitchModel)}</div>
@@ -106,6 +119,8 @@ function renderTerminalsList(instances) {
         <div title="${i.memory ? 'latest: ' + (i.memory.latestMtime ? new Date(i.memory.latestMtime).toLocaleString() : '-') : ''}">${escapeHtml(memoryText)}</div>
         <div class="term-actions">${canSkill
           ? `<button class="term-skill" data-id="${escapeHtml(i.id)}" data-name="${escapeHtml(i.displayName || i.id)}" title="${escapeHtml(t('dashboard.terminals.skillTip'))}">skill</button>`
+          : ''}${canSkill /* 同条件:idle/busy/disconnected 可,dead/spawning 不可 — 跟 skill 共用 */
+          ? `<button class="term-reset" data-id="${escapeHtml(i.id)}" data-name="${escapeHtml(i.displayName || i.id)}" title="${escapeHtml(t('dashboard.terminals.resetTip'))}">${escapeHtml(t('dashboard.terminals.resetBtn'))}</button>`
           : ''}${canKill
           ? `<button class="term-kill" data-id="${escapeHtml(i.id)}">${escapeHtml(t('dashboard.terminals.killTip'))}</button>`
           : `<button class="term-kill" disabled>-</button>`}
@@ -135,6 +150,31 @@ function renderTerminalsList(instances) {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       openSkillDialog(btn.dataset.id, btn.dataset.name);
+    });
+  });
+
+  // [需求@2026-06-16] Reset Terminal — 给 instance 清账(kill child + 丢 session)
+  listEl.querySelectorAll('.term-reset[data-id]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const id = btn.dataset.id;
+      const name = btn.dataset.name;
+      if (!confirm(t('dashboard.terminals.resetConfirm', { name }))) return;
+      btn.disabled = true;
+      try {
+        const r = await fetch(`/api/instances/${encodeURIComponent(id)}/reset`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({ error: r.statusText }));
+          throw new Error(err.error || r.statusText);
+        }
+        await refreshTerminalsList();
+      } catch (err) {
+        alert(t('dashboard.terminals.resetFailed', { error: err.message }));
+      } finally {
+        btn.disabled = false;
+      }
     });
   });
 

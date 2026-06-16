@@ -73,7 +73,10 @@ function runOnce(deps) {
       continue;
     }
 
-    const ttlMs = (inst.role.sessionTtlHours || 4) * 3600 * 1000;
+    // [需求@2026-06-16] sessionTtlHours=0 → 永不过期,跳过 TTL warn/expired
+    const ttlHours = inst.role.sessionTtlHours;
+    if (ttlHours === 0 || ttlHours == null) continue;
+    const ttlMs = ttlHours * 3600 * 1000;
     const expiresAt = inst.lastActiveAt + ttlMs;
     const remainMs = expiresAt - now;
     if (remainMs < 0) {

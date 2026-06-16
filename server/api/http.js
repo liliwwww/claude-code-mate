@@ -334,6 +334,23 @@ function buildRouter() {
     }
   });
 
+  // [需求@2026-06-16] Reset Terminal — user 主动给 instance 清账
+  //   行为:kill child + 丢 session_id + 翻 disconnected;下次 user 发消息 fresh spawn
+  //   适用:claude 累积了错误判断 / context 太满 / 想换思路
+  //   保留:~/.claude memory(跨 session)+ thread metadata + DB messages 历史
+  //   busy/spawning 拒(让 user 先 stop)
+  r.post('/instances/:id/reset', async (req, res) => {
+    const inst = spawnManager.getInstance(req.params.id);
+    if (!inst) return res.status(404).json({ error: 'instance not found' });
+    try {
+      const r2 = await inst.resetSession();
+      res.json({ ...r2, instanceId: req.params.id, hint: '下次发消息时 lazy resurrect,起全新 session(memory 保留)' });
+    } catch (e) {
+      const code = /busy|spawning|dead/.test(e.message) ? 409 : 400;
+      res.status(code).json({ error: e.message });
+    }
+  });
+
   // [需求@2026-06-15] 切 model — claude headless 不接 /model slash,只能 kill+respawn
   //   - 设 inst.preferredModel(in-memory)
   //   - 如果有 child:graceful kill(stdin.end + 2s grace + SIGTERM)→ exit handler 看 _softKillForRestart 翻 disconnected

@@ -958,3 +958,28 @@ main { flex: 1; display: flex; min-height: 0; }
 #graph-svg .gn-busy rect { filter: drop-shadow(0 0 6px rgba(255,204,102,0.4)); }
 #graph-svg .gn-spawning rect { filter: drop-shadow(0 0 6px rgba(136,204,255,0.4)); animation: pulse 1.2s infinite alternate; }
 @keyframes pulse { from { opacity: 0.6; } to { opacity: 1; } }
+
+/* [需求@2026-06-16] Reset Terminal 按钮 — 紫色边线条款,跟 skill 区分 */
+.term-row .term-reset {
+  background: var(--bg-card);
+  color: var(--accent-purple);
+  border: 1px solid var(--accent-purple);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 10px;
+  cursor: pointer;
+  margin-left: 2px;
+}
+.term-row .term-reset:hover { background: var(--accent-purple); color: #fff; }
+.term-row .term-reset:disabled { opacity: 0.5; cursor: wait; }
+
+/* [需求@2026-06-16 A4] context 容量徽章 — 圆点/警告标 */
+.term-row [class^="term-ctx-"] {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 11px;
+  cursor: help;
+}
+.term-row .term-ctx-warn { color: var(--accent-yellow); }
+.term-row .term-ctx-danger { color: var(--accent-red); animation: ctx-blink 1.4s ease-in-out infinite; }
+@keyframes ctx-blink { 0%,100% { opacity: 0.7; } 50% { opacity: 1; } }
