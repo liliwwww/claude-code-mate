@@ -1163,9 +1163,10 @@ function setupLogStreamWS() {
 
 const GRAPH_STATE = {
   inited: false,
-  scope: 'default',
+  scope: 'global',         // 'global' | <projectId number>
   showDisc: false,
   defaultProjectId: 1,
+  projects: [],
   snapshot: null,
   queue: [],
 };
@@ -1188,18 +1189,45 @@ async function initGraphTab() {
     GRAPH_STATE.inited = true;
     wireGraphUI();
     setupGraphWS();
-    // 读 defaultProjectId
-    try {
-      const sys = await fetch('/api/system').then((r) => r.json());
-      GRAPH_STATE.defaultProjectId = sys.defaultProjectId || 1;
-    } catch {}
+  }
+  // 每次进 tab 都重拉 projects(防新增 project 没出现在下拉)
+  try {
+    const [sys, projects] = await Promise.all([
+      fetch('/api/system').then((r) => r.json()),
+      fetch('/api/projects').then((r) => r.json()),
+    ]);
+    GRAPH_STATE.defaultProjectId = sys.defaultProjectId || 1;
+    GRAPH_STATE.projects = Array.isArray(projects) ? projects : [];
+    populateGraphScopeSelect();
+  } catch (e) {
+    console.warn('[graph] init failed:', e.message);
   }
   await refreshGraph();
 }
 
+function populateGraphScopeSelect() {
+  const sel = el('#graph-scope');
+  if (!sel) return;
+  const cur = String(GRAPH_STATE.scope);
+  const opts = [`<option value="global">${escapeHtml(t('dashboard.graph.scopeAll'))}</option>`];
+  for (const p of GRAPH_STATE.projects) {
+    const label = p.id === GRAPH_STATE.defaultProjectId ? `${p.name} (default)` : p.name;
+    opts.push(`<option value="${p.id}">${escapeHtml(label)}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  // 恢复选择
+  if ([...sel.options].some((o) => o.value === cur)) {
+    sel.value = cur;
+  } else {
+    sel.value = 'global';
+    GRAPH_STATE.scope = 'global';
+  }
+}
+
 function wireGraphUI() {
   el('#graph-scope').addEventListener('change', (e) => {
-    GRAPH_STATE.scope = e.target.value;
+    const v = e.target.value;
+    GRAPH_STATE.scope = v === 'global' ? 'global' : parseInt(v, 10);
     refreshGraph();
   });
   el('#graph-show-disc').addEventListener('change', (e) => {
@@ -1229,7 +1257,8 @@ function setupGraphWS() {
 }
 
 async function refreshGraph() {
-  const proj = GRAPH_STATE.scope === 'default' ? GRAPH_STATE.defaultProjectId : null;
+  // scope: 'global' → 不传 projectId; number → 传该 project
+  const proj = (GRAPH_STATE.scope === 'global') ? null : GRAPH_STATE.scope;
   try {
     const snapUrl = proj ? `/api/runtime/snapshot?projectId=${proj}` : '/api/runtime/snapshot';
     const queueUrl = `/api/queue?status=all${proj ? '&projectId=' + proj : ''}`;
