@@ -1125,16 +1125,17 @@ function renderBreadcrumb() {
   }
   const chain = t2?.metadata?.dispatch_chain || [];
   if (!chain.length) { host.innerHTML = ''; host.hidden = true; return; }
-  // [Phase 2I 修] 折叠相邻同 instanceId + 跟踪 stack depth
-  //   关键:handoff 区分 push vs pop:
-  //     R → H, H → B/C        = push (down or new request)
-  //     B/C → H, H → R         = pop (callback or bounce back)
-  //   done                     = pop (除非 terminal)
-  //   reject                   = pop(放弃这层)
-  const collapsed = [];
-  let depth = 0;
-  let maxDepth = 0;
-  // role name → role type 映射
+  // [Phase 2I 真正实现] **call stack 视图** — 不再是 append-only 历史日志,
+  //   而是模拟真实 LIFO stack:push 加 frame,callback/done 真弹 frame。
+  //   任何时刻显示 = 当前栈状态(不是 timeline)
+  //   规则:
+  //     R → H, H → B/C       = push(加 frame 到栈顶)
+  //     B/C → H              = pop top + push(B/C 走了,但 H 已经在栈里 — 实际上只是 pop B)
+  //     H → R                = pop top(H 走了)+ 可能更新栈底 R(bounce 到新 R instance)
+  //     done (non-terminal)  = pop top
+  //     done (terminal)      = stack 清空 + 显示 🎉
+  //     reject               = pop top
+  //     blocked              = 标 ⚠ 但不 pop
   function inferRoleType(name) {
     if (!name) return null;
     const n = name.toLowerCase();
@@ -1144,69 +1145,85 @@ function renderBreadcrumb() {
     if (n.includes('mate-c') || n.includes('validator')) return 'validator';
     return null;
   }
+  let stack = [];   // [{label, instanceId, roleType}, ...]  栈底是 R(stack[0]),栈顶是当前活跃
+  let maxDepth = 0;
+  let lastEvent = null;  // 末尾事件(blocked/reject)用于显示警告
+  let isComplete = false;  // terminal done?
+
   for (const seg of chain) {
-    const last = collapsed[collapsed.length - 1];
-    if (last && last.instanceId && last.instanceId === (seg.toInstanceId || seg.fromInstanceId)) {
-      last.repeat = (last.repeat || 1) + 1;
-      continue;
-    }
     if (seg.kind === 'handoff') {
-      // 推断方向
       const fromType = inferRoleType(seg.fromRole);
       const toType = inferRoleType(seg.toRole);
-      let isPop = false;
-      if (fromType && toType) {
-        // pop:executor/validator → orchestrator(callback);orchestrator → requirements(bounce)
-        if ((fromType === 'executor' || fromType === 'validator') && toType === 'orchestrator') isPop = true;
-        else if (fromType === 'orchestrator' && toType === 'requirements') isPop = true;
-      }
+      const isPop = (fromType === 'executor' || fromType === 'validator') && toType === 'orchestrator';
+      const isBounce = fromType === 'orchestrator' && toType === 'requirements';
       if (isPop) {
-        depth = Math.max(0, depth - 1);
+        // B/C callback to H — pop B/C (栈顶)。H 应该已经在栈里(below B/C)
+        stack.pop();
+      } else if (isBounce) {
+        // H bounce to R — pop H,然后栈顶应该已经是 R(原栈底)
+        // 但 chain 显示 H → R.fkhrq2 可能是不同 R 实例 — 直接 replace 栈底 R
+        stack.pop();  // pop H
+        // 如果栈底不是 R 或不是这个 specific R,更新
+        if (stack.length === 0) {
+          stack.push({ label: seg.toDisplayName || seg.toRole, instanceId: seg.toInstanceId, roleType: 'requirements' });
+        } else {
+          // 栈底 R 已在,可能是同一 R 实例,不动 — 或更新 label 为新实例 id
+          stack[0] = { label: seg.toDisplayName || seg.toRole, instanceId: seg.toInstanceId, roleType: 'requirements' };
+        }
       } else {
-        depth++;
-        maxDepth = Math.max(maxDepth, depth);
+        // push — 栈底如果空,先加 from 当根
+        if (stack.length === 0) {
+          stack.push({
+            label: seg.fromRole,  // 通常 mate-R
+            instanceId: seg.fromInstanceId,
+            roleType: fromType,
+          });
+        }
+        stack.push({
+          label: seg.toDisplayName || seg.toInstanceId || seg.toRole,
+          instanceId: seg.toInstanceId,
+          roleType: toType,
+        });
+        maxDepth = Math.max(maxDepth, stack.length);
       }
-      collapsed.push({
-        kind: isPop ? 'pop' : 'handoff',
-        label: seg.toDisplayName || seg.toInstanceId || seg.toRole,
-        instanceId: seg.toInstanceId,
-        depth,
-        ts: seg.ts,
-      });
     } else if (seg.kind === 'done') {
-      // [Phase 2I] done = pop;depth -1;visual 用反向箭头标识
-      const isTerminal = seg.isTerminal;
-      collapsed.push({
-        kind: 'done',
-        label: isTerminal ? '🎉' : '✓↑',
-        depth,
-        ts: seg.ts,
-        isTerminal,
-      });
-      if (!isTerminal) depth = Math.max(0, depth - 1);
+      if (seg.isTerminal) {
+        // terminal done — 真 verified
+        isComplete = true;
+        stack = stack.length ? [stack[0]] : stack;  // 只留 R
+      } else {
+        // 非 terminal pop top
+        stack.pop();
+      }
     } else if (seg.kind === 'blocked') {
-      collapsed.push({ kind: 'blocked', label: '⚠', depth, ts: seg.ts });
+      lastEvent = { kind: 'blocked' };
     } else if (seg.kind === 'reject') {
-      collapsed.push({ kind: 'reject', label: '✗', depth, ts: seg.ts });
+      stack.pop();
+      lastEvent = { kind: 'reject' };
     }
   }
-  // 第一段如果没有,加 fromRole 起点
-  if (chain.length && collapsed.length) {
-    const firstSeg = chain[0];
-    if (firstSeg.fromRole && firstSeg.fromInstanceId !== collapsed[0].instanceId) {
-      collapsed.unshift({ kind: 'start', label: firstSeg.fromRole, instanceId: firstSeg.fromInstanceId, depth: 0 });
-    }
-  }
+
+  // 渲染当前栈
   const depthBadge = maxDepth > 0 ? `<span class="bc-max-depth" title="max stack depth reached">[${maxDepth}]</span>` : '';
-  const html = `<span class="bc-label">${t('breadcrumb.label')}:</span>${depthBadge}` + collapsed.map((c, i) => {
-    // sep:done / pop → ↑ 反向;handoff / start → → 正向
-    const isPopArrow = (c.kind === 'done' && !c.isTerminal) || c.kind === 'pop';
-    const sep = i > 0 ? (isPopArrow ? '<span class="bc-sep bc-pop-sep">↑</span>' : '<span class="bc-sep">→</span>') : '';
-    const cls = `bc-seg bc-${c.kind}` + (c.depth ? ` bc-d${Math.min(c.depth, 5)}` : '');
-    const repeat = c.repeat ? `<span class="bc-repeat">× ${c.repeat}</span>` : '';
-    return `${sep}<span class="${cls}" title="${escapeHtml(c.instanceId || '')} (depth ${c.depth || 0})">${escapeHtml(c.label)}${repeat}</span>`;
+  const completeBadge = isComplete ? '<span class="bc-complete">🎉 done</span>' : '';
+  const eventBadge = lastEvent?.kind === 'blocked' ? '<span class="bc-blocked">⚠ blocked</span>'
+                  : lastEvent?.kind === 'reject' ? '<span class="bc-reject">✗ rejected</span>'
+                  : '';
+
+  if (!stack.length) {
+    host.innerHTML = `<span class="bc-label">${t('breadcrumb.label')}:</span>${depthBadge}${completeBadge}${eventBadge}<span class="bc-empty">(empty)</span>`;
+    host.hidden = false;
+    return;
+  }
+
+  const stackHtml = stack.map((frame, i) => {
+    const sep = i > 0 ? '<span class="bc-sep">→</span>' : '';
+    const isTop = i === stack.length - 1;
+    const cls = `bc-seg bc-handoff${isTop ? ' bc-top' : ''}` + (i > 0 ? ` bc-d${Math.min(i, 5)}` : '');
+    return `${sep}<span class="${cls}" title="${escapeHtml(frame.instanceId || '')} (stack depth ${i})">${escapeHtml(frame.label)}</span>`;
   }).join('');
-  host.innerHTML = html;
+
+  host.innerHTML = `<span class="bc-label">${t('breadcrumb.label')}:</span>${depthBadge}${stackHtml}${completeBadge}${eventBadge}`;
   host.hidden = false;
 }
 

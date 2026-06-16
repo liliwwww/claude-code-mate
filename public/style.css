@@ -1179,3 +1179,37 @@ main { flex: 1; display: flex; min-height: 0; }
   padding: 3px 6px;
   font-size: 11px;
 }
+
+/* [Phase 2I 真正实现] call stack 视图徽章 */
+#dispatch-breadcrumb .bc-top {
+  background: var(--bg-msg-stream);
+  border: 1px solid var(--accent);
+  font-weight: 700;
+  box-shadow: 0 0 4px rgba(136,204,255,0.4);
+}
+#dispatch-breadcrumb .bc-complete {
+  color: var(--accent-green);
+  background: var(--bg-msg-ok);
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 8px;
+  font-weight: 600;
+}
+#dispatch-breadcrumb .bc-blocked {
+  color: var(--accent-yellow);
+  background: var(--bg-msg-system);
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 8px;
+}
+#dispatch-breadcrumb .bc-reject {
+  color: var(--accent-red);
+  background: var(--bg-msg-error);
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 8px;
+}
+#dispatch-breadcrumb .bc-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
