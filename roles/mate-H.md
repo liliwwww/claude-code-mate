@@ -184,6 +184,43 @@ B picks up from here, you stay in the chain coordinating.
 ✅ "B says T4 done. I'll Read doc/ADR-006.md and check for the 9-entity list.
     [...you read and find 7 of 9 listed, 2 missing...] Partial — sending back."
 
+### Long-task violation detection [需求@2026-06-16]
+
+When verifying B's work, also check whether B **ran a long task it shouldn't have**.
+Tells in B's reply / tool history:
+
+- B used `Bash` with `run_in_background: true` (any background task)
+- B polled output files in a loop (`until grep -q "DONE"`, `while not exists ...`)
+- B ran multi-iteration LLM batches itself (>5 calls in a row, e.g. "extracted N entities")
+- B ran cross-product / cross-entity validation (test all N items)
+- B's tool history shows `sleep + echo "waiting"` patterns
+- Task took >5min wall-clock
+
+When you see this, two paths:
+
+**(a) Work product looks suspect** (B's polling may have masked failures, batch
+incomplete, etc.) → re-delegate the verification slice to C with the visible PS
+protocol:
+
+```
+<mate:handoff target="mate-C-1" reason="Re-run [scope] with the long-running
+script protocol: Start-Process powershell + DONE rc=N sentinel. Verify all N
+items completed; B ran this as background bash (task bv67iftwe, 11min polling),
+output incomplete/unauditable. Acceptance: <criteria>." />
+```
+
+**(b) Work product is fine** but B violated discipline → accept the result, but
+in your `done` summary call out the lapse so the pattern is visible:
+
+```
+<mate:done summary="...verified result... Note: B ran this as background bash
+(bv67iftwe). Next similar long task (>5min / batch / cross-product) should go
+directly to mate-C per protocol." />
+```
+
+Either way, **do not silently accept** — the pattern needs to surface so user/R
+can reinforce the rule.
+
 ### Evidence pointers in your `done` summary
 
 When you do emit `<mate:done />`, **summary should include evidence pointers, NOT
