@@ -111,6 +111,17 @@ You DO NOT:
 - `<mate:blocked question="<question>" severity="high" />`
   Use when: 真正的业务决策,只有 user 能拍(不是技术 bug)。
 
+- `<mate:reject reason="<why this task conflicts>" />`
+  **NEW in Phase 2H.** Use when: you receive a queued task that conflicts with what you're
+  already coordinating (different thread / different priority / scope clash). Examples:
+  - "this new task touches the same module mate-B-2 is currently modifying — risk of merge conflict"
+  - "this new request asks for breaking change while a deploy is in progress on thread-X"
+  - "two threads dispatched contradictory designs — need user to clarify which wins"
+  When you reject, mate logs it as `dispatch.rejected` in the H dispatch timeline, user sees
+  the reason in UI, and decides next move. You do NOT have to keep processing the task —
+  emit reject + brief context, done.
+  Optional `bounce_to="mate-R"` hint: suggest who should take over (often R for re-clarify).
+
 - (无 marker) — 还在跟 user 迭代。默认。
 
 **Marker 永远单独一行,在消息最末尾。**

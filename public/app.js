@@ -970,9 +970,27 @@ function handleWsMsg({ type, payload }) {
     pushTickerEvent('kill', t('ticker.agedOut', { name: payload.displayName, days: payload.ageDays }));
     updateTerminalsCount();
   } else if (type === 'dispatch.busy_prompt') {
-    // [需求@2026-06-15 Phase 2G M1.4] H/B/C busy 时,marker 派工先问 user:等 / backlog / 取消
+    // [废弃 — Phase 2H 撤掉 busy_prompt user 决策路径]
+    //   保留 listener 防 server 老路径 emit;ticker 仅日志,不弹 modal
     if (payload.projectId !== state.activeProjectId) return;
-    handleBusyPrompt(payload);
+    pushTickerEvent('handoff', `(legacy busy_prompt suppressed)`);
+  } else if (type === 'dispatch.scheduled') {
+    // [Phase 2H Phase 2] FIFO queue 入队
+    if (payload.projectId !== state.activeProjectId) return;
+    const arrow = directionArrow(payload.direction);
+    pushTickerEvent('handoff', `${arrow} ${payload.fromDisplayName || '?'} → ${payload.toDisplayName || '?'}  queued`);
+    refreshQueueForThread(payload.threadSlug);
+  } else if (type === 'dispatch.started') {
+    if (payload.projectId !== state.activeProjectId) return;
+    const arrow = directionArrow(payload.direction);
+    pushTickerEvent('handoff', `${arrow} ▶ ${payload.toDisplayName || '?'} 开始 (waited ${Math.round((payload.waitMs||0)/1000)}s)`);
+    refreshQueueForThread(payload.threadSlug);
+  } else if (type === 'dispatch.completed') {
+    if (payload.projectId !== state.activeProjectId) return;
+    const arrow = directionArrow(payload.direction);
+    const icon = payload.isError ? '✗' : '✓';
+    pushTickerEvent('done', `${icon} ${arrow} ${payload.toDisplayName || '?'} 完成 (${Math.round((payload.durationMs||0)/1000)}s)`);
+    refreshQueueForThread(payload.threadSlug);
   } else if (type === 'queue.added') {
     if (payload.projectId !== state.activeProjectId) return;
     pushTickerEvent('handoff', `⏸ queued → ${payload.toInstanceId}`);
@@ -1029,7 +1047,18 @@ async function refreshQueueForFocusedThread() {
   if (state.focusedSlug) await refreshQueueForThread(state.focusedSlug);
 }
 
-// dispatch.busy_prompt → modal
+// [Phase 2H Phase 2] direction → icon
+function directionArrow(dir) {
+  switch (dir) {
+    case 'new_request': return '📨'; // R → H 新请求
+    case 'callback':    return '↩';  // B/C → H 回栈
+    case 'down_dispatch': return '⤴'; // H → B/C 下钻
+    case 'bounce_back': return '↻';  // H → R 反弹
+    default: return '·';
+  }
+}
+
+// [废弃 Phase 2H] busy_prompt → modal — 保留代码但 dispatch.busy_prompt 事件不再触发它
 function handleBusyPrompt(payload) {
   // 一次只显一个 modal
   document.querySelector('#busy-prompt-dialog')?.remove();

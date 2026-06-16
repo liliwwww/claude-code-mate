@@ -25,11 +25,12 @@ const { db } = require('../db');
 
 // 预编译 statements(热路径)
 const stmts = {
-  // 派工时序 — dashboard tab 3 用,3 种 kind 跨 project
+  // 派工时序 — dashboard tab 3 用,跨 project
+  //   Phase 2H 加 dispatch.rejected,跟 thread.* 一起在一个 timeline 显示
   selectDispatchHistory: db.prepare(`
     SELECT id, project_id, ts, kind, thread_slug, instance_id, payload_json
     FROM events
-    WHERE kind IN ('thread.handoff', 'thread.done', 'thread.blocked')
+    WHERE kind IN ('thread.handoff', 'thread.done', 'thread.blocked', 'dispatch.rejected')
     ORDER BY ts DESC LIMIT ?
   `),
   // H 任务面板用:某 project 最近 N 个 thread.handoff

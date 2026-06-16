@@ -126,14 +126,13 @@ describe('QueueDispatcher.enqueueBusy + handleUserChoice', () => {
     const result = await QD.handleUserChoice(id, 'wait', {
       dispatchCb: async () => { dispatched = true; },
     });
-    // 此时 target 是 busy(test 里就是 fake row,findOldestQueuedFor 会返回它自己)
-    // 所以会立即 flush
     expect(result.status).toBe('queued');
     expect(result.dispatched).toBe(true);
     expect(dispatched).toBe(true);
-    // row 被删(成功 flush 后)
-    expect(PendingSends.getById(id)).toBe(null);
-    // 应有 queue.added + queue.claimed
+    // [Phase 2H 改] dispatch 后 row 保留为 'processing',等 result 事件来才 remove
+    //   测试这里只验证 dispatchCb 被调用 + status 翻 processing
+    const row = PendingSends.getById(id);
+    expect(row?.status).toBe('processing');
     const topics = publishedEvents.map(e => e.topic);
     expect(topics).toContain('dispatch.busy_prompt');
     expect(topics).toContain('queue.added');
@@ -215,7 +214,8 @@ describe('QueueDispatcher.dispatchBacklog', () => {
     });
     expect(dispatched).toBe(true);
     expect(flushed?.id).toBe(id);
-    expect(PendingSends.getById(id)).toBe(null);  // 派发后删
+    // [Phase 2H 改] row 派发后留 status='processing',等 dispatch.completed 才 remove
+    expect(PendingSends.getById(id)?.status).toBe('processing');
     const topics = publishedEvents.map(e => e.topic);
     expect(topics).toContain('backlog.added');
     expect(topics).toContain('backlog.dispatched');
@@ -280,8 +280,9 @@ describe('QueueDispatcher.onInstanceIdle', () => {
     });
     expect(flushed?.id).toBe(id1);  // 最早入队的先
     expect(dispatchedText).toBe('first');
-    expect(PendingSends.getById(id1)).toBe(null);  // 派发后删
-    expect(PendingSends.getById(id2)?.id).toBe(id2);  // 第二个还在
+    // [Phase 2H 改] row 派发后留 'processing',第二个还在 queued
+    expect(PendingSends.getById(id1)?.status).toBe('processing');
+    expect(PendingSends.getById(id2)?.status).toBe('queued');
   });
 
   it('returns null when no queued items match', async () => {

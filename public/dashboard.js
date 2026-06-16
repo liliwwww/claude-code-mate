@@ -405,32 +405,159 @@ async function refreshDispatchHistory(preserveScroll = true) {
   const listEl = el('#dispatch-list');
   const scrollY = listEl.scrollTop;
   try {
-    const r = await fetch(`/api/dispatches/history?limit=200`);
-    if (!r.ok) throw new Error('fetch failed: ' + r.status);
-    const events = await r.json();
+    // [Phase 2H Phase 4] 同时拉 queue 状态 + 历史 events
+    const [r1, r2] = await Promise.all([
+      fetch(`/api/dispatches/history?limit=200`),
+      fetch(`/api/queue?status=all`),
+    ]);
+    if (!r1.ok) throw new Error('fetch dispatches failed: ' + r1.status);
+    if (!r2.ok) throw new Error('fetch queue failed: ' + r2.status);
+    const events = await r1.json();
+    const queue = await r2.json();
     const view = (document.querySelector('input[name="dispatch-view"]:checked') || {}).value || 'thread';
-    if (view === 'global') renderDispatchGlobal(events);
-    else renderDispatchByThread(events);
+    renderDispatchPanel(events, queue, view);
     if (preserveScroll) listEl.scrollTop = scrollY;
   } catch (e) {
     listEl.innerHTML = `<div class="dispatch-empty">${escapeHtml(t('dashboard.dispatch.loadFailed', { error: e.message }))}</div>`;
   }
 }
 
-function renderDispatchEvent(e) {
+// [Phase 2H Phase 4] 顶部:当前处理 + queue;下面:历史
+function renderDispatchPanel(events, queue, view) {
+  const listEl = el('#dispatch-list');
+  const processing = queue.filter((q) => q.status === 'processing');
+  const queued = queue.filter((q) => q.status === 'queued');
+  const backlog = queue.filter((q) => q.status === 'backlog');
+
+  const sections = [];
+
+  // 当前处理中(highlight)
+  if (processing.length) {
+    sections.push(`<div class="ds-section ds-processing">
+      <h5>${escapeHtml(t('dashboard.dispatch.nowProcessing'))} (${processing.length})</h5>
+      ${processing.map(renderQueueRow).join('')}
+    </div>`);
+  }
+
+  // 队列中(FIFO)
+  if (queued.length) {
+    sections.push(`<div class="ds-section ds-queued">
+      <h5>${escapeHtml(t('dashboard.dispatch.queue'))} (${queued.length})</h5>
+      ${queued.map((q, i) => renderQueueRow(q, i + 1)).join('')}
+    </div>`);
+  }
+
+  // backlog
+  if (backlog.length) {
+    sections.push(`<div class="ds-section ds-backlog">
+      <h5>${escapeHtml(t('dashboard.dispatch.backlog'))} (${backlog.length})</h5>
+      ${backlog.map(renderQueueRow).join('')}
+    </div>`);
+  }
+
+  // 历史
+  if (events.length) {
+    sections.push(`<div class="ds-section ds-history">
+      <h5>${escapeHtml(t('dashboard.dispatch.history'))} (${events.length})</h5>`);
+    if (view === 'global') {
+      sections.push(renderDispatchGlobalInner(events));
+    } else {
+      sections.push(renderDispatchByThreadInner(events));
+    }
+    sections.push(`</div>`);
+  }
+
+  if (!sections.length) {
+    listEl.innerHTML = `<div class="dispatch-empty">${escapeHtml(t('dashboard.dispatch.empty'))}</div>`;
+    return;
+  }
+  listEl.innerHTML = sections.join('');
+}
+
+const DIR_ICON = {
+  new_request:   '📨',  // R → H 新请求
+  callback:      '↩',   // B/C → H 回栈
+  down_dispatch: '⤴',   // H → B/C 下钻
+  bounce_back:   '↻',   // H → R 反弹
+};
+
+function renderQueueRow(q, queuePos) {
+  const p = q.payload || {};
+  const dir = p.direction || 'unknown';
+  const icon = DIR_ICON[dir] || '·';
+  const from = p.fromDisplayName || q.fromInstanceId || '?';
+  const to = p.toDisplayName || q.targetId || '?';
+  const ts = q.processedAt || q.enqueuedAt;
+  const time = ts ? fmtTs(ts) : '';
+  const posTag = queuePos ? `<span class="ds-pos">#${queuePos}</span>` : '';
+  const reason = (p.marker?.reason || '').slice(0, 80);
+  const dirLabel = t('dashboard.dispatch.dir.' + dir) || dir;
+  return `<div class="ds-row ds-status-${escapeHtml(q.status)}">
+    ${posTag}
+    <span class="ds-icon" title="${escapeHtml(dirLabel)}">${icon}</span>
+    <span class="ds-from">${escapeHtml(from)}</span>
+    <span class="ds-arrow">→</span>
+    <span class="ds-to">${escapeHtml(to)}</span>
+    <span class="ds-time">${time}</span>
+    <span class="ds-thread" title="${escapeHtml(q.threadSlug || '')}">${escapeHtml((q.threadSlug || '').slice(0, 16))}</span>
+    <span class="ds-reason" title="${escapeHtml(reason)}">${escapeHtml(reason)}</span>
+  </div>`;
+}
+
+function renderDispatchByThreadInner(events) {
+  if (!events.length) return '';
+  const groups = new Map();
+  for (const e of events) {
+    const key = `${e.projectId}::${e.threadSlug}`;
+    if (!groups.has(key)) groups.set(key, { projectName: e.projectName, slug: e.threadSlug, events: [] });
+    groups.get(key).events.push(e);
+  }
+  const groupList = [...groups.values()];
+  for (const g of groupList) g.events.sort((a, b) => a.ts - b.ts);
+  groupList.sort((a, b) => b.events[b.events.length - 1].ts - a.events[a.events.length - 1].ts);
+  const html = [];
+  for (const g of groupList) {
+    html.push(`<div class="dispatch-thread">`);
+    html.push(`<h6><span class="slug">${escapeHtml(g.slug)}</span> <span class="proj">${escapeHtml(g.projectName)}</span></h6>`);
+    for (const e of g.events) html.push(renderDispatchEvent(e));
+    html.push(`</div>`);
+  }
+  return html.join('');
+}
+
+function renderDispatchGlobalInner(events) {
+  const html = ['<div class="dispatch-thread">'];
+  for (const e of events) {
+    html.push(renderDispatchEvent(e, true));
+  }
+  html.push(`</div>`);
+  return html.join('');
+}
+
+function renderDispatchEvent(e, includeThreadSlug = false) {
   let arrow = '';
+  let kindCls = 'handoff';
+  let kindShort = 'h-o';
+  const slugPart = includeThreadSlug && e.threadSlug
+    ? `<span class="slug" style="color:var(--text-secondary)">${escapeHtml(e.threadSlug.slice(0, 14))}</span>: `
+    : '';
   if (e.kind === 'thread.handoff') {
     const from = e.payload.from || '?';
     const target = e.payload.target || e.payload.resolvedRole || '?';
-    arrow = `<span class="arrow">${escapeHtml(from)} → ${escapeHtml(target)}</span>`;
+    arrow = `<span class="arrow">${slugPart}${escapeHtml(from)} → ${escapeHtml(target)}</span>`;
+    kindCls = 'handoff'; kindShort = 'h-o';
   } else if (e.kind === 'thread.done') {
-    arrow = `<span class="arrow">${escapeHtml(t('dashboard.dispatch.done'))}</span>`;
+    arrow = `<span class="arrow">${slugPart}${escapeHtml(t('dashboard.dispatch.done'))}</span>`;
+    kindCls = 'done'; kindShort = 'done';
   } else if (e.kind === 'thread.blocked') {
-    arrow = `<span class="arrow">${escapeHtml(t('dashboard.dispatch.blocked'))}</span>`;
+    arrow = `<span class="arrow">${slugPart}${escapeHtml(t('dashboard.dispatch.blocked'))}</span>`;
+    kindCls = 'blocked'; kindShort = 'blkd';
+  } else if (e.kind === 'dispatch.rejected') {
+    const from = e.payload.fromDisplayName || e.payload.fromInstanceId || '?';
+    arrow = `<span class="arrow">${slugPart}✗ ${escapeHtml(from)} ${escapeHtml(t('dashboard.dispatch.rejected'))}</span>`;
+    kindCls = 'rejected'; kindShort = 'rjct';
   }
   const reason = e.payload.reason || e.payload.summary || e.payload.question || '';
-  const kindShort = e.kind === 'thread.handoff' ? 'h-o' : e.kind === 'thread.done' ? 'done' : 'blkd';
-  const kindCls = e.kind === 'thread.handoff' ? 'handoff' : e.kind === 'thread.done' ? 'done' : 'blocked';
   return `
     <div class="dispatch-event ${kindCls}">
       <div class="ts">${fmtTs(e.ts)}</div>
@@ -441,59 +568,24 @@ function renderDispatchEvent(e) {
   `;
 }
 
-function renderDispatchByThread(events) {
-  const listEl = el('#dispatch-list');
-  if (!events.length) {
-    listEl.innerHTML = `<div class="dispatch-empty">${escapeHtml(t('dashboard.dispatch.empty'))}</div>`;
-    return;
+// [Phase 2H Phase 4] dispatch tab WS 实时刷新 — 任何 dispatch.* / queue.* 事件触发 refresh
+let dispatchRefreshDebounce = null;
+function setupDispatchWS() {
+  if (!window.MateWS) return;
+  const topics = [
+    'dispatch.scheduled', 'dispatch.started', 'dispatch.completed', 'dispatch.rejected',
+    'dispatch.chain_updated',
+    'queue.added', 'queue.claimed', 'queue.cancelled',
+    'backlog.added', 'backlog.dispatched', 'backlog.cancelled',
+    'thread.handoff', 'thread.done', 'thread.blocked',
+  ];
+  for (const top of topics) {
+    window.MateWS.subscribe(top, () => {
+      if (currentTab !== 'dispatch') return;
+      if (dispatchRefreshDebounce) clearTimeout(dispatchRefreshDebounce);
+      dispatchRefreshDebounce = setTimeout(() => refreshDispatchHistory(true), 250);
+    });
   }
-  const groups = new Map();
-  for (const e of events) {
-    const key = `${e.projectId}::${e.threadSlug}`;
-    if (!groups.has(key)) groups.set(key, { projectName: e.projectName, slug: e.threadSlug, events: [] });
-    groups.get(key).events.push(e);
-  }
-  const groupList = [...groups.values()];
-  for (const g of groupList) g.events.sort((a, b) => a.ts - b.ts);
-  groupList.sort((a, b) => b.events[b.events.length - 1].ts - a.events[a.events.length - 1].ts);
-
-  const html = [];
-  for (const g of groupList) {
-    html.push(`<div class="dispatch-thread">`);
-    html.push(`<h5><span class="slug">${escapeHtml(g.slug)}</span> <span class="proj">${escapeHtml(g.projectName)}</span></h5>`);
-    for (const e of g.events) html.push(renderDispatchEvent(e));
-    html.push(`</div>`);
-  }
-  listEl.innerHTML = html.join('');
-}
-
-function renderDispatchGlobal(events) {
-  const listEl = el('#dispatch-list');
-  if (!events.length) {
-    listEl.innerHTML = `<div class="dispatch-empty">${escapeHtml(t('dashboard.dispatch.empty'))}</div>`;
-    return;
-  }
-  const html = ['<div class="dispatch-thread">'];
-  for (const e of events) {
-    const kindCls = e.kind === 'thread.handoff' ? 'handoff' : e.kind === 'thread.done' ? 'done' : 'blocked';
-    const kindShort = e.kind === 'thread.handoff' ? 'h-o' : e.kind === 'thread.done' ? 'done' : 'blkd';
-    html.push(`<div class="dispatch-event ${kindCls}">`);
-    html.push(`<div class="ts">${fmtTs(e.ts)}</div>`);
-    html.push(`<div class="kind-tag">${kindShort}</div>`);
-    const slugPart = `<span class="slug" style="color:var(--text-secondary)">${escapeHtml(e.threadSlug)}</span>`;
-    if (e.kind === 'thread.handoff') {
-      const from = e.payload.from || '?';
-      const target = e.payload.target || e.payload.resolvedRole || '?';
-      html.push(`<div class="arrow">${slugPart}: ${escapeHtml(from)} → ${escapeHtml(target)}</div>`);
-    } else {
-      html.push(`<div class="arrow">${slugPart}: ${e.kind.replace('thread.', '')}</div>`);
-    }
-    const reason = e.payload.reason || e.payload.summary || e.payload.question || '';
-    html.push(`<div class="reason" title="${escapeHtml(reason)}">${escapeHtml(reason.slice(0, 80))}</div>`);
-    html.push(`</div>`);
-  }
-  html.push(`</div>`);
-  listEl.innerHTML = html.join('');
 }
 
 // ============================== Tab 4: mateTerm (direct chat to a terminal) ==============================
@@ -1497,6 +1589,7 @@ function drawEdge(fromId, toId, nodePos, cls) {
   switchTab(tabFromHash());
   startAutoRefresh();
   setupMatetermWS();
+  setupDispatchWS();
   // [需求@2026-06-12 Phase 2E §14] dashboard 顶栏挂 chip — 全局视图(projectId=null)
   if (window.RuntimeChip) window.RuntimeChip.init({ projectId: null });
   // 首次 tab=control 时也要初始化下拉

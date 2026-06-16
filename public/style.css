@@ -1082,3 +1082,55 @@ main { flex: 1; display: flex; min-height: 0; }
   color: var(--accent);
 }
 .load-more-btn:disabled { opacity: 0.5; cursor: wait; }
+
+/* [需求@2026-06-16 Phase 2H Phase 4] dispatch tab 升级 — 3 区域 + direction icon */
+.ds-section { margin-bottom: 14px; }
+.ds-section h5 {
+  margin: 0 0 6px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.ds-section.ds-processing h5 { color: var(--accent-green); }
+.ds-section.ds-queued h5 { color: var(--accent-yellow); }
+.ds-section.ds-backlog h5 { color: var(--accent); }
+.ds-section.ds-history h5 { color: var(--text-muted); }
+
+.ds-section .ds-row {
+  display: grid;
+  grid-template-columns: 30px 24px minmax(110px, 1fr) 16px minmax(110px, 1fr) 60px minmax(110px, 1fr) minmax(160px, 2fr);
+  gap: 8px;
+  padding: 4px 8px;
+  align-items: center;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--border);
+}
+.ds-section.ds-processing .ds-row { border-left-color: var(--accent-green); background: var(--bg-msg-ok); }
+.ds-section.ds-queued .ds-row { border-left-color: var(--accent-yellow); }
+.ds-section.ds-backlog .ds-row { border-left-color: var(--accent); }
+.ds-section .ds-row:hover { background: var(--bg-card-hover); }
+
+.ds-section .ds-pos {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.ds-section .ds-icon { font-size: 14px; cursor: help; }
+.ds-section .ds-from { color: var(--accent); font-weight: 600; }
+.ds-section .ds-to { color: var(--accent-yellow); font-weight: 600; }
+.ds-section .ds-arrow { color: var(--text-muted); }
+.ds-section .ds-time { color: var(--text-muted); font-size: 10px; }
+.ds-section .ds-thread { color: var(--text-secondary); font-size: 10px; }
+.ds-section .ds-reason {
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* reject 事件 — 红色 */
+.dispatch-event.rejected { border-left: 3px solid var(--accent-red); }
+.dispatch-event.rejected .kind-tag { background: var(--accent-red); color: #fff; }

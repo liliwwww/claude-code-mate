@@ -40,6 +40,64 @@ const PendingSends = require('./PendingSends');
  * @param {number} projectId
  * @returns {number} pendingSendId
  */
+// [需求@2026-06-16 Phase 2H] FIFO channel 语义 — 任何 marker 派到 busy 都直接 queued,
+//   不再走 user 决策路径(原 enqueueBusy 保留为 deprecated alias 兼容)
+function enqueueDispatch({ fromInst, targetInst, targetSpec, reason, handoffText, threadSlug, dispatchChain, projectId }) {
+  // direction 推断:R→H 新请求 / B/C→H callback / H→B/C 下钻 / 其它
+  const fromRoleType = fromInst?.role?.type || 'unknown';
+  const toRoleType = targetInst?.role?.type || 'unknown';
+  let direction = 'unknown';
+  if (fromRoleType === 'requirements' && toRoleType === 'orchestrator') direction = 'new_request';
+  else if ((fromRoleType === 'executor' || fromRoleType === 'validator') && toRoleType === 'orchestrator') direction = 'callback';
+  else if (fromRoleType === 'orchestrator' && (toRoleType === 'executor' || toRoleType === 'validator')) direction = 'down_dispatch';
+  else if (fromRoleType === 'orchestrator' && toRoleType === 'requirements') direction = 'bounce_back';
+
+  const id = PendingSends.enqueue({
+    kind: 'handoff_marker',
+    targetKind: 'instance',
+    targetId: targetInst.id,
+    projectId,
+    payload: {
+      text: handoffText,
+      marker: { kind: 'handoff', target: targetSpec, reason },
+      fromInstanceId: fromInst.id,
+      fromDisplayName: fromInst.displayName,
+      fromRoleName: fromInst.role?.name,
+      fromRoleType,
+      toRoleName: targetInst.role?.name,
+      toRoleType,
+      toDisplayName: targetInst.displayName,
+      direction,
+    },
+    reason: 'busy',
+    status: 'queued',   // FIFO 自动:直接 queued,不再 'waiting_user'
+    dispatchChain,
+    threadSlug,
+    fromInstanceId: fromInst.id,
+  });
+
+  // [Phase 2H Phase 2 events] dispatch.scheduled — 进 queue 时记录,UI 派工时序 tab 渲染
+  bus.publish('dispatch.scheduled', {
+    pendingSendId: id,
+    direction,
+    fromInstanceId: fromInst.id,
+    fromDisplayName: fromInst.displayName,
+    fromRoleType,
+    fromRoleName: fromInst.role?.name,
+    toInstanceId: targetInst.id,
+    toDisplayName: targetInst.displayName,
+    toRoleType,
+    toRoleName: targetInst.role?.name,
+    targetSpec,
+    reason,
+    threadSlug,
+    projectId,
+    ts: Date.now(),
+  });
+  return id;
+}
+
+// 老 API alias(向后兼容 — Phase 2G 调用方还有遗留)
 function enqueueBusy({ fromInst, targetInst, targetSpec, reason, handoffText, threadSlug, dispatchChain, projectId }) {
   const id = PendingSends.enqueue({
     kind: 'handoff_marker',
@@ -174,8 +232,24 @@ async function _tryFlushFor(targetKind, targetId, { dispatchCb }) {
     return null;
   }
 
-  // 成功派发,行不再需要
-  PendingSends.remove(next.id);
+  // [Phase 2H Phase 2] dispatch.started — H 开始处理这条 queue item
+  //   row 不再立即 remove(原 Phase 2G 立删)→ 保留到 dispatch.completed 时再删,
+  //   这样 UI "currently processing" 区域能看到这条
+  const waitMs = Date.now() - next.enqueuedAt;
+  bus.publish('dispatch.started', {
+    pendingSendId: next.id,
+    direction: next.payload?.direction || 'unknown',
+    fromInstanceId: next.fromInstanceId,
+    fromRoleType: next.payload?.fromRoleType,
+    fromDisplayName: next.payload?.fromDisplayName,
+    toInstanceId: next.targetId,
+    toRoleType: next.payload?.toRoleType,
+    toDisplayName: next.payload?.toDisplayName,
+    threadSlug: next.threadSlug,
+    projectId: next.projectId,
+    waitMs,
+    ts: Date.now(),
+  });
   return next;
 }
 
@@ -220,9 +294,11 @@ async function dispatchBacklog(id, { dispatchCb }) {
 }
 
 module.exports = {
-  enqueueBusy,
-  handleUserChoice,
+  enqueueDispatch,  // Phase 2H 主入口
+  enqueueBusy,      // Phase 2G alias(兼容)
+  handleUserChoice, // Phase 2G(busy_prompt 路径,Phase 2H 不再使用但保留 endpoint)
   onInstanceIdle,
   cancelQueued,
   dispatchBacklog,
+  _tryFlushFor,     // export 给 dispatch.completed 后手动触发下一项
 };

@@ -70,6 +70,16 @@ class SpawnManager {
       // 真写 stdin
       // [Phase 2G M1.2] 把 currentTaskSlug 翻成这次要跑的 thread(给 UI 看)
       inst.currentTaskSlug = pendingRow.threadSlug || inst.currentTaskSlug;
+      // [Phase 2H Phase 2] 记录当前 pending send id — result 事件时 dispatch.completed 用
+      inst._currentPendingSend = {
+        id: pendingRow.id,
+        scheduledAt: pendingRow.enqueuedAt,
+        startedAt: Date.now(),
+        direction: pendingRow.payload?.direction || 'unknown',
+        fromInstanceId: pendingRow.fromInstanceId,
+        threadSlug: pendingRow.threadSlug,
+        projectId: pendingRow.projectId,
+      };
       inst.sendUserText(pendingRow.payload.text);
       // 绑 thread
       if (pendingRow.threadSlug && inst.role?.type) {
@@ -281,6 +291,35 @@ class SpawnManager {
       //   不是 'result'。判断要 startsWith,不是 ===。
       // [需求@2026-06-12 §9] 直连模式:不跑 ThreadHooks,不跑 _handleMarkers — 因为没 thread 可挂。
       //   marker 由前端在 assistant 文本里识别后**灰色提示**显示,不触发 side effect。
+      // [Phase 2H Phase 2] result 事件 → dispatch.completed(如果这是 queue flush 派的)
+      //   流程:queueDispatchCb 把 _currentPendingSend 写 inst,等 result 来时这里清并发事件
+      if (isResult(eventType) && inst._currentPendingSend) {
+        const ps = inst._currentPendingSend;
+        const PendingSends = require('./PendingSends');
+        try { PendingSends.remove(ps.id); } catch {}
+        bus.publish('dispatch.completed', {
+          pendingSendId: ps.id,
+          direction: ps.direction,
+          fromInstanceId: ps.fromInstanceId,
+          toInstanceId: inst.id,
+          toDisplayName: inst.displayName,
+          toRoleType: inst.role?.type,
+          threadSlug: ps.threadSlug,
+          projectId: ps.projectId,
+          isError: raw.is_error === true,
+          durationMs: Date.now() - ps.startedAt,
+          totalLatencyMs: Date.now() - ps.scheduledAt,
+          outputTokens: raw.usage?.output_tokens || raw.message?.usage?.output_tokens || 0,
+          ts: Date.now(),
+        });
+        inst._currentPendingSend = null;
+        // 派下一项 — 异步 fire-and-forget(避免阻塞 stream event)
+        setImmediate(() => {
+          QueueDispatcher.onInstanceIdle(inst, { dispatchCb: this._queueDispatchCb })
+            .catch((e) => console.warn(`[SpawnManager] post-completion flush err: ${e.message}`));
+        });
+      }
+
       if (isResult(eventType) && raw.is_error !== true) {
         if (!isDirect && inst.threadSlug) {
           setImmediate(() => {
@@ -534,9 +573,11 @@ class SpawnManager {
     }
     const taggedText = `[Thread: ${threadSlug}]\n\n${finalText}`;
 
-    // [需求@2026-06-15 Phase 2G M1.1] marker handoff 派到 busy 实例 → 不直发,落 queue 等 user 决定
+    // [需求@2026-06-16 Phase 2H] marker handoff 派到 busy 实例 → 直接 enqueue (FIFO 自动派发)
     //   user 派工/mateTerm 直发不进此路径(fromMarker=false)。
-    //   注意:queue 路径下不更新 inst.threadSlug,不 bindInstance,等 flush 时再做。
+    //   channel 语义:任何 marker(R→H 新请求 / B→H callback / H→B 下钻)都进 H 的 stdin queue,
+    //                 FIFO 顺序处理,不弹 user(原 Phase 2G busy_prompt 撤掉)。
+    //   queue 路径下不更新 inst.threadSlug,不 bindInstance,等 flush 时再做。
     if (fromMarker && inst.status === 'busy') {
       const dispatchChain = (() => {
         try {
@@ -544,8 +585,8 @@ class SpawnManager {
           return t?.metadata?.dispatch_chain || [];
         } catch { return []; }
       })();
-      const pendingSendId = QueueDispatcher.enqueueBusy({
-        fromInst: markerFromInst || inst,  // 兜底 inst 本身,但应该总是 markerFromInst
+      const pendingSendId = QueueDispatcher.enqueueDispatch({
+        fromInst: markerFromInst || inst,
         targetInst: inst,
         targetSpec: markerSpec || role.name,
         reason: markerReason || '',
@@ -554,7 +595,6 @@ class SpawnManager {
         dispatchChain,
         projectId,
       });
-      // 返回 inst(caller MarkerDispatcher 仍要它做 WS 元数据),但标记 queued
       inst._queuedPendingSendId = pendingSendId;
       return inst;
     }

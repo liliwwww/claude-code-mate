@@ -57,6 +57,14 @@ function parseMarkerTarget(target) {
  */
 async function handleMarkers(fromInst, markers, { sendToThread }) {
   if (!fromInst.threadSlug) return;
+  // [Phase 2H Phase 3] reject 优先级 — H 处理某条 queue 项时如果拒绝,先 emit reject 信号
+  //   (注意:reject 是对**正在跑的这条 queue 项**说"我不接",而不是对未来的"过滤")
+  const reject = markers.find((m) => m.kind === 'reject');
+  if (reject) {
+    try { _performReject(fromInst, reject.reason, reject.bounceTo); }
+    catch (e) { console.warn(`[MarkerDispatcher] reject marker failed (${fromInst.id}):`, e.message); }
+    return;
+  }
   const done = markers.find((m) => m.kind === 'done');
   if (done) {
     try { _performDone(fromInst, done.summary); }
@@ -301,6 +309,52 @@ function _performBlocked(fromInst, question, severity) {
     severity: severity || 'mid',
     raisedBy: fromInst.role.name,
     thread: ThreadStore.get(fromInst.projectId, fromInst.threadSlug),
+  });
+}
+
+// [需求@2026-06-16 Phase 2H Phase 3] H 拒绝某条 queue item
+//   语义:H 看了 task board snapshot + 新派工内容,判断"跟现有 chain 冲突",emit reject
+//   行为:
+//     1. emit dispatch.rejected event(细粒度日志 + UI 显)
+//     2. dispatch_chain append { kind: 'reject', reason }
+//     3. 不真正 dispatch 给 bounce_to(留 user 处理) — 只记录"H 拒了"+ reason
+function _performReject(fromInst, reason, bounceTo) {
+  // chain append
+  try {
+    const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
+      kind: 'reject',
+      fromRole: fromInst.role.name,
+      fromInstanceId: fromInst.id,
+      reason: (reason || '').slice(0, 200),
+      bounceTo: bounceTo || null,
+    });
+    bus.publish('dispatch.chain_updated', {
+      projectId: fromInst.projectId,
+      threadSlug: fromInst.threadSlug,
+      chain: updated?.metadata?.dispatch_chain || [],
+    });
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] reject chain append failed: ${e.message}`);
+  }
+
+  recordEvent('dispatch.rejected', {
+    fromInstanceId: fromInst.id,
+    fromRoleType: fromInst.role?.type,
+    fromDisplayName: fromInst.displayName,
+    reason,
+    bounceTo,
+  }, { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
+
+  bus.publish('dispatch.rejected', {
+    pendingSendId: fromInst._currentPendingSend?.id || null,
+    projectId: fromInst.projectId,
+    threadSlug: fromInst.threadSlug,
+    fromInstanceId: fromInst.id,
+    fromRoleType: fromInst.role?.type,
+    fromDisplayName: fromInst.displayName,
+    reason,
+    bounceTo,
+    ts: Date.now(),
   });
 }
 
