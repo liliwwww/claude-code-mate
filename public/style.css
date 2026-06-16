@@ -1134,3 +1134,27 @@ main { flex: 1; display: flex; min-height: 0; }
 /* reject 事件 — 红色 */
 .dispatch-event.rejected { border-left: 3px solid var(--accent-red); }
 .dispatch-event.rejected .kind-tag { background: var(--accent-red); color: #fff; }
+
+/* [需求@2026-06-16 Phase 2I] 面包屑 stack depth + pop 反向箭头 */
+#dispatch-breadcrumb .bc-max-depth {
+  color: var(--accent-yellow);
+  font-weight: 600;
+  font-size: 10px;
+  background: var(--bg-card);
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: 4px;
+}
+#dispatch-breadcrumb .bc-pop-sep {
+  color: var(--accent-green);
+  font-weight: 700;
+}
+#dispatch-breadcrumb .bc-reject {
+  color: var(--accent-red);
+  background: var(--bg-msg-error);
+}
+#dispatch-breadcrumb .bc-d1 { opacity: 0.95; }
+#dispatch-breadcrumb .bc-d2 { opacity: 0.85; }
+#dispatch-breadcrumb .bc-d3 { opacity: 0.75; }
+#dispatch-breadcrumb .bc-d4 { opacity: 0.65; }
+#dispatch-breadcrumb .bc-d5 { opacity: 0.55; }

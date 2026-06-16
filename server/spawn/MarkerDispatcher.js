@@ -61,13 +61,13 @@ async function handleMarkers(fromInst, markers, { sendToThread }) {
   //   (注意:reject 是对**正在跑的这条 queue 项**说"我不接",而不是对未来的"过滤")
   const reject = markers.find((m) => m.kind === 'reject');
   if (reject) {
-    try { _performReject(fromInst, reject.reason, reject.bounceTo); }
+    try { _performReject(fromInst, reject.reason, reject.bounceTo, { sendToThread }); }
     catch (e) { console.warn(`[MarkerDispatcher] reject marker failed (${fromInst.id}):`, e.message); }
     return;
   }
   const done = markers.find((m) => m.kind === 'done');
   if (done) {
-    try { _performDone(fromInst, done.summary); }
+    try { _performDone(fromInst, done.summary, { sendToThread }); }
     catch (e) { console.warn(`[MarkerDispatcher] done marker failed (${fromInst.id}):`, e.message); }
     if (markers.length > 1) {
       console.warn(`[MarkerDispatcher] ignoring ${markers.length - 1} subsequent marker(s) after <mate:done /> from ${fromInst.id}`);
@@ -234,36 +234,123 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread }) {
   }
 }
 
-function _performDone(fromInst, summary) {
-  try {
-    ThreadStore.setStage(fromInst.projectId, fromInst.threadSlug, 'verified');
-  } catch (e) {
-    console.warn(`[MarkerDispatcher] setStage verified failed:`, e.message);
+// [需求@2026-06-16 Phase 2I] done 语义重写 — 不再单方面 verified,实现真 call stack pop:
+//   1. 在 dispatch_chain 倒推 fromInst 的 caller(谁派的这一层)
+//   2. 如果 caller 不存在(stack 底) OR caller 是 R(role.type='requirements'):
+//      - 这是 stack 底层的 done → thread 真 verified
+//      - 如果有 R caller,把 summary 当 user_to_role 注入给 R,让 R 跟 user 对接
+//   3. 如果 caller 是 H 或其他池化角色:
+//      - pop 一层,summary 当 user_to_role 注入给 caller,让 caller 继续(很可能 H 收到 B 的 callback)
+//      - thread 不翻 verified,留在 executing 等 R 最终拍板
+function _performDone(fromInst, summary, { sendToThread }) {
+  const projectId = fromInst.projectId;
+  const threadSlug = fromInst.threadSlug;
+  // 取 chain + 倒推 caller
+  const thread = ThreadStore.get(projectId, threadSlug);
+  const chain = thread?.metadata?.dispatch_chain || [];
+  // caller = chain 里最后一个 push fromInst 的 segment 的 fromInstance
+  // 链结构:[{kind:'handoff', fromRole, fromInstanceId, toRole, toInstanceId, ...}, ...]
+  // 找最后一段 toInstanceId === fromInst.id 的(那就是 caller → fromInst 那一 push)
+  let callerInstId = null;
+  let callerRoleType = null;
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const seg = chain[i];
+    if (seg.kind === 'handoff' && seg.toInstanceId === fromInst.id) {
+      callerInstId = seg.fromInstanceId;
+      // 推断 caller role type:从 chain 里找该 instance 第一次出现的 fromRole / toRole
+      // 简化:从 caller 实际实例反查(SpawnManager 内会有 method)
+      callerRoleType = seg.fromRole || null;
+      break;
+    }
   }
-  // [Phase 2G M1.2] append done segment to chain
+
+  // append done segment to chain(无论 pop 还是 terminal)
   try {
-    const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
+    const updated = ThreadStore.appendDispatchChain(projectId, threadSlug, {
       kind: 'done',
       fromRole: fromInst.role.name,
       fromInstanceId: fromInst.id,
       summary: summary || '',
+      callerInstanceId: callerInstId,
+      isTerminal: !callerInstId || callerRoleType === 'mate-R' || callerRoleType === 'requirements',
     });
     bus.publish('dispatch.chain_updated', {
-      projectId: fromInst.projectId,
-      threadSlug: fromInst.threadSlug,
+      projectId, threadSlug,
       chain: updated?.metadata?.dispatch_chain || [],
     });
   } catch (e) {
     console.warn(`[MarkerDispatcher] dispatch_chain done append failed: ${e.message}`);
   }
-  recordEvent('thread.done', { summary, fromInstanceId: fromInst.id },
-    { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
-  bus.publish('thread.done', {
-    projectId: fromInst.projectId,
-    threadSlug: fromInst.threadSlug,
-    summary,
-    thread: ThreadStore.get(fromInst.projectId, fromInst.threadSlug),
-  });
+
+  recordEvent('thread.done', { summary, fromInstanceId: fromInst.id, callerInstanceId: callerInstId },
+    { projectId, threadSlug });
+
+  // 判 terminal 还是 pop:
+  // - 没 caller(stack 底层 R 自己 done)→ terminal
+  // - caller role 是 requirements(R)→ terminal,且要给 R 注入 summary 让它告诉 user
+  // - 其它(caller 是 H 或 B/C)→ pop,自动注入 callback message 给 caller
+  const isTerminalDone = !callerInstId || callerRoleType === 'mate-R' || callerRoleType === 'requirements';
+
+  if (isTerminalDone) {
+    // R 在 stack 底 emit done(或者根本没 caller)= 真 verified
+    try { ThreadStore.setStage(projectId, threadSlug, 'verified'); } catch (e) {
+      console.warn(`[MarkerDispatcher] setStage verified failed:`, e.message);
+    }
+    // 如果 caller 是 R,把 summary 也送给 R 让它跟 user 翻译(可选,R 可能没 instance 在)
+    if (callerInstId && callerRoleType === 'requirements' && sendToThread) {
+      try {
+        const project = require('../db').stmts.getProject.get(projectId);
+        if (project) {
+          sendToThread({
+            projectId, projectRootDir: project.root_dir, threadSlug,
+            text: `[<delegate ${fromInst.displayName} done>] ${summary || '(no summary)'}\n\nYour delegated task chain finished. Above is the summary returned by ${fromInst.role.name}. Translate this result to the user and confirm whether they're satisfied — if so, emit <mate:done summary="...for user..." /> to close the thread.`,
+            roleType: 'requirements',
+            fromMarker: true,
+            markerFromInst: fromInst,
+            markerSpec: 'mate-R',
+            markerReason: 'callback-after-delegate-done',
+          });
+        }
+      } catch (e) {
+        console.warn(`[MarkerDispatcher] terminal-done R-notify failed:`, e.message);
+      }
+    }
+    bus.publish('thread.done', {
+      projectId, threadSlug, summary,
+      isTerminal: true,
+      thread: ThreadStore.get(projectId, threadSlug),
+    });
+    return;
+  }
+
+  // POP — caller 是 H 或其他池化角色,送 summary 给 caller 让它继续
+  if (sendToThread) {
+    try {
+      const project = require('../db').stmts.getProject.get(projectId);
+      if (project) {
+        sendToThread({
+          projectId, projectRootDir: project.root_dir, threadSlug,
+          text: `[<callback from ${fromInst.displayName}>] ${summary || '(no summary)'}\n\nYour delegated sub-work returned with the above summary. Per the H Verification Protocol, you MUST verify the claim before accepting:\n- Use Read / Grep / Bash to spot-check the key claims\n- If verified ✅ → emit <mate:done summary="..." /> with evidence pointers (pop to caller)\n- If partial ⚠️ → handoff back to ${fromInst.displayName} with specifics of what's missing\n- If failed ❌ (hallucination) → handoff back to redo, or <mate:reject reason="..." bounce_to="mate-R" />`,
+          roleType: callerRoleType === 'mate-H' ? 'orchestrator' : 'orchestrator',  // 默认 H,后续可扩展
+          fromMarker: true,
+          markerFromInst: fromInst,
+          markerSpec: callerInstId,
+          markerReason: 'callback-from-delegate',
+        });
+        bus.publish('dispatch.popped', {
+          projectId, threadSlug,
+          fromInstanceId: fromInst.id,
+          fromDisplayName: fromInst.displayName,
+          fromRoleType: fromInst.role.type,
+          toInstanceId: callerInstId,
+          summary,
+          ts: Date.now(),
+        });
+      }
+    } catch (e) {
+      console.warn(`[MarkerDispatcher] pop callback to ${callerInstId} failed:`, e.message);
+    }
+  }
 }
 
 function _performBlocked(fromInst, question, severity) {
@@ -318,7 +405,7 @@ function _performBlocked(fromInst, question, severity) {
 //     1. emit dispatch.rejected event(细粒度日志 + UI 显)
 //     2. dispatch_chain append { kind: 'reject', reason }
 //     3. 不真正 dispatch 给 bounce_to(留 user 处理) — 只记录"H 拒了"+ reason
-function _performReject(fromInst, reason, bounceTo) {
+function _performReject(fromInst, reason, bounceTo, { sendToThread } = {}) {
   // chain append
   try {
     const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
@@ -356,6 +443,32 @@ function _performReject(fromInst, reason, bounceTo) {
     bounceTo,
     ts: Date.now(),
   });
+
+  // [Phase 2I] bounce_to 真路由 — 如果 H reject + bounce_to="mate-R",
+  //   把 "rejection notice" 送给 R 让 R 跟 user 讨论 re-plan
+  if (bounceTo && sendToThread) {
+    try {
+      const bounceRole = bounceTo.replace(/^mate-/, '').toLowerCase();
+      const roleTypeMap = { r: 'requirements', h: 'orchestrator', b: 'executor', c: 'validator' };
+      const targetRoleType = roleTypeMap[bounceRole.charAt(0)] || 'requirements';
+      const project = require('../db').stmts.getProject.get(fromInst.projectId);
+      if (project) {
+        sendToThread({
+          projectId: fromInst.projectId,
+          projectRootDir: project.root_dir,
+          threadSlug: fromInst.threadSlug,
+          text: `[<rejection from ${fromInst.displayName}>] Reason: ${reason || '(unspecified)'}\n\nH rejected the previous task chain. You're being asked to re-plan or escalate to user. Discuss with the user what to do next, then issue a fresh handoff if needed.`,
+          roleType: targetRoleType,
+          fromMarker: true,
+          markerFromInst: fromInst,
+          markerSpec: bounceTo,
+          markerReason: `bounce-back-from-reject`,
+        });
+      }
+    } catch (e) {
+      console.warn(`[MarkerDispatcher] reject bounce_to ${bounceTo} routing failed:`, e.message);
+    }
+  }
 }
 
 module.exports = { handleMarkers, parseMarkerTarget };

@@ -1023,6 +1023,15 @@ function handleWsMsg({ type, payload }) {
     if (payload.threadSlug === state.focusedSlug) {
       renderBreadcrumb();
     }
+  } else if (type === 'dispatch.popped') {
+    // [Phase 2I] H/B/C emit done 时 mate auto-callback 给 caller,UI 给出反向箭头提示
+    if (payload.projectId !== state.activeProjectId) return;
+    const fromName = payload.fromDisplayName || payload.fromInstanceId || '?';
+    pushTickerEvent('done', `↑ ${fromName} done → callback`);
+  } else if (type === 'thread.done' && payload.isTerminal) {
+    // [Phase 2I] thread 真 verified(R 在 stack 底 emit done)
+    if (payload.projectId !== state.activeProjectId) return;
+    pushTickerEvent('done', `🎉 ${payload.threadSlug} TERMINAL DONE (R confirmed)`);
   }
 }
 
@@ -1116,8 +1125,10 @@ function renderBreadcrumb() {
   }
   const chain = t2?.metadata?.dispatch_chain || [];
   if (!chain.length) { host.innerHTML = ''; host.hidden = true; return; }
-  // 折叠相邻同 instanceId
+  // [Phase 2I] 折叠相邻同 instanceId + 跟踪 stack depth(push 加深,done 减深)
   const collapsed = [];
+  let depth = 0;
+  let maxDepth = 0;
   for (const seg of chain) {
     const last = collapsed[collapsed.length - 1];
     if (last && last.instanceId && last.instanceId === (seg.toInstanceId || seg.fromInstanceId)) {
@@ -1125,30 +1136,45 @@ function renderBreadcrumb() {
       continue;
     }
     if (seg.kind === 'handoff') {
+      depth++;
+      maxDepth = Math.max(maxDepth, depth);
       collapsed.push({
         kind: 'handoff',
         label: seg.toDisplayName || seg.toInstanceId || seg.toRole,
         instanceId: seg.toInstanceId,
+        depth,
         ts: seg.ts,
       });
     } else if (seg.kind === 'done') {
-      collapsed.push({ kind: 'done', label: '✓', ts: seg.ts });
+      // [Phase 2I] done = pop;depth -1;visual 用反向箭头标识
+      const isTerminal = seg.isTerminal;
+      collapsed.push({
+        kind: 'done',
+        label: isTerminal ? '🎉' : '✓↑',
+        depth,
+        ts: seg.ts,
+        isTerminal,
+      });
+      if (!isTerminal) depth = Math.max(0, depth - 1);
     } else if (seg.kind === 'blocked') {
-      collapsed.push({ kind: 'blocked', label: '⚠', ts: seg.ts });
+      collapsed.push({ kind: 'blocked', label: '⚠', depth, ts: seg.ts });
+    } else if (seg.kind === 'reject') {
+      collapsed.push({ kind: 'reject', label: '✗', depth, ts: seg.ts });
     }
   }
   // 第一段如果没有,加 fromRole 起点
   if (chain.length && collapsed.length) {
     const firstSeg = chain[0];
     if (firstSeg.fromRole && firstSeg.fromInstanceId !== collapsed[0].instanceId) {
-      collapsed.unshift({ kind: 'start', label: firstSeg.fromRole, instanceId: firstSeg.fromInstanceId });
+      collapsed.unshift({ kind: 'start', label: firstSeg.fromRole, instanceId: firstSeg.fromInstanceId, depth: 0 });
     }
   }
-  const html = `<span class="bc-label">${t('breadcrumb.label')}:</span>` + collapsed.map((c, i) => {
-    const sep = i > 0 ? '<span class="bc-sep">→</span>' : '';
-    const cls = `bc-seg bc-${c.kind}`;
+  const depthBadge = maxDepth > 0 ? `<span class="bc-max-depth" title="max stack depth">[${maxDepth}]</span>` : '';
+  const html = `<span class="bc-label">${t('breadcrumb.label')}:</span>${depthBadge}` + collapsed.map((c, i) => {
+    const sep = i > 0 ? (c.kind === 'done' ? '<span class="bc-sep bc-pop-sep">↑</span>' : '<span class="bc-sep">→</span>') : '';
+    const cls = `bc-seg bc-${c.kind}` + (c.depth ? ` bc-d${Math.min(c.depth, 5)}` : '');
     const repeat = c.repeat ? `<span class="bc-repeat">× ${c.repeat}</span>` : '';
-    return `${sep}<span class="${cls}" title="${escapeHtml(c.instanceId || '')}">${escapeHtml(c.label)}${repeat}</span>`;
+    return `${sep}<span class="${cls}" title="${escapeHtml(c.instanceId || '')} (depth ${c.depth || 0})">${escapeHtml(c.label)}${repeat}</span>`;
   }).join('');
   host.innerHTML = html;
   host.hidden = false;
