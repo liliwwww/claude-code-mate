@@ -22,7 +22,10 @@
 //
 // [arch §1.2 ✅ 2026-06-13] 从 SpawnManager 抽出,SpawnManager 仅做 wiring。
 
-const { RoleInstance } = require('./RoleInstance');
+// [需求@2026-06-17 E2E] mock 切换跟 SpawnManager 同源
+const { RoleInstance: RealRoleInstance } = require('./RoleInstance');
+const { MockRoleInstance } = require('./MockRoleInstance');
+const RoleInstance = process.env.MATE_MOCK_TERMS === '1' ? MockRoleInstance : RealRoleInstance;
 const bus = require('../messageBus');
 const { recordEvent } = require('../db');
 

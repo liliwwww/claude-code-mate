@@ -42,6 +42,17 @@ function requireProjectId(req, res, next) {
 function buildRouter() {
   const r = express.Router();
 
+  // [需求@2026-06-17 E2E] 测试专用 API,只在 MATE_MOCK_TERMS=1 时启用
+  try {
+    const { mountTestApi } = require('./testApi');
+    mountTestApi(r, { spawnManager });
+  } catch (e) {
+    // testApi 可选 — 不存在不影响生产
+    if (process.env.MATE_MOCK_TERMS === '1') {
+      console.error('[buildRouter] testApi mount failed:', e.message);
+    }
+  }
+
   // ---------------- Runtime snapshot (Phase 2E §14 chip) ----------------
   // [需求@2026-06-12 Phase 2E §14] chip + popover 数据源
   //   GET /api/runtime/snapshot?projectId=N  →  {

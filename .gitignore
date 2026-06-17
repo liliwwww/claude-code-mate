@@ -45,3 +45,7 @@ spike-*/
 
 # release notes scratch files
 .release-notes-*.md
+
+# E2E test artifacts
+test-results/
+playwright-report/

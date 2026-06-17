@@ -381,6 +381,11 @@ function _performBlocked(fromInst, question, severity) {
     ts: Date.now(),
     raisedBy: fromInst.role.name,
   };
+  // [bug@2026-06-17] 直接在 marker 处设路由字段 — 不等 SystemAgent.generateReplyTemplate
+  //   (SystemAgent 是 LLM 调用,mock/快速场景下不走;且 blocked marker 本身就是
+  //   "明确的 user 问题",不需要 LLM 再判一次)
+  meta.has_pending_question = true;
+  meta.last_questioner_role_type = fromInst.role?.type || null;
   try {
     db.prepare(`UPDATE threads SET metadata_json = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
       .run(JSON.stringify(meta), Date.now(), fromInst.projectId, fromInst.threadSlug);

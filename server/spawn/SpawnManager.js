@@ -37,7 +37,16 @@
 //   spawnInstance / listInstances / acquire 都按 (projectId, roleName) 二元组绑定;
 //   全局 cap 在 config.globalMaxClaudeProcesses 控制(Phase 2D 实施)。
 
-const { RoleInstance } = require('./RoleInstance');
+// [需求@2026-06-17 E2E] MATE_MOCK_TERMS=1 用 MockRoleInstance 替代真 claude
+//   测试模式,所有 spawn 都不开真子进程,按预设脚本回响。
+//   保留同接口,SpawnManager 其它代码无需感知。
+const { RoleInstance: RealRoleInstance } = require('./RoleInstance');
+const { MockRoleInstance } = require('./MockRoleInstance');
+const USE_MOCK_TERMS = process.env.MATE_MOCK_TERMS === '1';
+const RoleInstance = USE_MOCK_TERMS ? MockRoleInstance : RealRoleInstance;
+if (USE_MOCK_TERMS) {
+  console.log('[SpawnManager] MATE_MOCK_TERMS=1 → using MockRoleInstance (E2E test mode)');
+}
 const roleCatalog = require('../roles/RoleCatalog');
 const bus = require('../messageBus');
 const config = require('../config');

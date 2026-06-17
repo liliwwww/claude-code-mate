@@ -38,7 +38,13 @@
     "probe": "echo \"run probes individually: node probe/<id>.js\"",
     "test": "node tests/runner.js",
     "test:integration": "node tests/runner.js --integration",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:ui": "playwright test --ui",
     "syntax-check": "node -e \"const fs=require('fs'); const path=require('path'); function walk(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){const p=path.join(d,e.name); if(e.isDirectory()) walk(p); else if(p.endsWith('.js')) require('child_process').execSync('node --check \\\"'+p+'\\\"');}} walk('server'); walk('probe'); walk('tests'); console.log('all .js files parse OK');\""
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.0"
   },
   "engines": {
     "node": ">=18"

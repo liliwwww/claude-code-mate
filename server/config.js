@@ -56,7 +56,8 @@ const config = {
     rolesDir: path.join(ROOT, 'roles'),
     dataDir: path.join(ROOT, 'data'),
     snapshotsDir: path.join(ROOT, 'data', 'snapshots'),
-    sqlite: path.join(ROOT, 'data', 'mate.sqlite'),
+    // [需求@2026-06-17 E2E] MATE_DB 环境变量覆盖 sqlite 路径,给 E2E 测试用独立 db
+    sqlite: process.env.MATE_DB || path.join(ROOT, 'data', 'mate.sqlite'),
     runlogDir: path.join(ROOT, 'data', 'runlog'),
   },
 
