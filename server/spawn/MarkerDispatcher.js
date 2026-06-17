@@ -26,6 +26,8 @@ const { db, recordEvent, stmts } = require('../db');
 const ThreadStore = require('../threads/ThreadStore');
 const roleCatalog = require('../roles/RoleCatalog');
 const HandoffTracker = require('./HandoffTracker');
+// [Phase 3.2 @2026-06-17] 栈 SSOT — handoff/done/blocked/reject 同步更新栈
+const TCS = require('../threads/ThreadCallStack');
 
 const STAGE_BY_TARGET_TYPE = {
   orchestrator: 'designing',
@@ -33,6 +35,49 @@ const STAGE_BY_TARGET_TYPE = {
   validator: 'testing',
   requirements: 'discussing',
 };
+
+// [Phase 3.2 @2026-06-17] role.type → TCS RoleType 映射
+const ROLE_TYPE_TO_TCS = {
+  requirements: TCS.RoleType.R,
+  orchestrator: TCS.RoleType.H,
+  executor:     TCS.RoleType.B,
+  validator:    TCS.RoleType.C,
+};
+
+// 安全更新栈:load → mutate → save + 栈派生 stage 写 DB(Phase 3.4)
+// 任何错误 catch + warn,不阻塞主流程
+function _updateStack(projectId, threadSlug, mutator) {
+  try {
+    const stack = TCS.load(projectId, threadSlug) || TCS.createStack();
+    mutator(stack);
+    TCS.save(projectId, threadSlug, stack);
+    // [Phase 3.4 @2026-06-17] 栈派生 stage,写 threads.stage 字段
+    //   栈空 + outcome=verified → verified
+    //   栈空 + outcome=aborted → aborted
+    //   栈非空 → 看栈顶 role 推 designing/executing/testing/discussing
+    try {
+      const outcomeRow = db.prepare(`SELECT outcome FROM threads WHERE project_id = ? AND slug = ?`).get(projectId, threadSlug);
+      const derived = TCS.deriveStage(stack, outcomeRow?.outcome || null);
+      db.prepare(`UPDATE threads SET stage = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
+        .run(derived, Date.now(), projectId, threadSlug);
+    } catch (e) {
+      console.warn(`[MarkerDispatcher] derive stage write failed: ${e.message}`);
+    }
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] stack update failed for ${threadSlug}: ${e.message}`);
+  }
+}
+
+function _frameFromInst(inst, role) {
+  return TCS.createFrame({
+    role: ROLE_TYPE_TO_TCS[inst.role?.type || role?.type] || TCS.RoleType.H,
+    slot: inst.poolSlot || (inst.role?.type === 'orchestrator' ? 1 : null),
+    instanceId: inst.id,
+    sessionId: inst.sessionId || null,
+    boundThread: inst.threadSlug || null,
+    status: TCS.FrameStatus.RUNNING,
+  });
+}
 
 /**
  * 解析 marker target:"execB" → {roleName:'execB', poolSlot:null};
@@ -182,6 +227,42 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread }) {
     return;
   }
 
+  // [Phase 3.2 @2026-06-17] 栈双写 — handoff = push/pop/bounce 三种语义
+  //   - B/C → H = callback: pop B/C(子工返回)
+  //   - H → R = bounce: pop H + 替换栈底 R
+  //   - 其它 push down (R→H 或 H→B/C): push to-frame
+  _updateStack(fromInst.projectId, fromInst.threadSlug, (stack) => {
+    const fromTcsType = ROLE_TYPE_TO_TCS[fromInst.role?.type];
+    const toTcsType = ROLE_TYPE_TO_TCS[targetRole?.type];
+    const isCallback = (fromTcsType === TCS.RoleType.B || fromTcsType === TCS.RoleType.C)
+                       && toTcsType === TCS.RoleType.H;
+    const isBounce = fromTcsType === TCS.RoleType.H && toTcsType === TCS.RoleType.R;
+    if (isCallback) {
+      TCS.pop(stack); // B/C 弹栈
+    } else if (isBounce) {
+      TCS.pop(stack); // 弹 H
+      // 替换栈底 R(可能 R 实例 id 变了)
+      const newR = TCS.createFrame({
+        role: TCS.RoleType.R,
+        instanceId: inst.id,
+        sessionId: inst.sessionId || null,
+        boundThread: fromInst.threadSlug,
+        status: TCS.FrameStatus.RUNNING,
+      });
+      if (TCS.isEmpty(stack)) TCS.push(stack, newR);
+      else stack.frames[0] = newR;
+    } else {
+      // push down
+      // 栈空就先 push from(自愈)
+      const topInstId = TCS.peek(stack)?.instanceId;
+      if (TCS.isEmpty(stack) || topInstId !== fromInst.id) {
+        TCS.push(stack, _frameFromInst(fromInst));
+      }
+      // push to
+      TCS.push(stack, _frameFromInst(inst, targetRole));
+    }
+  });
+
   // [需求@2026-06-15 Phase 2G M1.2] dispatch_chain 追加段
   try {
     const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
@@ -248,13 +329,7 @@ function _performDone(fromInst, summary, { sendToThread }) {
   // 取 chain + 倒推 caller
   const thread = ThreadStore.get(projectId, threadSlug);
   const chain = thread?.metadata?.dispatch_chain || [];
-  // [bug@2026-06-16] caller 查找必须跳过 callback handoff
-  //   chain 里 toInstanceId===fromInst.id 的段有两种:
-  //     ① 原始派工(把 fromInst 推上栈)— 比如 R→H 或 H→B,这才是 caller
-  //     ② callback(子工返回给 fromInst)— B/C→H,fromInst 是接受方,不是被推
-  //   原算法取"最后一段 to=me",会把 callback 当 caller。
-  //   后果:H done 时 caller 被识为 B,POP 分支送 msg 回 H 自己,H 又跑一轮 done,死循环。
-  //   修:fromType 是 executor/validator 且 toType 是 orchestrator → callback,跳过。
+
   function _inferRoleType(name) {
     if (!name) return null;
     const n = String(name).toLowerCase();
@@ -264,20 +339,76 @@ function _performDone(fromInst, summary, { sendToThread }) {
     if (n.includes('mate-c') || n.includes('validator')) return 'validator';
     return null;
   }
+
+  // [Phase 3.1 @2026-06-17] caller 查找优先用栈派生(thread.call_stack_json),
+  //   栈空/缺失/找不到 fromInst 时 fallback 老算法(反向扫 chain 跳 callback)
+  //   栈视图下:fromInst 在栈某层,下一层就是 caller frame。
+  //   这是把 770ec88 修的反向扫漏洞彻底封死的最终解 — RFC 栈模型 SSOT。
   let callerInstId = null;
   let callerRoleType = null;
-  for (let i = chain.length - 1; i >= 0; i--) {
-    const seg = chain[i];
-    if (seg.kind !== 'handoff') continue;
-    if (seg.toInstanceId !== fromInst.id) continue;
-    const fromType = _inferRoleType(seg.fromRole);
-    const toType = _inferRoleType(seg.toRole);
-    const isCallback = (fromType === 'executor' || fromType === 'validator') && toType === 'orchestrator';
-    if (isCallback) continue;  // 跳过子工 callback,继续找真正的 push
-    callerInstId = seg.fromInstanceId;
-    callerRoleType = seg.fromRole || null;
-    break;
+  let usedStackLookup = false;
+  try {
+    const stackJson = thread?.call_stack_json;
+    if (stackJson) {
+      const stack = JSON.parse(stackJson);
+      const frames = Array.isArray(stack?.frames) ? stack.frames : [];
+      // 找 fromInst.id 所在位置(从顶往下扫,优先栈顶 — 最近一次 push)
+      let idx = -1;
+      for (let i = frames.length - 1; i >= 0; i--) {
+        if (frames[i].instanceId === fromInst.id) { idx = i; break; }
+      }
+      if (idx > 0) {
+        const callerFrame = frames[idx - 1];
+        // 把 frame.role(R/H/B/C)翻成 callerRoleType 字符串 mate-X
+        const roleMap = { R: 'mate-R', H: 'mate-H', B: 'mate-B', C: 'mate-C' };
+        callerInstId = callerFrame.instanceId;
+        callerRoleType = roleMap[callerFrame.role] || null;
+        usedStackLookup = true;
+      } else if (idx === 0) {
+        // fromInst 是栈底(通常是 R 自己),没 caller
+        usedStackLookup = true;  // 也算"用栈成功",caller = null = terminal
+      }
+    }
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] stack-lookup caller failed: ${e.message}, fallback to chain reverse-scan`);
   }
+
+  // Fallback: 反向扫 chain 跳 callback(770ec88 算法)
+  if (!usedStackLookup) {
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const seg = chain[i];
+      if (seg.kind !== 'handoff') continue;
+      if (seg.toInstanceId !== fromInst.id) continue;
+      const fromType = _inferRoleType(seg.fromRole);
+      const toType = _inferRoleType(seg.toRole);
+      const isCallback = (fromType === 'executor' || fromType === 'validator') && toType === 'orchestrator';
+      if (isCallback) continue;
+      callerInstId = seg.fromInstanceId;
+      callerRoleType = seg.fromRole || null;
+      break;
+    }
+  }
+
+  // 判 terminal — caller 是 R 或没 caller
+  const isTerminalDoneEarly = !callerInstId || callerRoleType === 'mate-R' || callerRoleType === 'requirements';
+
+  // [Phase 3.2 @2026-06-17] 栈双写 — done = pop frame
+  //   terminal: 整栈清空 + outcome=verified
+  //   非 terminal: 弹自己一层
+  _updateStack(projectId, threadSlug, (stack) => {
+    if (isTerminalDoneEarly) {
+      stack.frames.length = 0;
+      // outcome 设栈外字段(threads.outcome 列)— 用 ThreadStore 同步落
+    } else {
+      // pop self(找到自己再弹)
+      const idx = stack.frames.findIndex((f) => f.instanceId === fromInst.id);
+      if (idx >= 0) {
+        stack.frames.splice(idx); // 从 idx 起全弹(包括自己)
+      } else {
+        TCS.pop(stack); // 没找到 fallback 弹栈顶
+      }
+    }
+  });
 
   // append done segment to chain(无论 pop 还是 terminal)
   try {
@@ -287,7 +418,7 @@ function _performDone(fromInst, summary, { sendToThread }) {
       fromInstanceId: fromInst.id,
       summary: summary || '',
       callerInstanceId: callerInstId,
-      isTerminal: !callerInstId || callerRoleType === 'mate-R' || callerRoleType === 'requirements',
+      isTerminal: isTerminalDoneEarly,
     });
     bus.publish('dispatch.chain_updated', {
       projectId, threadSlug,
@@ -304,13 +435,18 @@ function _performDone(fromInst, summary, { sendToThread }) {
   // - 没 caller(stack 底层 R 自己 done)→ terminal
   // - caller role 是 requirements(R)→ terminal,且要给 R 注入 summary 让它告诉 user
   // - 其它(caller 是 H 或 B/C)→ pop,自动注入 callback message 给 caller
-  const isTerminalDone = !callerInstId || callerRoleType === 'mate-R' || callerRoleType === 'requirements';
+  const isTerminalDone = isTerminalDoneEarly;
 
   if (isTerminalDone) {
     // R 在 stack 底 emit done(或者根本没 caller)= 真 verified
     try { ThreadStore.setStage(projectId, threadSlug, 'verified'); } catch (e) {
       console.warn(`[MarkerDispatcher] setStage verified failed:`, e.message);
     }
+    // [Phase 3.2 @2026-06-17] outcome 字段也写(栈空 + verified)
+    try {
+      db.prepare(`UPDATE threads SET outcome = 'verified', updated_at = ? WHERE project_id = ? AND slug = ?`)
+        .run(Date.now(), projectId, threadSlug);
+    } catch (e) { console.warn(`[MarkerDispatcher] outcome write failed: ${e.message}`); }
     // 如果 caller 是 R,把 summary 也送给 R 让它跟 user 翻译(可选,R 可能没 instance 在)
     if (callerInstId && callerRoleType === 'requirements' && sendToThread) {
       try {
@@ -393,6 +529,17 @@ function _performBlocked(fromInst, question, severity) {
     console.warn(`[MarkerDispatcher] blocked metadata persist failed:`, e.message);
     return;
   }
+  // [Phase 3.2 @2026-06-17] 栈双写 — blocked = 栈顶 frame 状态 blocked + pending_question
+  _updateStack(fromInst.projectId, fromInst.threadSlug, (stack) => {
+    // 找到 fromInst 那一帧(应该是栈顶),设 blocked
+    const idx = stack.frames.findIndex((f) => f.instanceId === fromInst.id);
+    const frame = idx >= 0 ? stack.frames[idx] : TCS.peek(stack);
+    if (frame) {
+      frame.status = TCS.FrameStatus.BLOCKED;
+      frame.pendingQuestion = question || null;
+      frame.pendingQuestionMeta = { severity: severity || 'mid' };
+    }
+  });
   // [Phase 2G M1.2] append blocked segment to chain
   try {
     const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
@@ -429,6 +576,23 @@ function _performBlocked(fromInst, question, severity) {
 //     2. dispatch_chain append { kind: 'reject', reason }
 //     3. 不真正 dispatch 给 bounce_to(留 user 处理) — 只记录"H 拒了"+ reason
 function _performReject(fromInst, reason, bounceTo, { sendToThread } = {}) {
+  // [Phase 3.2 @2026-06-17] 栈双写 — reject = pop self
+  _updateStack(fromInst.projectId, fromInst.threadSlug, (stack) => {
+    const idx = stack.frames.findIndex((f) => f.instanceId === fromInst.id);
+    if (idx >= 0) {
+      stack.frames.splice(idx);
+    } else {
+      TCS.pop(stack);
+    }
+    if (TCS.isEmpty(stack)) {
+      // 整栈被弹空 → outcome=aborted
+      try {
+        db.prepare(`UPDATE threads SET outcome = 'aborted', updated_at = ? WHERE project_id = ? AND slug = ?`)
+          .run(Date.now(), fromInst.projectId, fromInst.threadSlug);
+      } catch {}
+    }
+  });
+
   // chain append
   try {
     const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {

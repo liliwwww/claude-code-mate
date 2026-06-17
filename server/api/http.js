@@ -682,7 +682,26 @@ function buildRouter() {
       const ThreadStore = require('../threads/ThreadStore');
       const thread = ThreadStore.get(req.project.id, req.params.slug);
       let roleType = 'requirements';
-      if (thread?.metadata?.has_pending_question && thread.metadata?.last_questioner_role_type) {
+      // [Phase 3.5 @2026-06-17] 路由优先用栈派生:栈顶 frame.status=blocked → 路由到该 frame 角色
+      //   fallback 老 metadata 字段(向后兼容老 thread)
+      let routedFromStack = false;
+      try {
+        const TCS = require('../threads/ThreadCallStack');
+        const stack = TCS.load(req.project.id, req.params.slug);
+        if (stack && !TCS.isEmpty(stack)) {
+          const top = TCS.peek(stack);
+          if (top?.status === TCS.FrameStatus.BLOCKED) {
+            const roleMap = { R: 'requirements', H: 'orchestrator' };
+            const rt = roleMap[top.role];
+            if (rt) {
+              roleType = rt;
+              routedFromStack = true;
+            }
+          }
+        }
+      } catch (e) { /* fallback below */ }
+
+      if (!routedFromStack && thread?.metadata?.has_pending_question && thread.metadata?.last_questioner_role_type) {
         // execB/testC 不直接问 user(它们的 question 已经走 handoff 到 H)
         // 所以这里 last_questioner_role_type 只可能是 'requirements' 或 'orchestrator'
         const lq = thread.metadata.last_questioner_role_type;
