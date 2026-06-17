@@ -8,7 +8,7 @@
 
 const { test, expect } = require('@playwright/test');
 const { BASE, injectScripts, resetTestState, getTestState, waitFor, waitForThreadStage } = require('./fixtures/helpers');
-const { hBounce } = require('./fixtures/scripts');
+const { hBounce, hBounceNew } = require('./fixtures/scripts');
 
 test.describe('bounce: H → R 弹回', () => {
   test.beforeEach(async () => {
@@ -50,5 +50,35 @@ test.describe('bounce: H → R 弹回', () => {
     expect(handoffSegs.some((s) => s.fromRole === 'mate-H' && s.toRole === 'mate-R')).toBe(true);
     // 必有 H→B 段(refine 之后才有)
     expect(handoffSegs.some((s) => s.fromRole === 'mate-H' && s.toRole === 'mate-B')).toBe(true);
+  });
+
+  // [Phase 4 @2026-06-17] 新 <mate:bounce> 语法跑通
+  test('Phase 4 新协议:<mate:bounce> 替代 handoff target=mate-R 跑通', async () => {
+    await resetTestState();
+    await injectScripts(hBounceNew);
+
+    const slug = (await (await fetch(`${BASE}/api/threads?projectId=1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'bounce v2' }),
+    })).json()).slug;
+
+    await fetch(`${BASE}/api/threads/${slug}/message?projectId=1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'please dispatch this work' }),
+    });
+
+    await waitFor(async () => {
+      const r = await (await fetch(`${BASE}/api/threads/${slug}?projectId=1`)).json();
+      const chain = r.metadata?.dispatch_chain || [];
+      return chain.some((s) => s.kind === 'handoff' && s.fromRole === 'mate-H' && s.toRole === 'mate-R');
+    }, { timeoutMs: 10_000, label: 'H→R bounce 段(新协议)出现' });
+
+    await waitForThreadStage(slug, 'verified', { timeoutMs: 15_000 });
+
+    const r = await (await fetch(`${BASE}/api/threads/${slug}?projectId=1`)).json();
+    expect(r.stage).toBe('verified');
+    console.log('   新协议 chain segments:', r.metadata.dispatch_chain.length);
   });
 });

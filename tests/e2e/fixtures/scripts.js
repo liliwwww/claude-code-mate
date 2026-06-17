@@ -218,9 +218,28 @@ const hBounce = {
   ],
 };
 
+// [Phase 4 @2026-06-17] 新 bounce 协议(<mate:bounce> 替代 target=mate-R)
+const hBounceNew = {
+  ...hBounce,
+  'mate-H': hBounce['mate-H'].map((s) => {
+    // 第 3 条是 generic R-handoff → bounce,改成新 <mate:bounce> 语法
+    if (typeof s.match === 'string' && s.match.includes('Thread handoff from mate-R')) {
+      return {
+        ...s,
+        emit: [
+          { type: 'assistant', text: 'need more clarification from R', marker: '<mate:bounce reason="ambiguous scope" />' },
+          { type: 'result_success' },
+        ],
+      };
+    }
+    return s;
+  }),
+};
+
 module.exports = {
   happyPath,
   hBlocked,
   hReject,
   hBounce,
+  hBounceNew,
 };

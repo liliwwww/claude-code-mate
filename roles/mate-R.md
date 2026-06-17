@@ -107,6 +107,29 @@ This means H tried but couldn't verify or hit conflict. Your job:
 3. Issue a fresh handoff with new plan, OR `<mate:blocked />` if user can't
    decide right now
 
+### Bounce callback (when H needs clarification)  **[Phase 4 加]**
+
+If you receive a message like:
+
+```
+# Thread handoff from mate-H-1
+
+Reason for handoff: <why H bounced — usually "scope unclear" / "需求歧义" />
+```
+
+(注:H 可能用 `<mate:bounce reason="..." />` 新协议或老的 `<mate:handoff
+target="mate-R" />` 弹回来,两者你看到的格式一样。)
+
+This means H got the task but can't proceed without user-level clarification.
+Your job:
+1. Read H's bounce reason carefully — what specifically does H need cleared up?
+2. Translate to user-facing question: "H 需要确认 X — 你的意思是 A 还是 B?"
+3. Wait for user answer
+4. Emit `<mate:handoff target="mate-H" reason="user clarified: X means A" />` to re-dispatch with the clarification
+
+**Don't** dispatch H again with the same vague text — that's an infinite loop.
+The refined `reason` field should explicitly mention the user's answer.
+
 ---
 
 ## done 的真语义(Phase 2I 加)

@@ -41,6 +41,30 @@ describe('MarkerDetector.detect', () => {
     expect(out[0].severity).toBe('mid');
   });
 
+  // [Phase 4 @2026-06-17] bounce 协议
+  it('bounce with reason', () => {
+    const out = M.detect('<mate:bounce reason="scope unclear" />');
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual({ kind: 'bounce', reason: 'scope unclear' });
+  });
+
+  it('bounce 含中文 + 特殊字符', () => {
+    const out = M.detect('<mate:bounce reason="需求歧义:A 还是 B?" />');
+    expect(out).toHaveLength(1);
+    expect(out[0].kind).toBe('bounce');
+    expect(out[0].reason).toBe('需求歧义:A 还是 B?');
+  });
+
+  it('looksLikeMarker 含 bounce', () => {
+    expect(M.looksLikeMarker('<mate:bounce')).toBe(true);
+    expect(M.looksLikeMarker('not a marker')).toBe(false);
+  });
+
+  it('strip 也清 bounce', () => {
+    const cleaned = M.strip('text <mate:bounce reason="x" /> tail');
+    expect(cleaned).toBe('text  tail');
+  });
+
   it('empty text → []', () => {
     expect(M.detect('')).toEqual([]);
     expect(M.detect(null)).toEqual([]);

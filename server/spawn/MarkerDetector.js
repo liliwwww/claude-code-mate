@@ -27,11 +27,16 @@ const BLOCKED_RE = /<mate:blocked\s+question="(.*?)"(?:\s+severity="([^"]*)")?\s
 // [需求@2026-06-16 Phase 2H] reject 协议 — H 拒绝处理 queue 里的某条 task(冲突 / 优先级)
 //   reason 必填;optional bounce_to 可指定"建议派给谁"(例:重新派回原 R 让 user clarify)
 const REJECT_RE = /<mate:reject\s+reason="(.*?)"(?:\s+bounce_to="([^"]*)")?\s*\/>/is;
+// [Phase 4 @2026-06-17] bounce 协议 — H 觉得搞不定,弹回 caller(R)
+//   栈模型语义:pop self + BounceResult 给 caller。比 <mate:handoff target="mate-R"/> 表达更明确。
+//   reason 必填:告诉 R 为啥弹回来,R 跟 user 沟通后再 dispatch。
+//   向后兼容:<mate:handoff target="mate-R" /> 仍当 bounce 处理。
+const BOUNCE_RE = /<mate:bounce\s+reason="(.*?)"\s*\/>/is;
 
 // [arch-debt §13] 失败可观测性 — 这个 looser 正则用于"看起来像 marker 但 parse 失败"
 //   的判断。SpawnManager 在 detect() 返 [] 但 looksLikeMarker() 返 true 时 emit
 //   'marker.malformed' event,让 user 在 dashboard 看见 — 不再 silent fail。
-const LOOSE_MARKER_RE = /<mate:(handoff|done|blocked|reject)\b/i;
+const LOOSE_MARKER_RE = /<mate:(handoff|done|blocked|reject|bounce)\b/i;
 
 const MarkerDetector = {
   /**
@@ -54,6 +59,10 @@ const MarkerDetector = {
 
     const rj = text.match(REJECT_RE);
     if (rj) found.push({ kind: 'reject', reason: rj[1], bounceTo: rj[2] || null });
+
+    // [Phase 4 @2026-06-17] bounce 协议
+    const bn = text.match(BOUNCE_RE);
+    if (bn) found.push({ kind: 'bounce', reason: bn[1] });
 
     return found;
   },
@@ -79,6 +88,7 @@ const MarkerDetector = {
       .replace(DONE_RE, '')
       .replace(BLOCKED_RE, '')
       .replace(REJECT_RE, '')
+      .replace(BOUNCE_RE, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   },

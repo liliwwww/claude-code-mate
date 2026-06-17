@@ -129,6 +129,20 @@ async function handleMarkers(fromInst, markers, { sendToThread }) {
     }
     return;
   }
+  // [Phase 4 @2026-06-17] bounce 协议 — H 弹回 R(语义上 = handoff target=mate-R)
+  //   优先级在 handoff 之上,因为 bounce 是更明确的语义,如果两者并存(LLM 写错),bounce 赢。
+  const bounce = markers.find((m) => m.kind === 'bounce');
+  if (bounce) {
+    try {
+      await _performHandoff(fromInst, 'mate-R', bounce.reason, { sendToThread });
+    } catch (e) {
+      console.warn(`[MarkerDispatcher] bounce marker failed (${fromInst.id}):`, e.message);
+    }
+    if (markers.length > 1) {
+      console.warn(`[MarkerDispatcher] ignoring ${markers.length - 1} subsequent marker(s) after <mate:bounce /> from ${fromInst.id}`);
+    }
+    return;
+  }
   const handoff = markers.find((m) => m.kind === 'handoff');
   if (handoff) {
     try {
