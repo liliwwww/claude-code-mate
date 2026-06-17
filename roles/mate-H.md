@@ -3,7 +3,7 @@ name: mate-H
 type: orchestrator
 parallelism_limit: 1
 is_central: true
-session_ttl_hours: 8
+session_ttl_hours: 0   # 0 = 永不过期(2026-06-17 user 改)
 display_color: "#ffcc66"
 allowed_tools:
   - Read

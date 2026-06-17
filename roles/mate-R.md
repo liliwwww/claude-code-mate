@@ -3,7 +3,7 @@ name: mate-R
 type: requirements
 parallelism_limit: 10
 is_central: false
-session_ttl_hours: 8
+session_ttl_hours: 0   # 0 = 永不过期(2026-06-17 user 改)
 display_color: "#88ccff"
 allowed_tools:
   - Read

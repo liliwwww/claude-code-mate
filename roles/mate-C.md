@@ -3,7 +3,7 @@ name: mate-C
 type: validator
 parallelism_limit: 4
 is_central: false
-session_ttl_hours: 2
+session_ttl_hours: 0   # 0 = 永不过期(2026-06-17 user 改)
 display_color: "#ffaaff"
 allowed_tools:
   - Read
