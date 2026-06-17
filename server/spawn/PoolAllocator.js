@@ -94,11 +94,14 @@ function acquire({ instances, projectId, projectRootDir, role, requestedSlot, th
     return createPoolInstance({ projectId, projectRootDir, role, poolSlot: freeSlot, threadSlug });
   }
 
-  // Pool 满 — 返回任意 busy(caller / queue 后续处理)
-  const anyBusy = [...instances.values()].find(
-    (i) => i.projectId === projectId && i.role.name === role.name && i.status === 'busy'
+  // Pool 满 — 返回任意 busy/spawning(caller / queue 后续处理)
+  // [bug@2026-06-17] spawning 状态也算占着 slot(它还在 init,马上会 busy),
+  //   不算的话多线索并发时 acquire 会返 null 直接 fail。
+  const anyBusyOrSpawning = [...instances.values()].find(
+    (i) => i.projectId === projectId && i.role.name === role.name &&
+           (i.status === 'busy' || i.status === 'spawning')
   );
-  return anyBusy || null;
+  return anyBusyOrSpawning || null;
 }
 
 /**

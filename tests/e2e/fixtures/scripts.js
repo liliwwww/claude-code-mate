@@ -146,8 +146,81 @@ const hReject = {
   ],
 };
 
+// 场景 4: H 收到 R 后 bounce 回 R (H 觉得需求不清,弹给 R)
+const hBounce = {
+  ...happyPath,
+  'mate-H': [
+    // ① B callback 优先(永远先匹配避免循环)
+    {
+      match: '/Thread handoff from mate-B/',
+      emit: [
+        { type: 'assistant', text: 'verified ok', marker: '<mate:done summary="B-1 done" />' },
+        { type: 'result_success' },
+      ],
+    },
+    // ② R refined 也优先(避免落入 generic R match → 无限 bounce)
+    {
+      match: '/REFINED/',
+      emit: [
+        { type: 'assistant', text: 'now clear, dispatching', marker: '<mate:handoff target="mate-B-1" reason="refined task" />' },
+        { type: 'result_success' },
+      ],
+    },
+    // ③ R 第一次派工 → bounce 回 R(target=mate-R 在协议里是 bounce)
+    {
+      match: '/Thread handoff from mate-R/',
+      emit: [
+        { type: 'assistant', text: 'need more clarification from R', marker: '<mate:handoff target="mate-R" reason="ambiguous scope" />' },
+        { type: 'result_success' },
+      ],
+    },
+    {
+      match: /.*/,
+      emit: [
+        { type: 'assistant', text: 'ready (mock H fallback)' },
+        { type: 'result_success' },
+      ],
+    },
+  ],
+  'mate-R': [
+    // ① delegate done(优先)→ R 拍板结束
+    {
+      match: '/<delegate mate-H-1 done>/',
+      emit: [
+        { type: 'assistant', text: 'final done', marker: '<mate:done summary="dispatch verified end-to-end" />' },
+        { type: 'result_success' },
+      ],
+    },
+    // ② H bounce 回 R(handoff from H)→ R "clarifies" → REFINED
+    //   必须比 /dispatch/ 先,因为 H bounce 的 conversation context 会含原始 "dispatch"
+    {
+      match: '/Thread handoff from mate-H/',
+      emit: [
+        { type: 'assistant', text: 'H wants clarification. user said: REFINED scope', marker: '<mate:handoff target="mate-H" reason="REFINED task per user" />' },
+        { type: 'result_success' },
+      ],
+    },
+    // ③ user 第一次输入 → R 派给 H
+    {
+      match: '/dispatch/',
+      emit: [
+        { type: 'assistant', text: '需求确认,派给 H 设计方案。', marker: '<mate:handoff target="mate-H" reason="user needs dispatch" />' },
+        { type: 'result_success' },
+      ],
+    },
+    {
+      match: /.*/,
+      emit: [
+        { type: 'assistant', text: 'ready (mock R)' },
+        { type: 'result_success' },
+      ],
+    },
+  ],
+};
+
 module.exports = {
   happyPath,
   hBlocked,
   hReject,
+  hBounce,
 };

@@ -582,12 +582,17 @@ class SpawnManager {
     }
     const taggedText = `[Thread: ${threadSlug}]\n\n${finalText}`;
 
-    // [需求@2026-06-16 Phase 2H] marker handoff 派到 busy 实例 → 直接 enqueue (FIFO 自动派发)
+    // [需求@2026-06-16 Phase 2H] marker handoff 派到已激活但 busy 的实例 → enqueue (FIFO 自动派发)
     //   user 派工/mateTerm 直发不进此路径(fromMarker=false)。
     //   channel 语义:任何 marker(R→H 新请求 / B→H callback / H→B 下钻)都进 H 的 stdin queue,
     //                 FIFO 顺序处理,不弹 user(原 Phase 2G busy_prompt 撤掉)。
     //   queue 路径下不更新 inst.threadSlug,不 bindInstance,等 flush 时再做。
-    if (fromMarker && inst.status === 'busy') {
+    // [bug@2026-06-17] 'spawning' 状态要分情况:
+    //   - fresh ctor 出来还没 spawn (_child=null && !_mockAlive):走下方 spawning 分支,
+    //     设 _pendingUserText + spawn,这是第一次派工,chain 段要正常记
+    //   - 已 spawn 但还在 init(_child 或 _mockAlive 已 set):算占着,排队 — 多并发线索场景
+    const isActiveSpawning = inst.status === 'spawning' && (inst._child || inst._mockAlive);
+    if (fromMarker && (inst.status === 'busy' || isActiveSpawning)) {
       const dispatchChain = (() => {
         try {
           const t = ThreadStore.get(projectId, threadSlug);

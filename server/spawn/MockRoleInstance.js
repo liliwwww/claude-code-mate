@@ -171,15 +171,19 @@ class MockRoleInstance {
       };
       this._emit('event', { eventType: 'system/init', raw: initEvent });
       this._setStatus('idle');
-
-      // 处理 greeting / pending msg
-      if (!suppressGreeting) {
-        const greeting = this._customGreeting || 'ready confirmation';
-        this._processMockInput(greeting);
-      } else if (this._pendingUserText) {
+      // status_change 监听器(QueueDispatcher.onInstanceIdle)已被同步触发了
+      // 此时 status 可能已经是 busy(队列 flush 把消息灌进来了)
+      // - 状态仍 idle + 有 pending: 处理 pending(fresh instance with pre-set _pendingUserText)
+      // - 状态仍 idle + 无 pending + 非 suppress: 处理 greeting(对真 claude 防 3s 超时)
+      // - 状态已 busy: 队列 flush 先一步,什么都不做
+      if (this.status !== 'idle') return;
+      if (this._pendingUserText) {
         const text = this._pendingUserText;
         this._pendingUserText = null;
         this._processMockInput(text);
+      } else if (!suppressGreeting) {
+        const greeting = this._customGreeting || 'ready confirmation';
+        this._processMockInput(greeting);
       }
     });
 
