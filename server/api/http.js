@@ -639,13 +639,18 @@ function buildRouter() {
       `).all(req.project.id, req.params.slug, before, limit);
       rows.reverse();
     } else {
+      // [bug@2026-06-17] 老线索消息累积超 limit 时,ASC + LIMIT 切走的是"最新"。
+      //   返"最早 N 条"导致 user 看不到最近的输入 / LLM 输出(5000+ 消息线索很常见)。
+      //   修:DESC + LIMIT 取最近 N 条,再 reverse 成升序展示。
+      //   "看更早"分页走 before 分支(那个本来就是 DESC + reverse 正确)。
       rows = db.prepare(`
         SELECT id, instance_id, role_name, direction, claude_session_id, ts, event_type, payload_json
         FROM messages
         WHERE project_id = ? AND thread_slug = ?
-        ORDER BY ts ASC, id ASC
+        ORDER BY ts DESC, id DESC
         LIMIT ?
       `).all(req.project.id, req.params.slug, limit);
+      rows.reverse();
     }
     res.json(rows.map((m) => ({
       id: m.id,
