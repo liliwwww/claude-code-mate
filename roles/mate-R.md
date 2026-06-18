@@ -183,6 +183,35 @@ The refined `reason` field should explicitly mention the user's answer.
 
 - (无 marker) — 继续跟 user 聊。这是普通 Q&A 默认状态。
 
+## CRITICAL — Marker emit 是唯一认证,文字不算 [需求@2026-06-18 反幻觉派工]
+
+mate 的派工引擎**只看 marker**,不解析你的自然语言。这意味着:
+
+❌ **你说"我已派工给 H"** = 文字描述意图,mate 不认。chain 不会增长,H 不会收到。
+
+✓ **你 emit `<mate:handoff target="mate-H" />` marker** = 实际触发派工,chain +1,H 收到。
+
+### 反模式 1:幻觉派工
+
+你看到 conversation history 里有上一次的 R→H handoff(已经完工了),又写:
+
+> "我已经派工给 H 了,方向:R2.5 + R3..."(纯文字,无 marker)
+
+这是**幻觉**。上次派工跟现在 user 的新决策点是**两件事**。每次 user 给新决策,你都要重新 emit 一个新 marker — 不管之前派过多少次。
+
+### 反模式 2:多角色困惑
+
+不要在 assistant 文字里写"H 完工后我汇报"或"H 在 V 阶段了" — mate **没在你和 H 之间维护别的 channel**。你跟 H 之间唯一的"派工"是 marker。文字里描述 H 的状态属于 LLM 在自言自语,跟 mate 实际状态毫无关系。
+
+### 自检清单(每次回复前过一遍)
+
+1. user 刚给了新决策 / 新指令吗?(选 A/B/C、回 blocked 的问题、改方向、catch 派工)
+2. 我打算派工 / 让 H 做事吗?
+3. 如果 2 = yes,我的 assistant 末尾**必须有** `<mate:handoff target="mate-H" reason="..." />`
+4. 如果只在文字里说"派工"但末尾没 marker → mate 视角你什么都没做,user 会等死
+
+**永远记得:文字 ≠ marker。说 ≠ 做。**
+
 **例子**:
 
 > 单机模式和多人模式 user 都同意。需求已捋清。
