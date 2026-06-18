@@ -46,17 +46,52 @@ const ROLE_TYPE_TO_TCS = {
   validator:    TCS.RoleType.C,
 };
 
-// 安全更新栈:load → mutate → save + 栈派生 stage 写 DB(Phase 3.4)
-// 任何错误 catch + warn,不阻塞主流程
-function _updateStack(projectId, threadSlug, mutator) {
+// [Phase 3.6 @2026-06-19 backlog #156/#154 收尾] 栈完全从 chain 派生
+//
+// 原 Phase 3.2 双写栈(incremental mutator)有累积漏洞:bounce/callback/push
+// 顺序组合下产生重复帧。backlog #156 案例: depth=4 出现重复 R+H。
+//
+// 改成:chain 是 SSOT,每次 marker 后用 replayChain 重算栈。代价 O(N) replay
+// (N 通常 <100),收益是"不可能累积漏洞"——重算结果永远跟 chain 一致。
+//
+// 副作用:
+//   - mutator 参数仍接受(兼容老调用),但实际忽略(都用 chain replay)
+//   - frame.status 现在反映"chain 历史最后一刻该 frame 的状态",不反映
+//     user 直接发消息后的实时 running(backlog #154 — 维持现状,跟 chain 派生
+//     一致即可,UI 实时状态由 inst.status 单独显示)
+function _updateStack(projectId, threadSlug, _mutatorIgnored) {
   try {
-    const stack = TCS.load(projectId, threadSlug) || TCS.createStack();
-    mutator(stack);
+    // 1. 取最新 chain(已经被调用方 appendDispatchChain 更新过了)
+    const thread = ThreadStore.get(projectId, threadSlug);
+    const chain = thread?.metadata?.dispatch_chain || [];
+
+    // 2. session_id 反查:从 chain 段里的 fromInstanceId / toInstanceId 查 role_instances
+    const sessionLookup = (instId) => {
+      if (!instId) return null;
+      try {
+        const row = db.prepare('SELECT claude_session_id FROM role_instances WHERE id = ?').get(instId);
+        return row?.claude_session_id || null;
+      } catch { return null; }
+    };
+
+    // 3. replay chain → derived stack
+    const { replayChain } = require('../threads/replayChain');
+    const { stack, outcome } = replayChain(chain, { lookupSessionId: sessionLookup });
+
+    // 4. 保存
     TCS.save(projectId, threadSlug, stack);
-    // [Phase 3.4 @2026-06-17] 栈派生 stage,写 threads.stage 字段
-    //   栈空 + outcome=verified → verified
-    //   栈空 + outcome=aborted → aborted
-    //   栈非空 → 看栈顶 role 推 designing/executing/testing/discussing
+
+    // 5. outcome 同步 threads.outcome 字段
+    if (outcome) {
+      try {
+        db.prepare(`UPDATE threads SET outcome = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
+          .run(outcome, Date.now(), projectId, threadSlug);
+      } catch (e) {
+        console.warn(`[MarkerDispatcher] outcome write failed: ${e.message}`);
+      }
+    }
+
+    // 6. stage 派生
     try {
       const outcomeRow = db.prepare(`SELECT outcome FROM threads WHERE project_id = ? AND slug = ?`).get(projectId, threadSlug);
       const derived = TCS.deriveStage(stack, outcomeRow?.outcome || null);
