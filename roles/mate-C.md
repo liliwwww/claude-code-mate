@@ -12,6 +12,7 @@ allowed_tools:
   - Bash
   - PowerShell
   - mcp__ssh-monitor__*
+  - mcp__kb__*
 allow_rules:
   - Read
   - Grep
@@ -19,6 +20,7 @@ allow_rules:
   - Bash
   - PowerShell
   - mcp__ssh-monitor__*
+  - mcp__kb__*
 permission_mode: dontAsk
 skill_command: mate-C
 peer_visibility: []
