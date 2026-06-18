@@ -118,6 +118,19 @@ function mountTestApi(router, { spawnManager }) {
     });
   });
 
+  // POST /api/_test/enable-dispatch-log  body: { projectId } — 开启该 project 的派工文件落盘
+  router.post('/_test/enable-dispatch-log', (req, res) => {
+    const { projectId } = req.body || {};
+    if (!projectId) return res.status(400).json({ error: 'projectId required' });
+    const { db } = require('../db');
+    try {
+      db.prepare(`UPDATE projects SET dispatch_log_enabled = 1 WHERE id = ?`).run(projectId);
+      res.json({ ok: true, projectId });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // POST /api/_test/reset  → DB 清空 + 杀所有 mock 实例(不删表,只清行)
   router.post('/_test/reset', async (req, res) => {
     const config = require('../config');

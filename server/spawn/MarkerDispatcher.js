@@ -28,6 +28,8 @@ const roleCatalog = require('../roles/RoleCatalog');
 const HandoffTracker = require('./HandoffTracker');
 // [Phase 3.2 @2026-06-17] 栈 SSOT — handoff/done/blocked/reject 同步更新栈
 const TCS = require('../threads/ThreadCallStack');
+// [需求@2026-06-19] 派工文件落盘
+const DispatchLogWriter = require('../threads/DispatchLogWriter');
 
 const STAGE_BY_TARGET_TYPE = {
   orchestrator: 'designing',
@@ -146,7 +148,7 @@ async function handleMarkers(fromInst, markers, { sendToThread }) {
   const handoff = markers.find((m) => m.kind === 'handoff');
   if (handoff) {
     try {
-      await _performHandoff(fromInst, handoff.target, handoff.reason, { sendToThread });
+      await _performHandoff(fromInst, handoff.target, handoff.reason, { sendToThread, taskSlug: handoff.taskSlug });
     } catch (e) {
       console.warn(`[MarkerDispatcher] handoff marker failed (${fromInst.id}):`, e.message);
       // [需求@2026-06-12 Phase 2E §10] 派工失败 → 通知前端红色卡片
@@ -164,7 +166,8 @@ async function handleMarkers(fromInst, markers, { sendToThread }) {
 }
 
 // [需求@2026-06-12 §6 + 8.3] target 可以是 "execB"(泛型)或 "execB-2"(具体 slot)
-async function _performHandoff(fromInst, targetSpec, reason, { sendToThread }) {
+// [需求@2026-06-19] taskSlug 可选 — R 派工时给的工单代号,用于派工文件命名
+async function _performHandoff(fromInst, targetSpec, reason, { sendToThread, taskSlug = null } = {}) {
   const { roleName: targetRoleName, poolSlot: targetSlot } = parseMarkerTarget(targetSpec);
   const targetRole = roleCatalog.get(targetRoleName);
   if (!targetRole) {
@@ -303,6 +306,40 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread }) {
     resolvedSlot: targetSlot, reason,
     fromInstanceId: fromInst.id, toInstanceId: inst.id,
   }, { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
+
+  // [需求@2026-06-19] 派工文件落盘 — push down 写新文件, callback 追加 section
+  try {
+    const fromTcs = ROLE_TYPE_TO_TCS[fromInst.role?.type];
+    const toTcs = ROLE_TYPE_TO_TCS[targetRole?.type];
+    const isCallback = (fromTcs === TCS.RoleType.B || fromTcs === TCS.RoleType.C)
+                       && toTcs === TCS.RoleType.H;
+    const isBounceBack = fromTcs === TCS.RoleType.H && toTcs === TCS.RoleType.R;
+
+    if (isCallback) {
+      // B/C → H callback:追加 callback section 到上一个 push 文件
+      DispatchLogWriter.onCallback({
+        projectId: fromInst.projectId,
+        projectRootDir: project.root_dir,
+        threadSlug: fromInst.threadSlug,
+        fromInst,
+        summary: reason || '',
+      });
+    } else {
+      // push down (R→H, H→B/C) 或 bounce back (H→R):写新派工文件
+      DispatchLogWriter.onPushDispatch({
+        projectId: fromInst.projectId,
+        projectRootDir: project.root_dir,
+        threadSlug: fromInst.threadSlug,
+        fromInst,
+        toInst: inst,
+        reason: reason || '',
+        taskSlug,
+        recentContext: ctx,
+      });
+    }
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] dispatch log write failed: ${e.message}`);
+  }
 
   // [需求@2026-06-12 Phase 2E §10] 派工进度三阶段
   const handoffKey = `${fromInst.projectId}::${fromInst.threadSlug}::${inst.id}::${Date.now()}`;
@@ -445,6 +482,23 @@ function _performDone(fromInst, summary, { sendToThread }) {
   recordEvent('thread.done', { summary, fromInstanceId: fromInst.id, callerInstanceId: callerInstId },
     { projectId, threadSlug });
 
+  // [需求@2026-06-19] 派工文件追加 Done section
+  try {
+    const project = stmts.getProject.get(projectId);
+    if (project) {
+      DispatchLogWriter.onDone({
+        projectId,
+        projectRootDir: project.root_dir,
+        threadSlug,
+        fromInst,
+        summary: summary || '',
+        isTerminal: isTerminalDoneEarly,
+      });
+    }
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] dispatch log onDone failed: ${e.message}`);
+  }
+
   // 判 terminal 还是 pop:
   // - 没 caller(stack 底层 R 自己 done)→ terminal
   // - caller role 是 requirements(R)→ terminal,且要给 R 注入 summary 让它告诉 user
@@ -573,6 +627,20 @@ function _performBlocked(fromInst, question, severity) {
   }
   recordEvent('thread.blocked', { question, severity, fromInstanceId: fromInst.id },
     { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
+  // [需求@2026-06-19] 派工文件追加 Blocked section
+  try {
+    const project = stmts.getProject.get(fromInst.projectId);
+    if (project) {
+      DispatchLogWriter.onBlocked({
+        projectId: fromInst.projectId,
+        projectRootDir: project.root_dir,
+        threadSlug: fromInst.threadSlug,
+        fromInst, question, severity,
+      });
+    }
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] dispatch log onBlocked failed: ${e.message}`);
+  }
   bus.publish('thread.blocked', {
     projectId: fromInst.projectId,
     threadSlug: fromInst.threadSlug,
@@ -632,6 +700,21 @@ function _performReject(fromInst, reason, bounceTo, { sendToThread } = {}) {
     reason,
     bounceTo,
   }, { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
+
+  // [需求@2026-06-19] 派工文件追加 Reject section
+  try {
+    const project = stmts.getProject.get(fromInst.projectId);
+    if (project) {
+      DispatchLogWriter.onReject({
+        projectId: fromInst.projectId,
+        projectRootDir: project.root_dir,
+        threadSlug: fromInst.threadSlug,
+        fromInst, reason,
+      });
+    }
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] dispatch log onReject failed: ${e.message}`);
+  }
 
   bus.publish('dispatch.rejected', {
     pendingSendId: fromInst._currentPendingSend?.id || null,

@@ -21,7 +21,12 @@
 //   原正则 reason="([^"]*)" 在第一个 `"` 处截断 → 整个 marker 不匹配。
 //   修复:用非贪婪 `.*?` + s 标志(. 匹配换行),终止条件改成"最后一个 `"`后跟 `\s*\/>`"。
 //   这样能 robust 处理任何包含 `"` / 换行的 reason / summary / question。
-const HANDOFF_RE = /<mate:handoff\s+target="([^"]+)"(?:\s+reason="(.*?)")?\s*\/>/is;
+// [需求@2026-06-19] handoff 可选 task_slug 属性 — R 派工时指定工单代号,落盘文件用
+//   <mate:handoff target="mate-H" reason="..." task_slug="adr006_action_extract" />
+//   位置允许 reason 前或后,正则用两 alternation 容错
+const HANDOFF_RE = /<mate:handoff\s+target="([^"]+)"(?:\s+reason="(.*?)")?(?:\s+task_slug="([^"]*)")?\s*\/>/is;
+// 兼容:task_slug 写在 reason 前的情况
+const HANDOFF_RE_ALT = /<mate:handoff\s+target="([^"]+)"\s+task_slug="([^"]*)"(?:\s+reason="(.*?)")?\s*\/>/is;
 const DONE_RE = /<mate:done(?:\s+summary="(.*?)")?\s*\/>/is;
 const BLOCKED_RE = /<mate:blocked\s+question="(.*?)"(?:\s+severity="([^"]*)")?\s*\/>/is;
 // [需求@2026-06-16 Phase 2H] reject 协议 — H 拒绝处理 queue 里的某条 task(冲突 / 优先级)
@@ -49,7 +54,13 @@ const MarkerDetector = {
     const found = [];
 
     const h = text.match(HANDOFF_RE);
-    if (h) found.push({ kind: 'handoff', target: h[1], reason: h[2] || '' });
+    if (h) {
+      found.push({ kind: 'handoff', target: h[1], reason: h[2] || '', taskSlug: h[3] || null });
+    } else {
+      // 试 ALT 形态(task_slug 在 reason 前)
+      const ha = text.match(HANDOFF_RE_ALT);
+      if (ha) found.push({ kind: 'handoff', target: ha[1], reason: ha[3] || '', taskSlug: ha[2] || null });
+    }
 
     const d = text.match(DONE_RE);
     if (d) found.push({ kind: 'done', summary: d[1] || '' });

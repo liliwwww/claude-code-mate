@@ -514,6 +514,28 @@ if (curVersion < 11) {
   curVersion = 11;
 }
 
+// [需求@2026-06-19] v11 → v12: 派工文件落盘
+//   threads.task_slug TEXT — R 派工时设(R 给的 task_slug 或 fallback thread.title),
+//     后续派工复用作为文件名 prefix
+//   projects.dispatch_log_enabled INTEGER (0/1) — 是否开启派工文件落盘,kb_knowledge 默认开
+if (curVersion < 12) {
+  console.log('[db] migrating v11 -> v12(派工文件落盘 task_slug + dispatch_log_enabled)');
+  try { db.exec(`ALTER TABLE threads ADD COLUMN task_slug TEXT`); } catch (e) {
+    if (!/duplicate column/.test(e.message)) throw e;
+  }
+  try { db.exec(`ALTER TABLE projects ADD COLUMN dispatch_log_enabled INTEGER DEFAULT 0`); } catch (e) {
+    if (!/duplicate column/.test(e.message)) throw e;
+  }
+  // kb_knowledge 默认开启(user 明确要求)
+  try {
+    db.prepare(`UPDATE projects SET dispatch_log_enabled = 1 WHERE name = 'kb_knowledge'`).run();
+  } catch (e) {
+    console.warn(`[db v12] enable kb_knowledge dispatch log failed: ${e.message}`);
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '12');
+  curVersion = 12;
+}
+
 function ensureSystemProject() {
   const existing = db.prepare(`SELECT id FROM projects WHERE name = 'System'`).get();
   if (existing) return existing.id;

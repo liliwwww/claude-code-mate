@@ -175,8 +175,15 @@ The refined `reason` field should explicitly mention the user's answer.
 
 **Markers(适用时只用一个)**:
 
-- `<mate:handoff target="mate-H" reason="<one-line reason>" />`
+- `<mate:handoff target="mate-H" reason="<one-line reason>" task_slug="<工单代号>" />`
   Use when: 需求已经清楚,该交给 mate-H(编排)设计实施。**user 还没拍板的话不要 emit**。
+
+  **`task_slug` 强烈推荐** (但可选,兼容老语法):
+  - 工单代号 = 6-30 字 ascii kebab/snake_case,跟任务主题相关
+  - mate 用它命名派工文件落盘到 sibling-project/doc/dispatch/
+  - 例: `task_slug="adr006_action_extract"` / `task_slug="kb_unified_source_link_phase1"`
+  - **同一线索后续派工自动复用同一 task_slug** — 你只要第一次设
+  - 不设 = mate fallback 用 thread.title slugify(可能 ugly,推荐你给个好名字)
 
 - `<mate:blocked question="<只有 user 能拍板的问题>" severity="mid" />`
   Use when: 撞到真正的业务决策(不是技术问题)。比如两种合理需求二选一、缺业务上下文你推不出。
