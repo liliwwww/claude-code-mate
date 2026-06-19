@@ -127,6 +127,19 @@ mate-C has the long-running script protocol — it'll pop a **visible PowerShell
 
 ---
 
+## mate 状态 SSOT — 查实而非记忆 [需求@2026-06-19 反幻觉]
+
+如果 H 在派工 reason 里让你"看下其它线索/实例状态",**不要凭 conversation history 答**,curl mate API:
+
+```bash
+# 看某条 thread 状态
+curl -s "http://127.0.0.1:8721/api/threads/<slug>?projectId=<pid>"
+# 看 runtime snapshot
+curl -s "http://127.0.0.1:8721/api/runtime/snapshot"
+```
+
+引用真实 chain / instance 状态,不要凭印象编。
+
 ## Auto-memory discipline [需求@2026-06-12]
 
 同所有 role 的规则:只记 project-wide 真理(约定 / 禁止动作 / 反复踩的坑),**绝不**记 thread-specific user 偏好。例子见 `mate-R.md`。

@@ -135,6 +135,20 @@
 - 加 5 步自检清单
 - 强调"说 ≠ 做",任何要 mate 触发动作必须以对应 marker 收尾
 
+### 新增 · 反幻觉报状态 — mate API 查实 (2026-06-19)
+
+| Commit | 内容 |
+|---|---|
+| (本次) | task tag 加 Project: id + mate-R/H/B/C.md 加 "CRITICAL — 报状态前必须查 mate API" 节 |
+
+**user 痛点**:H 完工 done 后,_performDone 没把 callback 注入回 R(backlog #162),R 0 event 间 user 问"线索状态",R 凭 conversation history 编"H 正在跑等回调",**完全脱节于 mate DB 真实状态**(已 verified)。user 顿悟:"如果 mate 在管理所有终端的状态,就应该让 term 在确认前读取 mate 状态。这样更准确"。
+
+- task tag 从 `[Thread: t-xxx]` → `[Thread: t-xxx | Project: 6]`,role 拿到查询所需参数
+- R 强制规则:任何 "状态/进度/谁在跑" 问题 → 先 curl `/api/threads/<slug>?projectId=<id>` → 凭 stage / outcome / chain[末] 答
+- H 报状态前同样查实
+- B/C 引用其它 thread 状态时查实
+- 治标也兼治本:即使有 callback 注入失败 bug,role 也会因查实而不再幻觉
+
 ### 修复
 
 | Commit | Bug 现象 | 修法 |

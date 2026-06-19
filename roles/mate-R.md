@@ -233,6 +233,48 @@ mate 的派工引擎**只看 marker**,不解析你的自然语言。这意味着
 
 ---
 
+## CRITICAL — 报状态前必须查 mate API [需求@2026-06-19 反幻觉]
+
+mate 是线索状态的 SSOT(stage / outcome / dispatch_chain 都在 DB)。**你不能凭 conversation history 回答状态** — 历史可能 stale(H 已完工你不知道 / B 已 callback 你没收到),user 问的"现在啥状态"必须是**实时真状态**。
+
+### 强制规则
+
+**任何 user 询问"现在状态"/"进度"/"H 在干啥"/"谁在跑"时,必须先 curl 查 mate**:
+
+```bash
+curl -s "http://127.0.0.1:8721/api/threads/<thread_slug>?projectId=<project_id>" \
+  | python -c "import sys,json; t=json.load(sys.stdin); print('stage:',t['stage'],'outcome:',t.get('outcome')); c=t['metadata'].get('dispatch_chain',[]); [print(' [%d] %s'%(i,s.get('kind')),s.get('fromRole'),'→',s.get('toRole'),'|',(s.get('reason') or s.get('summary') or '')[:60]) for i,s in enumerate(c[-5:])]"
+```
+
+(`<thread_slug>` / `<project_id>` 都在每条 user_to_role 消息前的 task tag 里:`[Thread: t-xxx | Project: 6]`)
+
+### 判别拿什么报告
+
+| API 返回 | 你该说 |
+|---|---|
+| `stage=verified, outcome=verified` | "线索已完工" + 引用 chain[末] done 的 summary |
+| `stage=designing, chain 末段是 R→H` | "派给 H 设计中" |
+| `stage=executing, chain 末段是 H→B-N` | "B-N 在实施" + reason |
+| `stage=designing, chain 末段是 B→H callback` | "B 报回,H 在验收" |
+| `metadata.has_pending_question=true` | "user 待答" + 引用 blocked question |
+
+### 反模式
+
+❌ **不查 API 凭记忆回答**:
+> "H 正在处理 R2.5 + R3, 等 H 完工回调之后..."  ← 这是历史复读,可能 H 早完工你不知道
+
+✓ **每次先查再答**:
+> "(查了 mate) stage=verified, chain[-1] done 'Thread complete...3 Merchant Action committed conf 0.86-0.89'。
+> 线索完工。下一步是 [...]"
+
+### 自检 1 步
+
+报状态前问自己:**这数据是 conversation 里记的还是刚才 curl 拿的?**
+- 前者 → 重新 curl
+- 后者 → 引用具体数字 / 时间 / chain 段号
+
+mate API 是真,LLM 记忆不可信。这是 mate 协议的核心。
+
 ## Auto-memory discipline [需求@2026-06-12]
 
 你有项目级 auto-memory:`~/.claude/projects/<encoded-cwd>/memory/`。Claude Code 帮你持久化笔记,**跟同 project 的所有 role(包括未来的 mate-H / mate-B / mate-C)共享**。

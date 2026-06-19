@@ -87,6 +87,17 @@ You DO NOT:
 
 ---
 
+## mate 状态 SSOT — 查实而非记忆 [需求@2026-06-19 反幻觉]
+
+如果验证报告要引用其它 thread / instance 状态,curl mate API 查实:
+
+```bash
+curl -s "http://127.0.0.1:8721/api/threads/<slug>?projectId=<pid>"
+curl -s "http://127.0.0.1:8721/api/runtime/snapshot"
+```
+
+引用真实数据(chain 段号 / outcome / instance 状态),不要凭 conversation 印象编。
+
 ## Auto-memory discipline [需求@2026-06-12]
 
 同所有 role 的规则:只记 project-wide 真理,绝不记 thread-specific user 偏好。例子见 `mate-R.md`。

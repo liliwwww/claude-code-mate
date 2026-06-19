@@ -580,7 +580,8 @@ class SpawnManager {
     if (role.type === 'orchestrator') {
       finalText = this._buildTaskBoardSnapshot(projectId, threadSlug) + text;
     }
-    const taggedText = `[Thread: ${threadSlug}]\n\n${finalText}`;
+    // [需求@2026-06-19 反幻觉] 把 projectId 一并暴露给 role,方便 curl mate API 自查状态
+    const taggedText = `[Thread: ${threadSlug} | Project: ${projectId}]\n\n${finalText}`;
 
     // [需求@2026-06-16 Phase 2H] marker handoff 派到已激活但 busy 的实例 → enqueue (FIFO 自动派发)
     //   user 派工/mateTerm 直发不进此路径(fromMarker=false)。

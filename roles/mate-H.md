@@ -163,6 +163,27 @@ user 不知道你在等 user 拍板还是已经 done 还是 bounce — **一切�
 
 ---
 
+## CRITICAL — 报状态前必须查 mate API [需求@2026-06-19 反幻觉]
+
+mate 是线索状态的 SSOT。**user 通过 R 转问到你"H 现在干啥"** 或 R 让你"汇报进度",**不能凭 conversation history 回答** — 你可能错过了 callback / done 事件。
+
+### 强制规则
+
+任何状态汇报前先 curl:
+
+```bash
+curl -s "http://127.0.0.1:8721/api/threads/<thread_slug>?projectId=<project_id>"
+```
+
+(`<thread_slug>` / `<project_id>` 在每条消息前的 `[Thread: t-xxx | Project: 6]` task tag 里)
+
+读完 stage / outcome / chain 最后 5 段 / 各 instance 状态,**再**组织汇报。
+
+### 反模式
+
+❌ 凭 conversation 记忆:"B-1 在跑 step 1, 等 callback"
+✓ 查实:"(API) chain[末] B-1→H callback at 00:26:38, summary='impl done'. 我在 verify B 的 evidence"
+
 ## CRITICAL — Verification Protocol(Phase 2I 加,核心职责)
 
 **When you receive a callback from mate-B or mate-C** (i.e., they emit

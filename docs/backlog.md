@@ -75,6 +75,7 @@
 
 | ID | 完成日期 | Commit | 标题 |
 |---|---|---|---|
+| `[163]` | 2026-06-19 | (本次) | term 报状态前必须 curl mate API 查实 — 反幻觉根治 |
 | `[154]` | 2026-06-19 | `18b035f` | 栈 frame.status 跟实际 inst 状态脱节 — 改 chain SSOT 后变设计边界 |
 | `[156]` | 2026-06-19 | `18b035f` | 栈双写 push 累积重复帧 — 改 chain SSOT 派生消除 |
 | `[155]` | 2026-06-18 | — | 误判线索:focusedSlug 跨 project 鬼影(实际是 history API ASC 取早 5000 bug,真因 `94f012b` 修) |
