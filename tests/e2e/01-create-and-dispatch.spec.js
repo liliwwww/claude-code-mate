@@ -69,8 +69,14 @@ test.describe('线索创建 + 完整派工链', () => {
     const finalState = await getTestState();
     const t = finalState.threads.find((x) => x.slug === slug);
     expect(t.stage).toBe('verified');
-    // chain 至少 4 段:R→H, H→B, B→H, done
-    expect(t.chainLength).toBeGreaterThanOrEqual(4);
+    // [需求@2026-06-19 #162 回归] chain 必须 5 段:
+    //   R→H, H→B, B→H, H-done(callback to R), R-done(terminal)
+    //   buggy 版本(callerRoleType 字符串错配)在 H-done 处 setStage verified 但
+    //   R 收不到 delegate 消息 → 末段是 H-done 而非 R-done → 数据未真闭环。
+    expect(t.chainLength).toBeGreaterThanOrEqual(5);
+    expect(t.lastChainSeg?.kind).toBe('done');
+    expect(t.lastChainSeg?.fromRole).toBe('mate-R');
+    expect(t.lastChainSeg?.isTerminal).toBe(true);
 
     console.log('   chain length:', t.chainLength);
     console.log('   stack:', t.stack ? `depth ${t.stack.frames.length}` : '(not migrated, Phase 1+2 cold field)');

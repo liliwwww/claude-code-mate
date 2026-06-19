@@ -551,7 +551,12 @@ function _performDone(fromInst, summary, { sendToThread }) {
         .run(Date.now(), projectId, threadSlug);
     } catch (e) { console.warn(`[MarkerDispatcher] outcome write failed: ${e.message}`); }
     // 如果 caller 是 R,把 summary 也送给 R 让它跟 user 翻译(可选,R 可能没 instance 在)
-    if (callerInstId && callerRoleType === 'requirements' && sendToThread) {
+    // [bug@2026-06-19 #162] 原条件只认 'requirements',但 callerRoleType 实际是 'mate-R'
+    //   (stack lookup roleMap['R']='mate-R',chain fallback seg.fromRole='mate-R')
+    //   → R-notify 永不触发,R 0 event 间被问状态时凭 stale history 编。
+    //   下面 isTerminalDoneEarly 在 479 行同时认两种,这里也跟齐。
+    const callerIsR = callerRoleType === 'mate-R' || callerRoleType === 'requirements';
+    if (callerInstId && callerIsR && sendToThread) {
       try {
         const project = require('../db').stmts.getProject.get(projectId);
         if (project) {

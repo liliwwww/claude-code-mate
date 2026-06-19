@@ -105,6 +105,8 @@ function mountTestApi(router, { spawnManager }) {
         stack,
         hasChain: !!(metadata?.dispatch_chain?.length),
         chainLength: metadata?.dispatch_chain?.length || 0,
+        // [需求@2026-06-19 #162 回归] 暴露 chain 末段,断言 R 是否真收到 delegate-done
+        lastChainSeg: metadata?.dispatch_chain?.slice(-1)?.[0] || null,
       };
     });
 
