@@ -81,7 +81,87 @@
 - **多 R 派工给同一 H 时无队列、无并发追踪**:H `parallelism_limit: 1`,busy H 收第二个 marker 直接写 stdin,`inst.threadSlug` 被覆盖导致 thread1 状态灯熄(详见 docs/discussions/2026-06-15-multi-r-handoff.md)
 - **PendingSends 表存在但未启用**:Phase 2D 未完成的队列化派工
 
-## [Unreleased]
+## [Unreleased] · 2026-06-15 ~ 2026-06-19 累积(0.5.0-dev)
+
+`v0.4.0` (2026-06-15) 之后的所有 commits。按需求/痛点归类。
+
+### 新增 · 栈模型架构(stack-model RFC 全 5 phase)
+
+栈模型替代事件日志做派工状态 SSOT。详细 RFC 见 [`docs/discussions/2026-06-16-stack-model-rfc.md`](docs/discussions/2026-06-16-stack-model-rfc.md)。
+
+| Phase | Commit | 内容 |
+|---|---|---|
+| 1 数据并行 | `a4b4efd` | DB migration v11 (call_stack_json + outcome) + ThreadCallStack + SlotPool 模块 + 48 单测 |
+| 2.1+2.2 replay | `3080ad5` | 老 chain replay 算法 + migration 脚本 |
+| 2.3 校验 | `c991096` | kb_knowledge session_id 保留校验工具 (0 可疑 lost) |
+| 3 SSOT 切换 | `c85982c` | MarkerDispatcher 直接操作栈,删反向扫 chain 找 caller 算法 |
+| 3.6 重构 | `18b035f` | 栈完全从 chain replay 派生(消除累积漏洞)|
+| 4 协议升级 | `f271852` | `<mate:bounce reason="..." />` 替代 `<mate:handoff target="mate-R" />`,语义专用 |
+
+**user 痛点驱动**:
+- 6/16 上午:H 死循环 bug (chain[7-10] 4 个错位 done),根因是反向扫 chain 找 caller 时把 callback 当原始派工。`770ec88` 修了 caller 查找算法,Phase 3 后从根本上换栈 SSOT 不再有这类风险。
+- 6/16 下午:多个 breadcrumb 显示 bug (R→B 缺 H / empty / depth 计算错),根因前端从事件流重建栈太脆弱。Phase 3 后栈是 SSOT 直接读。
+
+### 新增 · 派工文件落盘(2026-06-19 user 立场反转)
+
+| Commit | 内容 |
+|---|---|
+| `84f8811` | 派工记录自动落到 `<project>/doc/dispatch/<task_slug>_<NNN>_<from>_to_<to>_<ts>.md` |
+
+**user 痛点**:老 file-based 模式留了 270+ `WORK_HANDOFF_*.md` 在 `kb_backend/doc/` 可 grep 追溯,mate 上线后只 in-memory + DB,后续 term spawn 进项目无法独立读派工历史。**user 立场转变**:之前要求 "mate 文件不要侵入被管理项目",现在反过来要求"`doc/` 本来就是过程文档目录,派工记录该归在那"。
+
+- threads 表加 `task_slug` 字段,R 派工时设(`<mate:handoff task_slug="adr006_action_extract" />`)
+- projects 表加 `dispatch_log_enabled`,kb_knowledge 默认开
+- callback / done / blocked / reject 追加 section 到对应 push 文件
+- E2E 11 测全过(含 `10-dispatch-log.spec.js`)
+
+### 新增 · E2E 自动化测试套(Playwright)
+
+| Commit | 内容 |
+|---|---|
+| `345167a` | mock term (MockRoleInstance) + Playwright config + 5 个核心场景 |
+| `610bc46` | 5 个边界场景(bounce / 干预 / 直连 / restart / 多线索 skip)|
+
+10 个 spec,11/11 全过(2 skip 多线索为 Phase 3 待解),~50 秒跑完。为 Phase 3 SSOT 切换提供回归护栏 — 没这套不敢做大重构。
+
+### 新增 · 反幻觉派工 prompt (2026-06-18)
+
+| Commit | 内容 |
+|---|---|
+| `516c9aa` | mate-R.md + mate-H.md 加 "CRITICAL — Marker emit 是唯一认证" 节 |
+
+**user 痛点**:线索 t-mqfgby8l-bxlt R 收到 user "选 A 方案" 后,assistant 文字里写 "已派工给 H",但末尾没 emit `<mate:handoff>` marker → chain 不增长 H 没收到。LLM **嘴上说派了实际没真触发**。
+
+- 加 5 步自检清单
+- 强调"说 ≠ 做",任何要 mate 触发动作必须以对应 marker 收尾
+
+### 修复
+
+| Commit | Bug 现象 | 修法 |
+|---|---|---|
+| `94f012b` | 老线索 (5000+ 消息) UI 看不到最新输入和 LLM 输出 | history API 改 ORDER BY ts DESC + reverse 取最新 N 条 |
+| `63d7b84` | EVENTS 顶栏不停闪烁 (instance.ttl_expired 事件) | 4 个 role md `session_ttl_hours: 0` 跟 commit `15dc6eb` (TTL→0) 一致 |
+| `7111f1b` | LLM 想用 kb MCP 查 merchant_info 被 dontAsk 拒,绕道 Bash + SQL | H/B/C `allowed_tools` 加 `mcp__kb__*` |
+| `770ec88` | H 死循环 (chain 4 个错位 done) | _performDone 找 caller 跳过 callback handoff |
+| `913a787` | verified 线索/被复用实例 误锁输入框 | isFocusedThreadBusy 看 inst.threadSlug 是否还属当前 thread |
+| `8c81936` | 改完代码刷新看不到 (浏览器静态缓存) | Express no-cache header for js/css/html |
+| `caa20a5`+ `be60fb2` + `c74a78c` + `1c6a586` | breadcrumb 显示一系列 bug | call stack 视图自愈缺帧 + isTerminal 兜底 + push vs pop 区分 |
+| `5855079` | dashboard graph R 不显示 (R per-thread 都 disconnected) | 状态图 R 单独逻辑无视 showDisc 过滤 |
+
+### 改进
+
+| Commit | 内容 |
+|---|---|
+| `8dd5f05` | dashboard 对话控制 tab 显示模式从"按 thread/direct 过滤"改"显该 instance 全部交互" |
+| `34d8078` | 终端实时按 project / status / role 排序 + 分组 |
+| `de7a6b8` | 状态图范围下拉动态拉所有 project |
+| `339ceab` | mate-B.md 强化"长任务必须转 C"约束(B 自己跑 ARK proxy batch 11min 是违规) |
+
+### 设计文档
+
+| 文档 | 内容 |
+|---|---|
+| `docs/discussions/2026-06-16-stack-model-rfc.md` | 栈模型 RFC,8 个边界场景 + 5 phase migration |
 
 ### 进行中
 - **Phase 2D:池化 H 架构 + 任务跟踪 + 仪表盘 4 tab**(2026-06-12 大讨论 + audit 后冻结)
