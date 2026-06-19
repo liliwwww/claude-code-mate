@@ -110,6 +110,10 @@ function buildRouter() {
       }
       g.push({
         id: i.id,
+        // [bug@2026-06-19] 漏了 projectId 字段 → 前端按 project scope 过滤时全空,
+        //   症状:dashboard 状态图选某 project,H/B/C 全不显(R 因 1472-1476
+        //   特殊总显逻辑勉强活)。snapshot 已含,这里 push 时忘抄。
+        projectId: i.projectId,
         displayName: i.displayName || i.id,
         roleName: i.roleName,
         roleType: i.roleType,

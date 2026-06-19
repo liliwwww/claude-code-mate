@@ -1329,8 +1329,14 @@ function _loadGraphScope() {
   } catch { return 'global'; }
 }
 function _loadGraphShowDisc() {
-  try { return localStorage.getItem(GRAPH_LS_SHOWDISC) === '1'; }
-  catch { return false; }
+  // [需求@2026-06-19] 所有 term 默认都显,状态用颜色 + 文字区分,
+  //   派工关系用连线表达。user 强调"全可见"而非"按状态藏"。
+  //   显式 '0' 才隐藏,未设默认 true。
+  try {
+    const v = localStorage.getItem(GRAPH_LS_SHOWDISC);
+    if (v == null) return true;
+    return v !== '0';
+  } catch { return true; }
 }
 
 const GRAPH_STATE = {
