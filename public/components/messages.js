@@ -102,6 +102,7 @@
     'stream.unstuckBody': '{name} 卡 busy {minutes} 分钟无活动,已自动 reset 为 idle。',
     'stream.copyBtnLabel': 'copy',
     'stream.copyBtnCopied': '✓ copied',
+    'stream.jumpToLatest': '↓ 跳到最新',
 
     // ---------------- Handoff card ----------------
     'handoff.pending': 'mate 已收到 · 派给 {target}',
@@ -447,6 +448,7 @@
     'stream.unstuckBody': '{name} stuck busy for {minutes} min with no activity — auto-reset to idle.',
     'stream.copyBtnLabel': 'copy',
     'stream.copyBtnCopied': '✓ copied',
+    'stream.jumpToLatest': '↓ Jump to latest',
 
     // ---------------- Handoff card ----------------
     'handoff.pending': 'mate received · dispatched to {target}',

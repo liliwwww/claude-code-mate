@@ -59,6 +59,7 @@ const els = {
   convTitle: el('#conv-title'),
   stagePicker: el('#stage-picker'),
   stream: el('#stream'),
+  streamJumpBtn: el('#stream-jump-btn'),
   msgInput: el('#msg-input'),
   sendForm: el('#send-form'),
   sendBtn: el('#send-btn'),
@@ -212,6 +213,35 @@ function attachCopyHandlers(scope) {
   });
 }
 
+// [需求@2026-06-20] 自动滚动只在 user 在底部时触发,离底时浮"跳到最新"按钮
+//   防"上滑回看被新消息冲走"。阈值 60px(刚好放下一条 msg)。
+const STREAM_AT_BOTTOM_THRESHOLD = 60;
+function isStreamAtBottom() {
+  const s = els.stream;
+  if (!s) return true;
+  return (s.scrollHeight - s.scrollTop - s.clientHeight) < STREAM_AT_BOTTOM_THRESHOLD;
+}
+function streamAutoScroll(force = false) {
+  const s = els.stream;
+  if (!s) return;
+  if (force || isStreamAtBottom()) {
+    s.scrollTop = s.scrollHeight;
+    if (els.streamJumpBtn) els.streamJumpBtn.hidden = true;
+  } else {
+    if (els.streamJumpBtn) els.streamJumpBtn.hidden = false;
+  }
+}
+function setupStreamJumpBtn() {
+  if (!els.stream || !els.streamJumpBtn) return;
+  els.stream.addEventListener('scroll', () => {
+    if (isStreamAtBottom()) els.streamJumpBtn.hidden = true;
+  }, { passive: true });
+  els.streamJumpBtn.addEventListener('click', () => {
+    els.stream.scrollTop = els.stream.scrollHeight;
+    els.streamJumpBtn.hidden = true;
+  });
+}
+
 function escapeHtml(s) {
   if (typeof s !== 'string') return '';
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -226,6 +256,7 @@ function escapeAttr(s) {
 async function init() {
   initTheme();
   configureMarked();
+  setupStreamJumpBtn();
 
   const sys = await api('/system');
   renderBanners(sys);
@@ -541,7 +572,8 @@ async function loadThreadHistory(slug) {
     state.earliestLoadedTs = msgs.length ? msgs[0].ts : null;
     state.fullHistoryLoaded = msgs.length < 5000;
     renderLoadMoreButton();
-    els.stream.scrollTop = els.stream.scrollHeight;
+    // [需求@2026-06-20] 切线索初次加载强滚到底(force),后续新消息按条件
+    streamAutoScroll(true);
   } catch (e) {
     console.error('history load failed:', e);
   }
@@ -667,7 +699,7 @@ function renderEventInStream(eventType, raw, autoscroll = true) {
     state.streamingAssistants.delete(state.focusedSlug);
   }
   if (node) els.stream.appendChild(node);
-  if (autoscroll) els.stream.scrollTop = els.stream.scrollHeight;
+  if (autoscroll) streamAutoScroll();
 }
 
 // [需求@2026-06-13 §19] LLM 等待 indicator — 解决"为什么半天没反应"的感知问题
@@ -936,7 +968,7 @@ function handleWsMsg({ type, payload }) {
     if (payload.threadSlug === state.focusedSlug) {
       const node = makeMsg('system done-card', t('stream.threadDoneTitle'), payload.summary || t('stream.threadDoneFallback'));
       els.stream.appendChild(node);
-      els.stream.scrollTop = els.stream.scrollHeight;
+      streamAutoScroll();
     }
     state.threads.set(payload.threadSlug, payload.thread);
     renderThreads();
@@ -947,7 +979,7 @@ function handleWsMsg({ type, payload }) {
       const node = makeMsg('blocked-card', t('stream.blockedTitle', { raisedBy: payload.raisedBy }),
         payload.question);
       els.stream.appendChild(node);
-      els.stream.scrollTop = els.stream.scrollHeight;
+      streamAutoScroll();
     }
     state.threads.set(payload.threadSlug, payload.thread);
     renderThreads();
@@ -972,7 +1004,7 @@ function handleWsMsg({ type, payload }) {
         const node = makeMsg('system', t('stream.unstuckTitle'),
           t('stream.unstuckBody', { name: payload.displayName, minutes: payload.stuckMinutes }));
         els.stream.appendChild(node);
-        els.stream.scrollTop = els.stream.scrollHeight;
+        streamAutoScroll();
       }
     }
   } else if (type === 'instance.aged_out') {
@@ -1340,7 +1372,8 @@ function appendOptimisticUserBubble(text, clientMessageId) {
   node.appendChild(bodyEl);
   node.appendChild(statusEl);
   els.stream.appendChild(node);
-  els.stream.scrollTop = els.stream.scrollHeight;
+  // [需求@2026-06-20] user 自己发的消息强滚到底(总希望看到自己刚发的)
+  streamAutoScroll(true);
   return node;
 }
 
@@ -1359,7 +1392,7 @@ function renderHandoffCard(payload, stage) {
       <div class="hf-line hf-line-2"><span class="hf-reason"></span></div>
     `;
     els.stream.appendChild(card);
-    els.stream.scrollTop = els.stream.scrollHeight;
+    streamAutoScroll();
   }
   card.classList.remove('hf-pending', 'hf-spawning', 'hf-ready', 'hf-failed');
   card.classList.add(`hf-${stage}`);
@@ -1547,7 +1580,7 @@ function wireInputs() {
         pushTickerEvent('kill', t('ticker.stopThread', { slug: state.focusedSlug, n, names: names ? ' (' + names + ')' : '' }));
         const sys = makeMsg('system', t('send.stopped'), n > 0 ? t('send.stoppedKill', { names }) : t('send.stoppedNone'));
         els.stream.appendChild(sys);
-        els.stream.scrollTop = els.stream.scrollHeight;
+        streamAutoScroll(true);
         stopWaitIndicator();
       } catch (e) {
         alert(t('send.stopFailed', { error: e.message }));

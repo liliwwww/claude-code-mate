@@ -129,6 +129,8 @@
         </label>
       </header>
       <div id="stream"></div>
+      <!-- [需求@2026-06-20] user 上滑回看时,新消息进来不强滚到底;离底显此按钮跳最新 -->
+      <button id="stream-jump-btn" type="button" hidden data-i18n="stream.jumpToLatest" data-i18n-attr-title="stream.jumpToLatest">↓ 跳到最新</button>
       <form id="send-form">
         <textarea id="msg-input" data-i18n-attr-placeholder="send.placeholder" placeholder="输入消息发送...(Ctrl+Enter 发送)" rows="3"></textarea>
         <button type="submit" id="send-btn" data-i18n="send.btn">发送</button>
