@@ -197,19 +197,33 @@ function _applyHandoff(stack, seg, lookup, warnings, idx) {
   }
 
   // push down: R→H 或 H→B/C
-  // 自愈:栈顶 instanceId 跟 fromInstanceId 不一致 → 补 push from
+  // [bug@2026-06-24] 老逻辑栈顶 != from 时直接补 push from → user 在 C 长任务中
+  //   打断又派新工(C 没 callback)时,栈堆叠 R/H/C/R/H/... 8 层。
+  //   线索 t-mqmi7hu3-hxf1 是典型:3 次中断 → 栈 8 层 7 次冗余。
+  //   修法:先 pop 到栈里能找到 from frame 那一层(中间未关闭的 frame 视为隐式 abandoned),
+  //   再 push。栈底找不到 from → 才补 push from。
   const topInstId = TCS.peek(stack)?.instanceId;
-  if (TCS.isEmpty(stack) || topInstId !== seg.fromInstanceId) {
+  if (!TCS.isEmpty(stack) && topInstId !== seg.fromInstanceId) {
+    // 沿栈往下找 fromInstanceId
+    const fromIdx = stack.frames.findIndex((f) => f.instanceId === seg.fromInstanceId);
+    if (fromIdx >= 0) {
+      const popped = stack.frames.length - 1 - fromIdx;
+      stack.frames.length = fromIdx + 1;
+      warnings.push(`seg[${idx}] push: pop ${popped} abandoned frame(s) above ${seg.fromInstanceId} (was top=${topInstId})`);
+    }
+  }
+  const topInstIdAfter = TCS.peek(stack)?.instanceId;
+  if (TCS.isEmpty(stack) || topInstIdAfter !== seg.fromInstanceId) {
     const fromFrame = TCS.createFrame({
       role: fromType,
       slot: _inferSlot(fromType, seg.fromInstanceId),
       instanceId: seg.fromInstanceId || null,
       sessionId: seg.fromInstanceId ? lookup(seg.fromInstanceId) : null,
       status: TCS.FrameStatus.AWAITING_CALLEE,
-      pushedAt: (seg.ts || Date.now()) - 1, // 比当前 seg 略早
+      pushedAt: (seg.ts || Date.now()) - 1,
     });
     TCS.push(stack, fromFrame);
-    if (!TCS.isEmpty(stack) && topInstId !== seg.fromInstanceId && topInstId !== undefined) {
+    if (topInstId !== undefined && topInstId !== seg.fromInstanceId) {
       warnings.push(`seg[${idx}] push: self-healed missing from frame (top was ${topInstId}, expected ${seg.fromInstanceId})`);
     }
   }

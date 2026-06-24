@@ -145,8 +145,29 @@ user 不知道你在等 user 拍板还是已经 done 还是 bounce — **一切�
 
 如果 1-4 任何一条 = yes,**末尾必须有对应 marker**,否则 mate 视角你的工作没收尾。
 
-- `<mate:handoff target="mate-R" reason="<reason>" />`  **[legacy,仍兼容]**
-  跟 `<mate:bounce>` 等价的老语法。优先用 `<mate:bounce>`,语义更明确。
+### ⛔ 反模式:用 `handoff target="mate-R"` 当 bounce 用 [需求@2026-06-24 反堆栈]
+
+错误:
+```
+<mate:handoff target="mate-R" reason="Slice 1 已验收通过,请告诉用户进展" />
+```
+→ mate 视角:R 是新派工接受方,push 一层 R 帧到栈顶。后续 R 又派 H,又 push H 帧 → 栈 R/H/R/H 越堆越深,done 永远 pop 不完。
+
+正确:
+```
+<mate:bounce reason="Slice 1 已验收通过,请告诉用户进展" />
+```
+→ mate 视角:H 自己 pop 出栈,reason 流回 R(caller),R 拿 bounce reason 跟 user 沟通。栈干净。
+
+**判别口诀**:reason/summary 的内容是写给 user 看的(不是给 R 派新任务)→ 一律 bounce,绝不 handoff target=mate-R。
+
+- `<mate:handoff target="mate-R" reason="<reason>" />`  **[DEPRECATED 2026-06-24,会堆栈,禁用!]**
+  ⛔ **不要用**。语义和 `<mate:bounce>` 表面相似,实际是 push 一层新 R 帧(不是 pop H 回 R)。
+  连续 milestone 多次"H→R 转述给 user"用这语法 → 栈无限堆 R/H/R/H/...
+  栈越深 → done 永远 pop 不完 → outcome 永远 verified 不了。
+  线索 `t-mqmi7hu3-hxf1` 就是这个 bug 的典型(83 段 chain 0 done,栈 8 层)。
+
+  **凡是"把信息回报给 R 让 R 转 user"的场景,一律用 `<mate:bounce reason="..." />`**。
 
 - `<mate:blocked question="<question>" severity="high" />`
   Use when: 真正的业务决策,只有 user 能拍(不是技术 bug)。

@@ -188,6 +188,36 @@ describe('replayChain — self-heal on push when stack missing frames', () => {
   });
 });
 
+describe('replayChain — abandoned frames pop (bug@2026-06-24 t-mqmi7hu3-hxf1)', () => {
+  it('C 长任务跑中 user 打断,R 再派新工 → pop 中间 abandoned frames,不累积', () => {
+    // 真实场景:H 派 C 跑长任务,C 没 callback(还在跑),user 直接通过 R 派新工。
+    // 栈: [R,H,C]  → 突来 R→H handoff(from=R 栈顶=C)→ 应 pop C 而非堆叠成 [R,H,C,R,H]
+    const r = replayChain([
+      handoff('mate-R', 'R-1', 'mate-H', 'H-1'),     // [R,H]
+      handoff('mate-H', 'H-1', 'mate-C', 'C-1'),     // [R,H,C] — C 跑长任务
+      handoff('mate-R', 'R-1', 'mate-H', 'H-1'),     // user 中断后 R 又派 → 应 pop C,栈 = [R,H] 再 push 还是栈 [R,H]
+    ]);
+    expect(TCS.depth(r.stack)).toBe(2);
+    expect(r.stack.frames.map((f) => f.role).join('/')).toBe('R/H');
+    // 应有 warning 说 pop 了 1 个 abandoned frame
+    expect(r.warnings.some((w) => w.includes('abandoned'))).toBe(true);
+  });
+
+  it('多次中断累积场景:之前会堆 8 层,修后应 ≤ 3 层', () => {
+    // t-mqmi7hu3-hxf1 简化版:3 次中断在 C 跑期间
+    const ch = [];
+    for (let i = 0; i < 3; i++) {
+      ch.push(handoff('mate-R', 'R-1', 'mate-H', 'H-1'));
+      ch.push(handoff('mate-H', 'H-1', 'mate-C', 'C-1'));
+      // 没 C→H callback,直接下一轮 R→H
+    }
+    ch.push(handoff('mate-R', 'R-1', 'mate-H', 'H-1'));
+    const r = replayChain(ch);
+    expect(TCS.depth(r.stack)).toBe(2);
+    expect(r.warnings.filter((w) => w.includes('abandoned')).length).toBe(3);
+  });
+});
+
 describe('replayChain — running frames 末尾都标 needs_kick', () => {
   it('栈顶 running frame 末尾改成 needs_kick(mate 重启后续命)', () => {
     const r = replayChain([
