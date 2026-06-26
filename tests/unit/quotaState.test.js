@@ -151,6 +151,31 @@ describe('QuotaState.ingest', () => {
     QuotaState.ingest(makeEvent({ type: 'minutely', status: 'allowed' }));
     expect(QuotaState.byType.size).toBe(0);
   });
+
+  it('[bug@2026-06-26 #166] server reject {status:rejected, no type} → 借 5h resetsAt 触发 pause', () => {
+    reset();
+    // 先来一条 allowed 5h 把 resetsAt 写进 byType
+    const future = Math.floor(Date.now() / 1000) + 1200;  // 20 min 后
+    QuotaState.ingest(makeEvent({ type: 'five_hour', status: 'allowed', util: 0.9, resetsAtSec: future }));
+    busCalls.length = 0;
+    // 紧接 server-reject(线上场景 RLI 只 2 字段)
+    QuotaState.ingest({ rate_limit_info: { status: 'rejected', isUsingOverage: false } });
+    const s = QuotaState.byType.get('five_hour');
+    expect(s.status).toBe('rate_limited');
+    expect(s.resetsAt).toBe(future * 1000);  // 借了 5h 的 resetsAt(ms)
+    expect(QuotaState.isPaused()).toBe(true);
+    expect(busCalls.some((c) => c.topic === 'system.quota_paused')).toBe(true);
+  });
+
+  it('[bug@2026-06-26 #166] server reject 无 5h 历史 → fallback 5min backoff', () => {
+    reset();
+    QuotaState.ingest({ rate_limit_info: { status: 'rejected', isUsingOverage: false } });
+    const s = QuotaState.byType.get('five_hour');
+    expect(s.status).toBe('rate_limited');
+    const backoffMs = s.resetsAt - Date.now();
+    expect(backoffMs > 4 * 60 * 1000).toBe(true);  // 大约 5 min
+    expect(backoffMs <= 5 * 60 * 1000 + 1000).toBe(true);
+  });
 });
 
 describe('QuotaState fixture replay from real samples', () => {

@@ -100,6 +100,19 @@ class QuotaState {
     const info = rawPayload?.rate_limit_info;
     if (!info) return;
     const type = info.rateLimitType;
+
+    // [需求@2026-06-26 边界 case] server-side 临时 throttle 推 {status:'rejected'},
+    //   无 rateLimitType / 无 resetsAt。老逻辑 line 103 unknown type 直接 return →
+    //   QuotaState 完全不知道发生限流,UI 没 banner,user 收 429 ERROR 全靠手动重发。
+    //   修法:借用 byType['five_hour'] 的 resetsAt 当 pause 截止时间(claude 自己内部 throttle
+    //   通常跟 5h 配额窗口对齐),没 five_hour 历史时 fallback 5 min 固定 backoff。
+    //   走现有 _performPause 路径 → setTimer + cron 兜底 + system.quota_paused 广播 →
+    //   到点 _timerFired 自动 resume + 队列 flush。
+    if (info.status === 'rejected' && !type) {
+      this._ingestServerReject(info);
+      return;
+    }
+
     if (type !== 'five_hour' && type !== 'seven_day') {
       console.warn(`[QuotaState] unknown rateLimitType: ${type}`);
       return;
@@ -145,6 +158,47 @@ class QuotaState {
     }
 
     bus.publish('system.quota_update', this._snapshotFor(type));
+  }
+
+  // [需求@2026-06-26] server-side reject 边界处理:走 five_hour bucket(借 resetsAt)
+  _ingestServerReject(info) {
+    const FALLBACK_BACKOFF_MS = 5 * 60 * 1000;  // 5 分钟兜底
+    const fiveHour = this.byType.get('five_hour');
+    const now = Date.now();
+    // 优先用 5h 周期的 resetsAt(claude 通常对齐);已过期或没有 → fallback 5min
+    let resetsAtMs = fiveHour?.resetsAt && fiveHour.resetsAt > now
+      ? fiveHour.resetsAt
+      : now + FALLBACK_BACKOFF_MS;
+
+    const prev = fiveHour;
+    const next = {
+      status: 'rate_limited',  // 借 5h bucket 标 paused
+      utilization: prev?.utilization ?? null,
+      resetsAt: resetsAtMs,
+      updatedAt: now,
+      manualOverride: false,
+      timer: prev?.timer ?? null,
+    };
+    this.byType.set('five_hour', next);
+    try {
+      stmts.qsUpsert.run({
+        rate_limit_type: 'five_hour',
+        status: 'rate_limited',
+        utilization: next.utilization,
+        resets_at: resetsAtMs,
+        updated_at: now,
+        manual_override: 0,
+      });
+    } catch (e) {
+      console.warn(`[QuotaState] persist server_reject failed: ${e.message}`);
+    }
+
+    const wasPaused = prev ? this._shouldPause(prev) : false;
+    if (!wasPaused) {
+      console.log(`[QuotaState] server-side reject ingested,fall through to five_hour pause until ${new Date(resetsAtMs).toISOString()}`);
+      this._performPause('five_hour', resetsAtMs);
+    }
+    bus.publish('system.quota_update', this._snapshotFor('five_hour'));
   }
 
   _shouldPause(state) {
