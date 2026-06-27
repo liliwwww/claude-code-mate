@@ -1,6 +1,6 @@
 {
   "name": "claude-code-mate",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Local Web UI for managing multiple concurrent Claude Code CLI sessions across mate roles (mate-R / mate-H / mate-B / mate-C) on Windows. zh/en i18n.",
   "keywords": [
     "claude",

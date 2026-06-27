@@ -83,6 +83,64 @@
 - **No queue / no concurrent thread tracking when multiple R dispatch to the same H**: H has `parallelism_limit: 1`; a busy H receiving a second marker writes directly to stdin; `inst.threadSlug` gets overwritten, causing thread1's status light to go dark (see docs/discussions/2026-06-15-multi-r-handoff.md)
 - **PendingSends table exists but is unused**: queued dispatch was Phase 2D work that was skipped
 
-## [Unreleased]
+## [0.5.0] — 2026-06-27 · stack-model SSOT + anti-hallucination + 429 auto-recovery + breadcrumb guards
 
-For pre-0.4.0 history, see [CHANGELOG.md](./CHANGELOG.md) (Chinese). Older versions (0.3.x, 0.2.x, 0.1.x) tracked internal Phase 2A/2B/2C milestones and are not translated retroactively — they predate the first GitHub release.
+50+ commits since v0.4.0 (2026-06-15). Three main themes:
+
+### Stack-model architecture (full 5-phase RFC)
+
+Stack replaces event log as the dispatch-state SSOT. Detail RFC: [`docs/discussions/2026-06-16-stack-model-rfc.md`](docs/discussions/2026-06-16-stack-model-rfc.md).
+
+- Phase 1 (`a4b4efd`) — DB v11 + ThreadCallStack + SlotPool + 48 unit tests
+- Phase 2.1/2.2 (`3080ad5`) — replay algorithm + migration
+- Phase 2.3 (`c991096`) — kb_knowledge session_id validation tool
+- Phase 3 (`c85982c`) — MarkerDispatcher operates stack directly, drop reverse-scan caller lookup
+- Phase 3.6 (`18b035f`) — stack derived purely from chain replay (eliminates accumulation bugs)
+- Phase 4 (`f271852`) — `<mate:bounce reason="..." />` replaces `<mate:handoff target="mate-R" />` for explicit semantics
+
+### Dispatch logging to sibling project (`84f8811`)
+
+Auto-write dispatch records to `<project>/doc/dispatch/<task_slug>_<NNN>_<from>_to_<to>_<ts>.md`. User reversed earlier "mate must not pollute managed projects" stance after realizing the 270+ `WORK_HANDOFF_*.md` files in `kb_backend/doc/` were the trail they actually grep'd. `doc/` is process docs anyway.
+
+### E2E test suite (`345167a` + `610bc46`)
+
+Playwright + MockRoleInstance, 10 specs / 11 assertions pass (2 multi-thread skipped for Phase 3), ~50s runtime. Required for confident SSOT refactor.
+
+### Anti-hallucination prompts
+
+- `516c9aa` — "Marker emit is the only authentication" sections in R/H prompts; LLM saying "I dispatched" without emitting marker no longer fools mate
+- `48e7c53` — every role must `curl` mate API before reporting status; task tag now includes `Project: <id>` for the curl URL
+- `8197a42` — fixed `_performDone` string-mismatch bug where R never received delegate-done callback because condition checked `'requirements'` but actual value was `'mate-R'`
+
+### Server-side 429 auto-recovery (`497a11a` + `df1f2e4`)
+
+- `_ingestServerReject` — recognize RLI `{status:"rejected"}` (2-field edge case, no rateLimitType), borrow `five_hour` resetsAt as pause deadline, fall through to `_performPause` (setTimer + cron + banner broadcast)
+- `sendToThread` / `sendDirectToInstance` gated on `QuotaState.isPaused()` — paused → enqueue PendingSends (`reason='quota_pause'`); `system.quota_resumed` listener triggers FIFO flush
+
+### Breadcrumb alignment (`77a961b`)
+
+Frontend `renderBreadcrumb` replay logic was out of sync with server `replayChain._applyHandoff` since `dc416c5` — user reported "dispatch chain growing endlessly". For thread `t-mqmi7hu3-hxf1` (163-segment chain): server stack depth=2, frontend depth=16. Sync'd frontend: pop abandoned frames when stack top ≠ from, instead of pushing.
+
+### Chip popover readability (`6ecf724`)
+
+Pending-send chip now shows `**mate-B-1** [mate-B] [busy] × 1` / `thread: [AI Report]` / `from: mate-H-1` / `[handoff] [⏳ target busy]` instead of opaque internal IDs.
+
+### Other notable fixes
+
+- `94f012b` — old threads (5000+ messages) couldn't see latest UI / LLM output (history API was ORDER BY ASC, taking oldest N)
+- `dc416c5` — `replayChain._applyHandoff` self-heal: pop abandoned frames when interrupting B/C long task; line t-mqmi7hu3-hxf1 stack 8 → 1
+- `06fd6af` — `/api/runtime/snapshot` was missing `projectId` field; dashboard state graph H/B/C disappeared when scoped
+- `c7de54f` — autoscroll respects user scrolling up; "↓ Jump to latest" button appears when off-bottom
+- `913a787` — verified threads / reused instances no longer falsely lock input
+- `7111f1b` — H/B/C `allowed_tools` include `mcp__kb__*` (LLM was bypassing dontAsk via Bash + SQL)
+
+### Files added
+
+- `docs/discussions/2026-06-16-stack-model-rfc.md` — stack model RFC, 8 edge cases + 5-phase migration
+- `docs/backlog.md` — project-level backlog tracking
+- `tests/e2e/` — 10 Playwright specs + fixtures
+- `tests/unit/` — replayChain / threadCallStack / quotaState / slotPool / pendingSends regression tests
+
+---
+
+## [Unreleased]

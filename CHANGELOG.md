@@ -81,9 +81,9 @@
 - **多 R 派工给同一 H 时无队列、无并发追踪**:H `parallelism_limit: 1`,busy H 收第二个 marker 直接写 stdin,`inst.threadSlug` 被覆盖导致 thread1 状态灯熄(详见 docs/discussions/2026-06-15-multi-r-handoff.md)
 - **PendingSends 表存在但未启用**:Phase 2D 未完成的队列化派工
 
-## [Unreleased] · 2026-06-15 ~ 2026-06-19 累积(0.5.0-dev)
+## [0.5.0] — 2026-06-27 · stack-model SSOT + 反幻觉 + 429 自动恢复 + 派工链护栏
 
-`v0.4.0` (2026-06-15) 之后的所有 commits。按需求/痛点归类。
+`v0.4.0` (2026-06-15) 之后的 50+ commits。三大主题:**派工状态机改 chain SSOT 派生**(根治累积漏洞)、**反幻觉系列**(marker 是唯一认证 + 状态查实)、**429 server-side throttle 自动到点恢复**。
 
 ### 新增 · 栈模型架构(stack-model RFC 全 5 phase)
 
@@ -148,6 +148,53 @@
 - H 报状态前同样查实
 - B/C 引用其它 thread 状态时查实
 - 治标也兼治本:即使有 callback 注入失败 bug,role 也会因查实而不再幻觉
+
+### 新增 · server-side 429 自动到点恢复(2026-06-26 ~ 27)
+
+| Commit | 内容 |
+|---|---|
+| `497a11a` | QuotaState 识别 `{status:"rejected"}` 边界 RLI — 借 5h resetsAt 触发 PAUSED + setTimer |
+| `df1f2e4` | paused 期间 send 入队 PendingSends(reason='quota_pause')+ resume 后自动 FIFO flush |
+
+**user 痛点**:碰到 `api_error_status=429 API Error: Server is temporarily limiting requests` 后 UI 显 ERROR,需要手动重发;mate 现有 QuotaState 系统(5h/7d 配额) 不接这种 server-side throttle 因为 RLI schema 不一样(无 type、无 resetsAt)。
+
+- 真因:claude 在 429 前 6 秒推过 RLI,载荷只 2 字段 `{status:"rejected", isUsingOverage:false}`,QuotaState.ingest line 103 unknown type 直接 return → 完全丢弃 → 没人挂 timer
+- 修法 ①:`_ingestServerReject` 借 byType['five_hour'] 的 resetsAt 当 pause 截止;无 5h 历史 → fallback 5min。走现有 `_performPause` 路径(setTimer + cron + 广播 banner)
+- 修法 ②:`sendToThread` / `sendDirectToInstance` 加 `QuotaState.isPaused()` gate,paused 时入 PendingSends(`reason='quota_pause'`);`bus.subscribe('system.quota_resumed')` 触发 `_flushQuotaPaused()` 按 enqueuedAt FIFO 顺序逐条 dispatch
+- 全局自动恢复:5h/7d 都是账户级,所有 term 同时解禁;入队的 marker 顺序保留,栈一致性不破
+
+### 新增 · 派工链 UI 跟服务端栈算法对齐(2026-06-27)
+
+| Commit | 内容 |
+|---|---|
+| `77a961b` | 前端 renderBreadcrumb 跟服务端 replayChain._applyHandoff 算法同步 — push 时沿栈找 from,截到那层不再补 push |
+
+**user 痛点**:线索 t-mqmi7hu3-hxf1 顶栏面包屑显示"派工链越来越长"。查 163 段 chain:服务端栈 depth=2 R/H ✓ vs 前端栈 depth=**16** R/H/C/R/H/C/R/H/B/R/H/R/H/R/H/B ✗。
+
+- 真因:6/24 `dc416c5` 修 replayChain 算法时漏了前端同款 `renderBreadcrumb`,user 每次在 B/C 长任务跑中打断又派新工时,前端栈累积 R/H/X/R/H/X/...
+- 修法:前端 push 分支 sync 服务端 — 栈顶 != from 时先 `findIndex(fromInstanceId)` 沿栈往下找,找到 `stack.length = fromIdx + 1` (pop abandoned),没找到才补 push from
+- 实测 163 段 chain:depth 16 → 3
+
+### 新增 · chip popover 排队项可读化(2026-06-27)
+
+| Commit | 内容 |
+|---|---|
+| `6ecf724` | 顶栏 chip 排队详情:displayName + 线索 title + reason + 派工源 + kind/status 色块 |
+
+**user 痛点**:顶栏 chip "排队:1" 点击 popover 只显内部 id (`mate-B.ewap6k`),看不出是哪个 term/哪条线索在排队。
+
+- server `/api/runtime/snapshot` byTarget 项补字段:`targetDisplay` / `targetRoleName` / `targetStatus` / `threadTitle` / `reasons[]` / `kinds[]` / `fromInstances[]`
+- popover 新格式三行:`**mate-B-1** [mate-B] [busy] × 1` / `线索:[AI 报告]` / `来自:mate-H-1` / `[派工] [⏳ 目标 busy]`
+- reason 区分 busy / quota_pause / spawning,kind 区分 handoff/thread_send/direct_send
+
+### 修复 · stack-model SSOT 切换后的边界 bug
+
+| Commit | Bug 现象 | 修法 |
+|---|---|---|
+| `8197a42` | 线索 verified 后 R 没收到 H 完工 callback,R 凭 stale history 编状态 | `_performDone` R-notify 条件 `callerRoleType==='requirements'` 但实际值是 `'mate-R'` 字符串错配,改 OR 同时认两种 |
+| `dc416c5` | 线索 t-mqmi7hu3-hxf1 栈 8 层 R/H/C/R/H/C/R/H | `replayChain._applyHandoff` self-heal 改:栈顶 != from 时沿栈找 from 截到那层(pop abandoned),不再补 push 累积 |
+| `06fd6af` | dashboard 状态图 H/B/C 不显示 | `/api/runtime/snapshot` push 字段时漏 projectId,前端按 scope 过滤一锅干掉。补字段 + 默认显所有 term |
+| `c7de54f` | user 上滑看历史时被新消息自动滚动打断 | 加 `streamAutoScroll(force)` helper,user 在底部 60px 内才滚,离底浮"↓ 跳到最新"按钮 |
 
 ### 修复
 
