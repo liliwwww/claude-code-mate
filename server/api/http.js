@@ -130,19 +130,78 @@ function buildRouter() {
     }
 
     // pending 计数
+    // [需求@2026-06-27 #169] byTarget 加可读字段(displayName / threadTitle / reason 等),
+    //   user 在 chip popover 才能看出"哪个终端/哪条线索在排队"
     const byReason = PendingSends.countByReason();
-    const pendingByTarget = (projectId ? PendingSends.listByProject(projectId) : PendingSends.listAll())
+    const pendingRows = (projectId ? PendingSends.listByProject(projectId) : PendingSends.listAll());
+    const pendingByTarget = pendingRows
       .reduce((acc, p) => {
         const key = `${p.targetKind}:${p.targetId}`;
-        if (!acc[key]) acc[key] = { targetKind: p.targetKind, targetId: p.targetId, n: 0, latestEnqueuedAt: 0 };
+        if (!acc[key]) acc[key] = {
+          targetKind: p.targetKind,
+          targetId: p.targetId,
+          n: 0,
+          latestEnqueuedAt: 0,
+          reasons: new Set(),
+          kinds: new Set(),
+          threadSlugs: new Set(),
+          fromInstanceIds: new Set(),
+        };
         acc[key].n++;
         if (p.enqueuedAt > acc[key].latestEnqueuedAt) acc[key].latestEnqueuedAt = p.enqueuedAt;
+        if (p.reason) acc[key].reasons.add(p.reason);
+        if (p.kind) acc[key].kinds.add(p.kind);
+        if (p.threadSlug) acc[key].threadSlugs.add(p.threadSlug);
+        if (p.fromInstanceId) acc[key].fromInstanceIds.add(p.fromInstanceId);
         return acc;
       }, {});
+    // 解析 displayName 和 threadTitle(只查涉及的 instance / thread,避免全表扫)
+    const allInstanceIds = new Set();
+    const allThreadSlugs = new Set();
+    Object.values(pendingByTarget).forEach((it) => {
+      if (it.targetKind === 'instance') allInstanceIds.add(it.targetId);
+      it.fromInstanceIds.forEach((id) => allInstanceIds.add(id));
+      it.threadSlugs.forEach((s) => allThreadSlugs.add(s));
+      if (it.targetKind === 'thread') allThreadSlugs.add(it.targetId);
+    });
+    const instanceById = {};
+    for (const id of allInstanceIds) {
+      const inst = spawnManager.instances.get(id);
+      if (inst) instanceById[id] = { displayName: inst.displayName || id, roleName: inst.roleName, status: inst.status };
+    }
+    const threadBySlug = {};
+    for (const slug of allThreadSlugs) {
+      try {
+        const t = db.prepare(`SELECT slug, title, stage FROM threads WHERE slug = ?`).get(slug);
+        if (t) threadBySlug[slug] = { title: t.title || slug, stage: t.stage };
+      } catch {}
+    }
+    const byTarget = Object.values(pendingByTarget).map((it) => ({
+      targetKind: it.targetKind,
+      targetId: it.targetId,
+      n: it.n,
+      latestEnqueuedAt: it.latestEnqueuedAt,
+      reasons: [...it.reasons],
+      kinds: [...it.kinds],
+      threadSlugs: [...it.threadSlugs],
+      // 新增可读字段
+      targetDisplay: it.targetKind === 'instance'
+        ? (instanceById[it.targetId]?.displayName || it.targetId)
+        : (threadBySlug[it.targetId]?.title || it.targetId),
+      targetRoleName: instanceById[it.targetId]?.roleName || null,
+      targetStatus: instanceById[it.targetId]?.status || null,
+      threadTitle: it.threadSlugs.size === 1
+        ? (threadBySlug[[...it.threadSlugs][0]]?.title || null)
+        : null,
+      fromInstances: [...it.fromInstanceIds].map((id) => ({
+        id,
+        displayName: instanceById[id]?.displayName || id,
+      })),
+    }));
     const pending = {
       total: projectId ? PendingSends.countByProject(projectId) : PendingSends.count(),
       byReason,
-      byTarget: Object.values(pendingByTarget),
+      byTarget,
     };
 
     // cap 新口径(§13 修复:不算 disconnected)

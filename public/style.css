@@ -536,7 +536,18 @@ main { flex: 1; display: flex; min-height: 0; }
 .runtime-popover .rp-more { font-size: 10px; color: var(--text-muted); padding: 2px; text-align: center; }
 .runtime-popover .rp-pending-section { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .runtime-popover .rp-pending-section h4 { margin: 0 0 6px; color: #ffd88a; }
-.runtime-popover .rp-pending-item { padding: 3px 6px; background: var(--bg-input); border-radius: 3px; margin-bottom: 3px; }
+.runtime-popover .rp-pending-item { padding: 6px 8px; background: var(--bg-input); border-radius: 4px; margin-bottom: 5px; font-size: 12px; }
+.runtime-popover .rp-pending-target { display: flex; align-items: center; gap: 6px; }
+.runtime-popover .rp-pending-target strong { color: var(--text-primary); }
+.runtime-popover .rp-pending-role { font-size: 10px; color: var(--text-secondary); }
+.runtime-popover .rp-pending-status { font-size: 10px; padding: 1px 5px; border-radius: 8px; background: var(--bg-elevated); color: var(--text-secondary); }
+.runtime-popover .rp-pending-status-busy { background: #3a2c1f; color: #ffcc66; }
+.runtime-popover .rp-pending-status-idle { background: #1f2a1f; color: #88dd88; }
+.runtime-popover .rp-pending-n { margin-left: auto; color: #ffd88a; font-weight: 600; }
+.runtime-popover .rp-pending-thread, .runtime-popover .rp-pending-from { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+.runtime-popover .rp-pending-meta { margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
+.runtime-popover .rp-pending-kind, .runtime-popover .rp-pending-reason { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: var(--bg-elevated); color: var(--text-secondary); }
+.runtime-popover .rp-pending-reason { color: #ffaa66; }
 
 /* [需求@2026-06-12 Phase 2E §12] mateTerm 乐观 UI 三态 */
 .mt-msg.user.mt-msg-sending { opacity: 0.6; }

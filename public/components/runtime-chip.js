@@ -263,17 +263,44 @@
     }
     html += `</div>`;
 
-    // 排队详情
+    // 排队详情 [需求@2026-06-27 #169] 可读化:displayName / 线索 title / reason / 派工源
     if (snap.pending?.total > 0) {
       html += `<div class="rp-pending-section">
         <h4>${escapeHtml(t('popover.pendingHeader', { n: snap.pending.total }))}</h4>`;
+      const reasonLabel = (r) => {
+        if (r === 'busy') return t('popover.pendingReasonBusy');
+        if (r === 'quota_pause') return t('popover.pendingReasonQuotaPause');
+        if (r === 'spawning') return t('popover.pendingReasonSpawning');
+        return r;
+      };
+      const kindLabel = (k) => {
+        if (k === 'handoff_marker') return t('popover.pendingKindHandoff');
+        if (k === 'thread_send') return t('popover.pendingKindThreadSend');
+        if (k === 'direct_send') return t('popover.pendingKindDirectSend');
+        return k;
+      };
       for (const it of (snap.pending.byTarget || []).slice(0, 10)) {
-        // popover.pendingItem 含 <code> — 用 raw replace 保留 HTML
-        const itemHtml = t('popover.pendingItem')
-          .replace('{kind}', escapeHtml(it.targetKind))
-          .replace('{id}', `<code>${escapeHtml(it.targetId)}</code>`)
-          .replace('{n}', String(it.n));
-        html += `<div class="rp-pending-item">${itemHtml}</div>`;
+        const display = it.targetDisplay || it.targetId;
+        const roleHint = it.targetRoleName ? `<span class="rp-pending-role">[${escapeHtml(it.targetRoleName)}]</span>` : '';
+        const statusHint = it.targetStatus ? `<span class="rp-pending-status rp-pending-status-${escapeHtml(it.targetStatus)}">${escapeHtml(it.targetStatus)}</span>` : '';
+        const reasonsHtml = (it.reasons || []).map((r) => `<span class="rp-pending-reason">${escapeHtml(reasonLabel(r))}</span>`).join('');
+        const kindsHtml = (it.kinds || []).map((k) => `<span class="rp-pending-kind">${escapeHtml(kindLabel(k))}</span>`).join('');
+        const threadLine = it.threadTitle
+          ? `<div class="rp-pending-thread">${escapeHtml(t('popover.pendingThread', { title: it.threadTitle }))}</div>`
+          : '';
+        const fromNames = (it.fromInstances || []).map((f) => f.displayName).join(', ');
+        const fromLine = fromNames
+          ? `<div class="rp-pending-from">${escapeHtml(t('popover.pendingFrom', { names: fromNames }))}</div>`
+          : '';
+        html += `<div class="rp-pending-item">
+          <div class="rp-pending-target">
+            <strong>${escapeHtml(display)}</strong> ${roleHint} ${statusHint}
+            <span class="rp-pending-n">× ${it.n}</span>
+          </div>
+          ${threadLine}
+          ${fromLine}
+          <div class="rp-pending-meta">${kindsHtml} ${reasonsHtml}</div>
+        </div>`;
       }
       html += `</div>`;
     }
