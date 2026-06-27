@@ -126,6 +126,11 @@ function listByStatus(status) {
   return stmts.psListByStatus.all(status).map(parseRow);
 }
 
+// [需求@2026-06-27 #167] quota PAUSED 时入队的项,resume 后按 enqueuedAt FIFO flush
+function listByReasonAndStatus(reason, status) {
+  return stmts.psListByReasonAndStatus.all(reason, status).map(parseRow);
+}
+
 function listByThread(threadSlug) {
   return stmts.psListByThread.all(threadSlug).map(parseRow);
 }
@@ -158,6 +163,7 @@ module.exports = {
   listAll,
   listByProject,
   listByStatus,
+  listByReasonAndStatus,
   listByThread,
   getById,
   remove,

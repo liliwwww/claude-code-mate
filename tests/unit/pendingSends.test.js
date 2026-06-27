@@ -53,6 +53,7 @@ const fakeStmts = {
   psListAll: tdb.prepare(`SELECT * FROM mate_pending_sends ORDER BY enqueued_at ASC`),
   psListByProject: tdb.prepare(`SELECT * FROM mate_pending_sends WHERE project_id = ? ORDER BY enqueued_at ASC`),
   psListByStatus: tdb.prepare(`SELECT * FROM mate_pending_sends WHERE status = ? ORDER BY enqueued_at ASC`),
+  psListByReasonAndStatus: tdb.prepare(`SELECT * FROM mate_pending_sends WHERE reason = ? AND status = ? ORDER BY enqueued_at ASC`),
   psListByThread: tdb.prepare(`SELECT * FROM mate_pending_sends WHERE thread_slug = ? ORDER BY enqueued_at ASC`),
   psGetById: tdb.prepare(`SELECT * FROM mate_pending_sends WHERE id = ?`),
   psDelete: tdb.prepare(`DELETE FROM mate_pending_sends WHERE id = ?`),
@@ -146,6 +147,17 @@ describe('PendingSends.enqueue/list/count', () => {
     expect(ps.listByProject(1)).toHaveLength(1);
     expect(ps.countByProject(1)).toBe(1);
     expect(ps.countByProject(99)).toBe(0);
+  });
+
+  it('[#167] listByReasonAndStatus 给 quota flush 找入队的 quota_pause 项', () => {
+    reset();
+    ps.enqueue({ kind: 'thread_send', targetKind: 'thread', targetId: 'a', payload: {}, reason: 'quota_pause', status: 'queued' });
+    ps.enqueue({ kind: 'direct_send', targetKind: 'instance', targetId: 'I-1', payload: {}, reason: 'quota_pause', status: 'queued' });
+    ps.enqueue({ kind: 'handoff_marker', targetKind: 'instance', targetId: 'I-2', payload: {}, reason: 'busy', status: 'queued' });
+    const rows = ps.listByReasonAndStatus('quota_pause', 'queued');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].kind).toBe('thread_send');  // FIFO
+    expect(rows[1].kind).toBe('direct_send');
   });
 });
 

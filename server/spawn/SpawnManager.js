@@ -63,6 +63,7 @@ const PoolAllocator = require('./PoolAllocator');
 const HandoffTracker = require('./HandoffTracker');
 const MarkerDispatcher = require('./MarkerDispatcher');
 const QueueDispatcher = require('./QueueDispatcher');
+const PendingSends = require('./PendingSends');
 
 class SpawnManager {
   constructor() {
@@ -100,6 +101,63 @@ class SpawnManager {
         }
       }
     };
+
+    // [需求@2026-06-27 #167] quota resume → flush 入队的 quota_pause send
+    //   setImmediate 延迟订阅:避免 module 加载期 circular dep(bus 此刻可能未初始化完)
+    setImmediate(() => {
+      try {
+        bus.subscribe('system.quota_resumed', () => {
+          if (QuotaState.isPaused()) return;  // 另一轨还 paused → 不 flush
+          this._flushQuotaPaused().catch((e) => {
+            console.error('[SpawnManager] quota flush failed:', e.message);
+          });
+        });
+      } catch (e) {
+        console.warn('[SpawnManager] quota_resumed subscribe failed:', e.message);
+      }
+    });
+  }
+
+  // [需求@2026-06-27 #167] quota resume 时按 enqueuedAt 顺序 flush 已入队的 send
+  async _flushQuotaPaused() {
+    const rows = PendingSends.listByReasonAndStatus('quota_pause', 'queued');
+    if (!rows.length) return;
+    console.log(`[SpawnManager] quota resumed — flushing ${rows.length} deferred send(s)`);
+    for (const row of rows) {
+      try {
+        if (row.kind === 'thread_send') {
+          this.sendToThread({
+            projectId: row.projectId,
+            projectRootDir: row.payload.projectRootDir,
+            threadSlug: row.threadSlug,
+            text: row.payload.text,
+            roleType: row.payload.roleType,
+            targetSlot: row.payload.targetSlot,
+            targetInstance: row.payload.targetInstanceId,
+            clientMessageId: row.payload.clientMessageId,
+            fromMarker: row.payload.fromMarker,
+            markerFromInst: row.payload.markerFromInstId ? this.instances.get(row.payload.markerFromInstId) : null,
+            markerSpec: row.payload.markerSpec,
+            markerReason: row.payload.markerReason,
+            _skipQuotaGate: true,
+          });
+        } else if (row.kind === 'direct_send') {
+          this.sendDirectToInstance(row.targetId, row.payload.text, {
+            clientMessageId: row.payload.clientMessageId,
+            _skipQuotaGate: true,
+          });
+        } else {
+          console.warn(`[SpawnManager] quota flush: unknown kind ${row.kind} for ps ${row.id}`);
+          PendingSends.markCancelled(row.id, `quota-flush: unknown kind ${row.kind}`);
+        }
+        PendingSends.remove(row.id);
+        bus.publish('quota.send_dispatched', { pendingSendId: row.id, ts: Date.now() });
+      } catch (e) {
+        console.error(`[SpawnManager] quota flush ps#${row.id} failed:`, e.message);
+        PendingSends.markCancelled(row.id, `quota-flush-error: ${e.message}`);
+        bus.publish('quota.send_failed', { pendingSendId: row.id, error: e.message, ts: Date.now() });
+      }
+    }
   }
 
   // [需求@2026-06-10] lazy resurrection: on boot, restore non-dead instances
@@ -450,7 +508,7 @@ class SpawnManager {
   // [需求@2026-06-15 Phase 2G M1.1] fromMarker 标志 — true 时(MarkerDispatcher 调用),
   //   池化 inst 是 busy 时触发 QueueDispatcher.enqueueBusy 而非直发 stdin。
   //   markerFromInst/markerSpec/markerReason:busy_prompt 需要的元数据
-  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null, targetInstance = null, clientMessageId = null, fromMarker = false, markerFromInst = null, markerSpec = null, markerReason = null }) {
+  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null, targetInstance = null, clientMessageId = null, fromMarker = false, markerFromInst = null, markerSpec = null, markerReason = null, _skipQuotaGate = false }) {
     if (!projectId) throw new Error('sendToThread requires projectId');
     if (!projectRootDir) throw new Error('sendToThread requires projectRootDir');
     if (!threadSlug) throw new Error('sendToThread requires threadSlug');
@@ -458,6 +516,34 @@ class SpawnManager {
 
     const thread = ThreadStore.get(projectId, threadSlug);
     if (!thread) throw new Error(`thread "${threadSlug}" not found in project ${projectId}`);
+
+    // [需求@2026-06-27 #167] quota PAUSED 时 send 不送 stdin,落 PendingSends 等 resume flush
+    //   _skipQuotaGate=true 时绕过(flushQuotaPaused 自己调用本函数走真正发送路径)
+    if (!_skipQuotaGate && QuotaState.isPaused()) {
+      const psId = PendingSends.enqueue({
+        kind: 'thread_send',
+        targetKind: 'thread',
+        targetId: threadSlug,
+        projectId,
+        payload: {
+          text, roleType, targetSlot,
+          targetInstanceId: targetInstance,
+          clientMessageId,
+          fromMarker, markerSpec, markerReason,
+          markerFromInstId: markerFromInst?.id || null,
+          projectRootDir,
+        },
+        reason: 'quota_pause',
+        status: 'queued',
+        threadSlug,
+        fromInstanceId: markerFromInst?.id || null,
+      });
+      bus.publish('quota.send_deferred', {
+        pendingSendId: psId, threadSlug, projectId, roleType,
+        ts: Date.now(),
+      });
+      return { deferred: true, pendingSendId: psId };
+    }
 
     // [需求@2026-06-12 §9.2] mateTerm 干预模式:指定 instance 时覆盖 roleType + targetSlot
     if (targetInstance) {
@@ -484,7 +570,7 @@ class SpawnManager {
   //   - 不加 [Thread: xxx] task tag
   //   - 不触发 marker side effect(_handleMarkers / ThreadHooks 都跳过)
   //   - busy / spawning 实例拒绝(409 by caller)
-  sendDirectToInstance(instanceId, text, { clientMessageId = null } = {}) {
+  sendDirectToInstance(instanceId, text, { clientMessageId = null, _skipQuotaGate = false } = {}) {
     if (!instanceId) throw new Error('sendDirectToInstance requires instanceId');
     if (!text || typeof text !== 'string') throw new Error('sendDirectToInstance requires text');
     const inst = this.instances.get(instanceId);
@@ -492,6 +578,25 @@ class SpawnManager {
     if (inst.status === 'dead') throw new Error(`instance ${instanceId} is dead`);
     if (inst.status === 'busy') throw new Error(`instance ${instanceId} is busy`);
     if (inst.status === 'spawning') throw new Error(`instance ${instanceId} is still spawning`);
+
+    // [需求@2026-06-27 #167] quota PAUSED 时直连也走入队
+    if (!_skipQuotaGate && QuotaState.isPaused()) {
+      const psId = PendingSends.enqueue({
+        kind: 'direct_send',
+        targetKind: 'instance',
+        targetId: instanceId,
+        projectId: inst.projectId,
+        payload: { text, clientMessageId },
+        reason: 'quota_pause',
+        status: 'queued',
+        fromInstanceId: null,
+      });
+      bus.publish('quota.send_deferred', {
+        pendingSendId: psId, instanceId, projectId: inst.projectId,
+        kind: 'direct_send', ts: Date.now(),
+      });
+      return { deferred: true, pendingSendId: psId };
+    }
 
     inst._directMode = true;  // event handler 看到这个就走直连持久化 + 跳 marker 派工
     // [需求@2026-06-12 Phase 2E §12] enqueue clientMessageId

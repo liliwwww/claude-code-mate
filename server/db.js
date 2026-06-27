@@ -628,6 +628,8 @@ const stmts = {
   psListAll: db.prepare(`SELECT * FROM mate_pending_sends ORDER BY enqueued_at ASC`),
   psListByProject: db.prepare(`SELECT * FROM mate_pending_sends WHERE project_id = ? ORDER BY enqueued_at ASC`),
   psListByStatus: db.prepare(`SELECT * FROM mate_pending_sends WHERE status = ? ORDER BY enqueued_at ASC`),
+  // [需求@2026-06-27 #167] quota PAUSED 时 send 入队后,resume 时按 enqueuedAt 顺序 flush
+  psListByReasonAndStatus: db.prepare(`SELECT * FROM mate_pending_sends WHERE reason = ? AND status = ? ORDER BY enqueued_at ASC`),
   psListByThread: db.prepare(`SELECT * FROM mate_pending_sends WHERE thread_slug = ? ORDER BY enqueued_at ASC`),
   psGetById: db.prepare(`SELECT * FROM mate_pending_sends WHERE id = ?`),
   psDelete: db.prepare(`DELETE FROM mate_pending_sends WHERE id = ?`),
