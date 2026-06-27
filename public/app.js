@@ -1213,10 +1213,21 @@ function renderBreadcrumb() {
           stack[0] = { label: seg.toDisplayName || seg.toRole, instanceId: seg.toInstanceId, roleType: 'requirements' };
         }
       } else {
-        // push — 自愈:栈顶不是 from 就补 push 一个 from(老 chain 可能因
-        //   isTerminal 缺失被 pop 多了,新 handoff 进来时栈顶残缺)
+        // push — [bug@2026-06-27 同步服务端 dc416c5]
+        //   老逻辑栈顶 != from 时**补 push** from,user 中断 C/B 长任务时栈
+        //   累积 R/H/C/R/H/C/... 越堆越深(线索 t-mqmi7hu3-hxf1 实测前端 16 层 vs
+        //   服务端 2 层)。改对齐 replayChain._applyHandoff:沿栈往下找
+        //   from frame,找到截到那层(中间未关闭的 frame 视为隐式 abandoned);
+        //   找不到才补 push。
         const topInstId = stack[stack.length - 1]?.instanceId;
-        if (stack.length === 0 || topInstId !== seg.fromInstanceId) {
+        if (stack.length > 0 && topInstId !== seg.fromInstanceId) {
+          const fromIdx = stack.findIndex((f) => f.instanceId === seg.fromInstanceId);
+          if (fromIdx >= 0) {
+            stack.length = fromIdx + 1;  // pop abandoned frames above
+          }
+        }
+        const topInstIdAfter = stack[stack.length - 1]?.instanceId;
+        if (stack.length === 0 || topInstIdAfter !== seg.fromInstanceId) {
           stack.push({
             label: seg.fromRole,
             instanceId: seg.fromInstanceId,
