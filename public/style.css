@@ -61,7 +61,8 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: var(--bg-base); color: var(--text-primary); font-size: 14px; transition: background 0.2s, color 0.2s; }
+/* [需求@2026-06-28] 锁外层滚动 — 整体页面不出垂直滚动条,滚动只发生在 #stream */
+html, body { margin: 0; padding: 0; height: 100vh; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: var(--bg-base); color: var(--text-primary); font-size: 14px; transition: background 0.2s, color 0.2s; }
 body { display: flex; flex-direction: column; }
 
 #topbar { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
@@ -297,7 +298,8 @@ main { flex: 1; display: flex; min-height: 0; }
 .empty-state { padding: 20px; text-align: center; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 .empty-state strong { color: var(--accent); }
 
-#conversation { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* [需求@2026-06-28] min-height:0 让 #stream flex:1 + overflow:auto 真正生效(否则父 flex col 默认 min-height=auto,内容撑高溢出体外) */
+#conversation { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 #conv-header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
 #conv-title { flex: 1; font-weight: 600; }
 #stage-picker { background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border-light); border-radius: 4px; padding: 3px 6px; font-size: 11px; }
