@@ -136,6 +136,13 @@
     <form id="export-form" method="dialog">
       <h3 data-i18n="export.dialogTitle">导出线索为 Markdown</h3>
       <div class="dialog-row">
+        <label data-i18n="export.formatLabel">格式:</label>
+        <div id="export-format-options">
+          <label><input type="radio" name="export-format" value="md" checked /> <span data-i18n="export.formatMd">Markdown (.md) - 轻量</span></label>
+          <label><input type="radio" name="export-format" value="html" /> <span data-i18n="export.formatHtml">HTML (.html) - 保留 UI 风格,Word 可打开</span></label>
+        </div>
+      </div>
+      <div class="dialog-row">
         <label data-i18n="export.rangeLabel">时间范围:</label>
         <div id="export-range-options">
           <label><input type="radio" name="export-range" value="all" checked /> <span data-i18n="export.rangeAll">全部</span></label>

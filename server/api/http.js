@@ -733,12 +733,14 @@ function buildRouter() {
 
   // [需求@2026-06-29 #171] 线索导出 markdown:user 把对话/最终输出归档
   //   ?range=all|1d|3d|7d (默认 all)
-  //   ?saveToProject=true → 同时写到 <project.root_dir>/doc/exports/<slug>.md
+  //   ?format=md|html (默认 md;[需求@2026-06-29 #172] HTML 保留 mate UI 视觉风格)
+  //   ?saveToProject=true → 同时写到 <project.root_dir>/doc/exports/<slug>_<range>_<ts>.<ext>
   //   默认 Content-Disposition attachment 触发浏览器下载;只想拿文本可加 ?inline=true
   r.get('/threads/:slug/export', requireProjectId, (req, res) => {
     try {
       const ThreadStore = require('../threads/ThreadStore');
       const MarkdownExporter = require('../threads/MarkdownExporter');
+      const HtmlExporter = require('../threads/HtmlExporter');
       const fs = require('node:fs');
       const path = require('node:path');
 
@@ -747,6 +749,7 @@ function buildRouter() {
 
       const range = MarkdownExporter.parseRange(req.query.range || 'all');
       const now = Date.now();
+      const format = (req.query.format || 'md').toLowerCase() === 'html' ? 'html' : 'md';
 
       // 拉所有 messages(导出场景,不分页,但限 50k 防 OOM)
       const rows = db.prepare(`
@@ -765,21 +768,22 @@ function buildRouter() {
       }));
       const filtered = MarkdownExporter.filterByRange(messages, range, now);
 
-      const md = MarkdownExporter.buildMarkdown(
-        { slug: thread.slug, title: thread.title, stage: thread.stage, outcome: thread.outcome,
-          created_at: thread.created_at, updated_at: thread.updated_at },
-        filtered,
-        { range, now, projectName: req.project.name }
-      );
+      const threadSummary = {
+        slug: thread.slug, title: thread.title, stage: thread.stage, outcome: thread.outcome,
+        created_at: thread.created_at, updated_at: thread.updated_at,
+      };
+      const buildOpts = { range, now, projectName: req.project.name };
+      const body = format === 'html'
+        ? HtmlExporter.buildHtml(threadSummary, filtered, buildOpts)
+        : MarkdownExporter.buildMarkdown(threadSummary, filtered, buildOpts);
 
-      // [需求@2026-06-29 #171 v2] 文件名加本地时间戳 YYYYMMDD-HHMM,
-      //   多次导出不覆盖,user 能直接看时间排序。同一份 md 浏览器下载和
-      //   落项目用同一文件名(now 同一刻生成,保证一致)。
+      // 文件名:<slug>_<range>_YYYYMMDD-HHMM.<md|html>
       const d = new Date(now);
       const pad = (n) => String(n).padStart(2, '0');
       const timestamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
       const rangeTag = range.label.replace(/\s+/g, '');
-      const baseFilename = `${thread.slug}_${rangeTag}_${timestamp}.md`;
+      const ext = format === 'html' ? 'html' : 'md';
+      const baseFilename = `${thread.slug}_${rangeTag}_${timestamp}.${ext}`;
 
       // 落项目 doc/exports/ (可选)
       let savedTo = null;
@@ -788,7 +792,7 @@ function buildRouter() {
           const dir = path.join(req.project.root_dir, 'doc', 'exports');
           fs.mkdirSync(dir, { recursive: true });
           const fp = path.join(dir, baseFilename);
-          fs.writeFileSync(fp, md, 'utf8');
+          fs.writeFileSync(fp, body, 'utf8');
           savedTo = fp;
         } catch (e) {
           console.warn('[export] saveToProject failed:', e.message);
@@ -796,14 +800,15 @@ function buildRouter() {
       }
 
       const inline = String(req.query.inline).toLowerCase() === 'true';
-      // [bug@2026-06-29] 中文文件名 + Content-Disposition 要 RFC 5987 encode,否则浏览器乱码
+      // 中文文件名 + Content-Disposition 要 RFC 5987 encode,否则浏览器乱码
       const encodedFn = encodeURIComponent(baseFilename);
-      res.set('Content-Type', 'text/markdown; charset=utf-8');
+      const contentType = format === 'html' ? 'text/html; charset=utf-8' : 'text/markdown; charset=utf-8';
+      res.set('Content-Type', contentType);
       if (!inline) {
         res.set('Content-Disposition', `attachment; filename="${encodedFn}"; filename*=UTF-8''${encodedFn}`);
       }
       if (savedTo) res.set('X-Mate-Saved-To', encodeURIComponent(savedTo));
-      res.send(md);
+      res.send(body);
     } catch (e) {
       console.error('[export] failed:', e);
       res.status(500).json({ error: e.message });

@@ -222,8 +222,8 @@ dialog #ap-submit, dialog #nt-submit, dialog #hc-run { background: var(--accent-
 /* [需求@2026-06-29 #171] 线索导出 dialog */
 #export-md-btn { font-size: 11px; padding: 3px 8px; border-radius: 3px; border: 1px solid var(--border-light); background: var(--bg-elevated); color: var(--text-primary); cursor: pointer; }
 #export-md-btn:hover { background: var(--bg-card-hover); }
-#export-dialog #export-range-options { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding-left: 4px; }
-#export-dialog #export-range-options label { font-size: 13px; cursor: pointer; user-select: none; }
+#export-dialog #export-range-options, #export-dialog #export-format-options { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding-left: 4px; }
+#export-dialog #export-range-options label, #export-dialog #export-format-options label { font-size: 13px; cursor: pointer; user-select: none; }
 #export-dialog #export-confirm { background: var(--accent-green); color: #fff; border: none; }
 
 #hc-results { padding: 8px 0; font-size: 12px; max-height: 400px; overflow-y: auto; }

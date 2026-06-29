@@ -258,8 +258,9 @@ function setupExportMdButton() {
     ev.preventDefault();
     if (!state.focusedSlug || !state.activeProjectId) { dialog.close(); return; }
     const range = form.querySelector('input[name="export-range"]:checked')?.value || 'all';
+    const format = form.querySelector('input[name="export-format"]:checked')?.value || 'md';
     const saveToProject = form.querySelector('#export-save-to-project')?.checked ? 'true' : 'false';
-    const url = `/api/threads/${encodeURIComponent(state.focusedSlug)}/export?projectId=${state.activeProjectId}&range=${range}&saveToProject=${saveToProject}`;
+    const url = `/api/threads/${encodeURIComponent(state.focusedSlug)}/export?projectId=${state.activeProjectId}&range=${range}&format=${format}&saveToProject=${saveToProject}`;
     try {
       const resp = await fetch(url);
       if (!resp.ok) {

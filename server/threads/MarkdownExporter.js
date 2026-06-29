@@ -193,4 +193,9 @@ module.exports = {
   parseRange,
   filterByRange,
   buildMarkdown,
+  // 共享 helpers(HtmlExporter 复用,避免重复实现)
+  _fmtTime,
+  _stripTaskTag,
+  _roleLabelFromInstance,
+  _summarizeToolUse,
 };
