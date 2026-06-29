@@ -323,6 +323,9 @@ main { flex: 1; display: flex; min-height: 0; }
 .msg.user.msg-sending .msg-status { display: inline-block; margin-left: 6px; font-size: 10px; color: var(--text-muted); animation: rc-spawn-pulse 0.8s ease-in-out infinite alternate; }
 .msg.user.msg-sent .msg-status { display: none; }
 .msg.user.msg-failed { background: rgba(180, 60, 60, 0.22); border-left-color: #d44a4a; cursor: pointer; }
+/* [bug@2026-06-29 #170] quota paused 时入队不是失败 — 黄边提示等 resume 自动 flush */
+.msg.user.msg-queued { background: rgba(200, 150, 40, 0.18); border-left-color: #d8a33a; }
+.msg.user.msg-queued::after { content: ' ⏸ 排队中'; font-size: 10px; color: #d8a33a; margin-left: 8px; }
 .msg.user.msg-failed .msg-status { color: #ff7878; }
 .msg.user.msg-failed .msg-status::before { content: '✗ 发送失败 · 点击重填'; display: block; }
 .msg.user.msg-failed .msg-status > * { display: none; }

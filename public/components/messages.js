@@ -86,6 +86,7 @@
     'send.stoppedKill': 'kill: {names}',
     'send.stoppedNone': 'no busy instances to stop',
     'send.failedTip': '发送失败: {error} · 点击复制原文重新发送',
+    'send.deferredTip': '已排队 (原因: {reason}) · 配额恢复后自动发送',
 
     // ---------------- Stream messages / cards ----------------
     'stream.waitingLLM': '等待 LLM 响应…',
@@ -443,6 +444,7 @@
     'send.stoppedKill': 'killed: {names}',
     'send.stoppedNone': 'no busy instances to stop',
     'send.failedTip': 'Send failed: {error} · click to restore text and retry',
+    'send.deferredTip': 'Queued (reason: {reason}) · auto-sent when quota resumes',
 
     // ---------------- Stream messages / cards ----------------
     'stream.waitingLLM': 'Waiting for LLM…',

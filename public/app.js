@@ -1608,10 +1608,18 @@ function wireInputs() {
     const sentText = text;
     els.msgInput.value = '';
     try {
-      await api(`/threads/${encodeURIComponent(state.focusedSlug)}/message?projectId=${state.activeProjectId}`, {
+      const resp = await api(`/threads/${encodeURIComponent(state.focusedSlug)}/message?projectId=${state.activeProjectId}`, {
         method: 'POST', body: { text: sentText, clientMessageId },
       });
       bubble.classList.remove('msg-sending');
+      // [bug@2026-06-29 #170] quota PAUSED 时 server 返 {deferred:true, pendingSendId} —
+      //   消息已入队,等 resume 自动 flush。不是失败,也不是即时 sent;标 'queued'
+      //   让 user 知道在排队,而不是误以为失败要重发。
+      if (resp?.deferred) {
+        bubble.classList.add('msg-queued');
+        bubble.title = t('send.deferredTip', { reason: resp.reason || 'paused' });
+        return;
+      }
       bubble.classList.add('msg-sent');
       // [需求@2026-06-13 §19] 发完 user → 立即显 LLM 等待 indicator
       startWaitIndicator('user-send');

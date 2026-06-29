@@ -473,8 +473,12 @@ function buildRouter() {
     const { text, clientMessageId } = req.body || {};
     if (typeof text !== 'string' || !text.length) return res.status(400).json({ error: 'text required' });
     try {
-      const inst = spawnManager.sendDirectToInstance(req.params.id, text, { clientMessageId });
-      res.json({ ok: true, instance: inst.snapshot(), mode: 'direct', clientMessageId });
+      const result = spawnManager.sendDirectToInstance(req.params.id, text, { clientMessageId });
+      // [bug@2026-06-29 #170] paused 时返 {deferred:true},不是 RoleInstance
+      if (result?.deferred) {
+        return res.json({ ok: true, deferred: true, pendingSendId: result.pendingSendId, reason: 'quota_pause', mode: 'direct', clientMessageId });
+      }
+      res.json({ ok: true, instance: result.snapshot(), mode: 'direct', clientMessageId });
     } catch (e) {
       const code = /not found/i.test(e.message) ? 404
                  : /busy|spawning|dead/i.test(e.message) ? 409 : 400;
@@ -733,7 +737,7 @@ function buildRouter() {
     try {
       // [需求@2026-06-12 §9.2] mateTerm 干预模式:targetInstance 指定 → 走 sendToThread 的指定路径
       if (targetInstance) {
-        const inst = spawnManager.sendToThread({
+        const result = spawnManager.sendToThread({
           projectId: req.project.id,
           projectRootDir: req.project.root_dir,
           threadSlug: req.params.slug,
@@ -741,7 +745,10 @@ function buildRouter() {
           targetInstance,
           clientMessageId,
         });
-        return res.json({ ok: true, instance: inst.snapshot(), routedTo: inst.role.name, mode: 'intervention', clientMessageId });
+        if (result?.deferred) {
+          return res.json({ ok: true, deferred: true, pendingSendId: result.pendingSendId, reason: 'quota_pause', clientMessageId });
+        }
+        return res.json({ ok: true, instance: result.snapshot(), routedTo: result.role.name, mode: 'intervention', clientMessageId });
       }
       // [需求@2026-06-12 §6.2 Gap 1] 默认路由:依据 last_questioner_role_type(谁问送回谁)
       //   - has_pending_question 且 last_questioner_role_type='orchestrator' → 送给 H
@@ -777,7 +784,7 @@ function buildRouter() {
           roleType = lq;
         }
       }
-      const inst = spawnManager.sendToThread({
+      const result = spawnManager.sendToThread({
         projectId: req.project.id,
         projectRootDir: req.project.root_dir,
         threadSlug: req.params.slug,
@@ -785,7 +792,18 @@ function buildRouter() {
         roleType,
         clientMessageId,
       });
-      res.json({ ok: true, instance: inst.snapshot(), routedTo: roleType, clientMessageId });
+      // [bug@2026-06-29 #170] quota PAUSED 时 sendToThread 返 {deferred:true, pendingSendId},
+      //   不是 RoleInstance — 不能调 .snapshot(),否则 TypeError 让前端误以为发送失败。
+      //   消息其实已经 enqueue 到 PendingSends,resume 后自动 flush。
+      if (result?.deferred) {
+        return res.json({
+          ok: true, deferred: true,
+          pendingSendId: result.pendingSendId,
+          reason: 'quota_pause',
+          clientMessageId,
+        });
+      }
+      res.json({ ok: true, instance: result.snapshot(), routedTo: roleType, clientMessageId });
     } catch (e) {
       res.status(400).json({ error: e.message });
     }
