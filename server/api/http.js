@@ -772,14 +772,22 @@ function buildRouter() {
         { range, now, projectName: req.project.name }
       );
 
+      // [需求@2026-06-29 #171 v2] 文件名加本地时间戳 YYYYMMDD-HHMM,
+      //   多次导出不覆盖,user 能直接看时间排序。同一份 md 浏览器下载和
+      //   落项目用同一文件名(now 同一刻生成,保证一致)。
+      const d = new Date(now);
+      const pad = (n) => String(n).padStart(2, '0');
+      const timestamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+      const rangeTag = range.label.replace(/\s+/g, '');
+      const baseFilename = `${thread.slug}_${rangeTag}_${timestamp}.md`;
+
       // 落项目 doc/exports/ (可选)
       let savedTo = null;
       if (String(req.query.saveToProject).toLowerCase() === 'true' && req.project.root_dir) {
         try {
           const dir = path.join(req.project.root_dir, 'doc', 'exports');
           fs.mkdirSync(dir, { recursive: true });
-          const filename = `${thread.slug}_${range.label.replace(/\s+/g, '')}.md`;
-          const fp = path.join(dir, filename);
+          const fp = path.join(dir, baseFilename);
           fs.writeFileSync(fp, md, 'utf8');
           savedTo = fp;
         } catch (e) {
@@ -788,9 +796,8 @@ function buildRouter() {
       }
 
       const inline = String(req.query.inline).toLowerCase() === 'true';
-      const safeFilename = `${thread.slug}_${range.label.replace(/[\s]/g, '')}.md`;
       // [bug@2026-06-29] 中文文件名 + Content-Disposition 要 RFC 5987 encode,否则浏览器乱码
-      const encodedFn = encodeURIComponent(safeFilename);
+      const encodedFn = encodeURIComponent(baseFilename);
       res.set('Content-Type', 'text/markdown; charset=utf-8');
       if (!inline) {
         res.set('Content-Disposition', `attachment; filename="${encodedFn}"; filename*=UTF-8''${encodedFn}`);
