@@ -127,7 +127,32 @@
           <input type="checkbox" id="streaming-toggle-input" checked />
           <span data-i18n="convHeader.streamingLabel">📺 实时</span>
         </label>
+        <!-- [需求@2026-06-29 #171] 线索导出 md -->
+        <button type="button" id="export-md-btn" data-i18n-attr-title="export.btnTip" title="导出该线索对话到 markdown 文件" hidden>⬇ <span data-i18n="export.btn">导出</span></button>
       </header>
+
+  <!-- [需求@2026-06-29 #171] 导出 md modal -->
+  <dialog id="export-dialog">
+    <form id="export-form" method="dialog">
+      <h3 data-i18n="export.dialogTitle">导出线索为 Markdown</h3>
+      <div class="dialog-row">
+        <label data-i18n="export.rangeLabel">时间范围:</label>
+        <div id="export-range-options">
+          <label><input type="radio" name="export-range" value="all" checked /> <span data-i18n="export.rangeAll">全部</span></label>
+          <label><input type="radio" name="export-range" value="1d" /> <span data-i18n="export.range1d">近 1 天</span></label>
+          <label><input type="radio" name="export-range" value="3d" /> <span data-i18n="export.range3d">近 3 天</span></label>
+          <label><input type="radio" name="export-range" value="7d" /> <span data-i18n="export.range7d">近 7 天</span></label>
+        </div>
+      </div>
+      <div class="dialog-row">
+        <label><input type="checkbox" id="export-save-to-project" /> <span data-i18n="export.saveToProject">同时保存到项目 doc/exports/</span></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="export-cancel" data-i18n="dialog.cancel">取消</button>
+        <button type="submit" id="export-confirm" data-i18n="export.confirm">下载</button>
+      </div>
+    </form>
+  </dialog>
       <div id="stream"></div>
       <!-- [需求@2026-06-20] user 上滑回看时,新消息进来不强滚到底;离底显此按钮跳最新 -->
       <button id="stream-jump-btn" type="button" hidden data-i18n="stream.jumpToLatest" data-i18n-attr-title="stream.jumpToLatest">↓ 跳到最新</button>

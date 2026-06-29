@@ -731,6 +731,78 @@ function buildRouter() {
     })));
   });
 
+  // [需求@2026-06-29 #171] 线索导出 markdown:user 把对话/最终输出归档
+  //   ?range=all|1d|3d|7d (默认 all)
+  //   ?saveToProject=true → 同时写到 <project.root_dir>/doc/exports/<slug>.md
+  //   默认 Content-Disposition attachment 触发浏览器下载;只想拿文本可加 ?inline=true
+  r.get('/threads/:slug/export', requireProjectId, (req, res) => {
+    try {
+      const ThreadStore = require('../threads/ThreadStore');
+      const MarkdownExporter = require('../threads/MarkdownExporter');
+      const fs = require('node:fs');
+      const path = require('node:path');
+
+      const thread = ThreadStore.get(req.project.id, req.params.slug);
+      if (!thread) return res.status(404).json({ error: 'thread not found' });
+
+      const range = MarkdownExporter.parseRange(req.query.range || 'all');
+      const now = Date.now();
+
+      // 拉所有 messages(导出场景,不分页,但限 50k 防 OOM)
+      const rows = db.prepare(`
+        SELECT id, instance_id, role_name, direction, ts, event_type, payload_json
+        FROM messages
+        WHERE project_id = ? AND thread_slug = ?
+        ORDER BY ts ASC, id ASC
+        LIMIT 50000
+      `).all(req.project.id, req.params.slug);
+      const messages = rows.map((m) => ({
+        ts: m.ts,
+        event_type: m.event_type,
+        direction: m.direction,
+        instance_id: m.instance_id,
+        payload: JSON.parse(m.payload_json),
+      }));
+      const filtered = MarkdownExporter.filterByRange(messages, range, now);
+
+      const md = MarkdownExporter.buildMarkdown(
+        { slug: thread.slug, title: thread.title, stage: thread.stage, outcome: thread.outcome,
+          created_at: thread.created_at, updated_at: thread.updated_at },
+        filtered,
+        { range, now, projectName: req.project.name }
+      );
+
+      // 落项目 doc/exports/ (可选)
+      let savedTo = null;
+      if (String(req.query.saveToProject).toLowerCase() === 'true' && req.project.root_dir) {
+        try {
+          const dir = path.join(req.project.root_dir, 'doc', 'exports');
+          fs.mkdirSync(dir, { recursive: true });
+          const filename = `${thread.slug}_${range.label.replace(/\s+/g, '')}.md`;
+          const fp = path.join(dir, filename);
+          fs.writeFileSync(fp, md, 'utf8');
+          savedTo = fp;
+        } catch (e) {
+          console.warn('[export] saveToProject failed:', e.message);
+        }
+      }
+
+      const inline = String(req.query.inline).toLowerCase() === 'true';
+      const safeFilename = `${thread.slug}_${range.label.replace(/[\s]/g, '')}.md`;
+      // [bug@2026-06-29] 中文文件名 + Content-Disposition 要 RFC 5987 encode,否则浏览器乱码
+      const encodedFn = encodeURIComponent(safeFilename);
+      res.set('Content-Type', 'text/markdown; charset=utf-8');
+      if (!inline) {
+        res.set('Content-Disposition', `attachment; filename="${encodedFn}"; filename*=UTF-8''${encodedFn}`);
+      }
+      if (savedTo) res.set('X-Mate-Saved-To', encodeURIComponent(savedTo));
+      res.send(md);
+    } catch (e) {
+      console.error('[export] failed:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   r.post('/threads/:slug/message', requireProjectId, (req, res) => {
     const { text, targetInstance, clientMessageId } = req.body || {};
     if (typeof text !== 'string' || !text.length) return res.status(400).json({ error: 'text required' });

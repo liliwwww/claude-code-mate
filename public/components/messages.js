@@ -87,6 +87,19 @@
     'send.stoppedNone': 'no busy instances to stop',
     'send.failedTip': '发送失败: {error} · 点击复制原文重新发送',
     'send.deferredTip': '已排队 (原因: {reason}) · 配额恢复后自动发送',
+    // [需求@2026-06-29 #171] 线索导出 md
+    'export.btn': '导出',
+    'export.btnTip': '导出该线索对话到 markdown 文件',
+    'export.dialogTitle': '导出线索为 Markdown',
+    'export.rangeLabel': '时间范围:',
+    'export.rangeAll': '全部',
+    'export.range1d': '近 1 天',
+    'export.range3d': '近 3 天',
+    'export.range7d': '近 7 天',
+    'export.saveToProject': '同时保存到项目 doc/exports/',
+    'export.confirm': '下载',
+    'export.failed': '导出失败: {error}',
+    'export.savedToProject': '已保存到 {path}',
 
     // ---------------- Stream messages / cards ----------------
     'stream.waitingLLM': '等待 LLM 响应…',
@@ -445,6 +458,18 @@
     'send.stoppedNone': 'no busy instances to stop',
     'send.failedTip': 'Send failed: {error} · click to restore text and retry',
     'send.deferredTip': 'Queued (reason: {reason}) · auto-sent when quota resumes',
+    'export.btn': 'Export',
+    'export.btnTip': 'Export this thread conversation to a markdown file',
+    'export.dialogTitle': 'Export Thread as Markdown',
+    'export.rangeLabel': 'Time range:',
+    'export.rangeAll': 'All',
+    'export.range1d': 'Last 1 day',
+    'export.range3d': 'Last 3 days',
+    'export.range7d': 'Last 7 days',
+    'export.saveToProject': 'Also save to project doc/exports/',
+    'export.confirm': 'Download',
+    'export.failed': 'Export failed: {error}',
+    'export.savedToProject': 'Saved to {path}',
 
     // ---------------- Stream messages / cards ----------------
     'stream.waitingLLM': 'Waiting for LLM…',

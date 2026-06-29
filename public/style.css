@@ -219,6 +219,12 @@ dialog .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; mar
 dialog button { padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 12px; border: 1px solid var(--border-light); }
 dialog #ap-cancel, dialog #nt-cancel { background: var(--bg-card); color: var(--text-primary); }
 dialog #ap-submit, dialog #nt-submit, dialog #hc-run { background: var(--accent-green); color: #fff; border: none; }
+/* [需求@2026-06-29 #171] 线索导出 dialog */
+#export-md-btn { font-size: 11px; padding: 3px 8px; border-radius: 3px; border: 1px solid var(--border-light); background: var(--bg-elevated); color: var(--text-primary); cursor: pointer; }
+#export-md-btn:hover { background: var(--bg-card-hover); }
+#export-dialog #export-range-options { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding-left: 4px; }
+#export-dialog #export-range-options label { font-size: 13px; cursor: pointer; user-select: none; }
+#export-dialog #export-confirm { background: var(--accent-green); color: #fff; border: none; }
 
 #hc-results { padding: 8px 0; font-size: 12px; max-height: 400px; overflow-y: auto; }
 .hc-row { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; border-top: 1px solid var(--border); }

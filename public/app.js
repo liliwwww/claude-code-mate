@@ -242,6 +242,55 @@ function setupStreamJumpBtn() {
   });
 }
 
+// [需求@2026-06-29 #171] 线索导出 markdown
+function setupExportMdButton() {
+  const btn = document.querySelector('#export-md-btn');
+  const dialog = document.querySelector('#export-dialog');
+  const cancelBtn = document.querySelector('#export-cancel');
+  const form = document.querySelector('#export-form');
+  if (!btn || !dialog || !form) return;
+  btn.addEventListener('click', () => {
+    if (!state.focusedSlug) return;
+    dialog.showModal();
+  });
+  cancelBtn?.addEventListener('click', () => dialog.close());
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    if (!state.focusedSlug || !state.activeProjectId) { dialog.close(); return; }
+    const range = form.querySelector('input[name="export-range"]:checked')?.value || 'all';
+    const saveToProject = form.querySelector('#export-save-to-project')?.checked ? 'true' : 'false';
+    const url = `/api/threads/${encodeURIComponent(state.focusedSlug)}/export?projectId=${state.activeProjectId}&range=${range}&saveToProject=${saveToProject}`;
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: 'export failed' }));
+        alert(t('export.failed', { error: err.error || resp.statusText }));
+        return;
+      }
+      const blob = await resp.blob();
+      const savedHeader = resp.headers.get('X-Mate-Saved-To');
+      // 浏览器下载
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      // 从 Content-Disposition 取文件名;失败 fallback
+      const cd = resp.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename\*=UTF-8''([^;]+)/) || cd.match(/filename="?([^";]+)"?/);
+      a.download = m ? decodeURIComponent(m[1]) : `${state.focusedSlug}.md`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+      if (savedHeader) {
+        const decodedPath = decodeURIComponent(savedHeader);
+        // 用 ticker 通知 user 文件也存项目了
+        pushTickerEvent('handoff', t('export.savedToProject', { path: decodedPath }));
+      }
+      dialog.close();
+    } catch (e) {
+      alert(t('export.failed', { error: e.message }));
+    }
+  });
+}
+
 function escapeHtml(s) {
   if (typeof s !== 'string') return '';
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -257,6 +306,7 @@ async function init() {
   initTheme();
   configureMarked();
   setupStreamJumpBtn();
+  setupExportMdButton();
 
   const sys = await api('/system');
   renderBanners(sys);
@@ -418,6 +468,8 @@ function renderConvHeader() {
     els.convTitle.textContent = t('convHeader.empty');
     els.stagePicker.hidden = true;
     els.sendBtn.disabled = true;
+    const exportBtn = document.querySelector('#export-md-btn');
+    if (exportBtn) exportBtn.hidden = true;
     // 清掉可能残留的 slug + copy
     const ex = els.convTitle.parentNode.querySelector('.conv-slug');
     if (ex) ex.remove();
@@ -427,6 +479,9 @@ function renderConvHeader() {
   els.stagePicker.hidden = false;
   els.stagePicker.value = th.stage;
   els.sendBtn.disabled = false;
+  // [需求@2026-06-29 #171] 有焦点线索时显导出按钮
+  const exportBtn = document.querySelector('#export-md-btn');
+  if (exportBtn) exportBtn.hidden = false;
   applyBusyUiState();
   // [需求@2026-06-15 Phase 2G M1.4] 面包屑 + 队列/backlog 面板
   renderBreadcrumb();
