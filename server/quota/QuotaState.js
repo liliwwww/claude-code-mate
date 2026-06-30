@@ -72,8 +72,10 @@ class QuotaState {
         manualOverride: !!r.manual_override,
         timer: null,
       });
+      // [bug@2026-06-30] boot 时 'rejected' 也算 paused state — 老逻辑漏认导致脏数据
+      //   永远翻不回 allowed,user 重启后 chip 显示错误 paused
       // 如果 resets 时刻已过,直接 resume(可能 mate down 期间过了)
-      if (r.status === 'rate_limited' || (r.status === 'allowed_warning' && r.utilization >= PAUSE_UTIL_THRESHOLD)) {
+      if (this._shouldPause({ status: r.status, utilization: r.utilization, manualOverride: false })) {
         if (now >= r.resets_at) {
           this._performResume(r.rate_limit_type, 'boot_elapsed');
         } else {
@@ -204,6 +206,11 @@ class QuotaState {
   _shouldPause(state) {
     if (state.manualOverride) return false;
     if (state.status === 'rate_limited') return true;
+    // [bug@2026-06-30 #173] status='rejected' 也是 PAUSED — 真实场景:
+    //   { status:'rejected', type:'five_hour', resetsAt, overageDisabledReason:'org_level_disabled' }
+    //   organisation 关了 overage,撞 5h 配额后 server 直接 rejected 请求。
+    //   老逻辑不认 rejected → 不 pause → chip 没 banner、send 不入队、撞下次还 429。
+    if (state.status === 'rejected') return true;
     if (state.status === 'allowed_warning' && (state.utilization ?? 0) >= PAUSE_UTIL_THRESHOLD) return true;
     return false;
   }
@@ -218,6 +225,26 @@ class QuotaState {
   _performResume(type, reason) {
     const cur = this.byType.get(type);
     if (cur?.timer) { clearTimeout(cur.timer); cur.timer = null; }
+    // [bug@2026-06-30 #173] resume 时也要把 status 翻回 'allowed' 并写 db,
+    //   否则 byType 内存 status 还是 'rate_limited'/'rejected',下次 _shouldPause
+    //   返 true 又卡住;且 boot 时从 db 读出来还是脏状态。
+    if (cur && (cur.status === 'rate_limited' || cur.status === 'rejected')) {
+      cur.status = 'allowed';
+      cur.utilization = null;
+      cur.manualOverride = false;
+      try {
+        stmts.qsUpsert.run({
+          rate_limit_type: type,
+          status: 'allowed',
+          utilization: null,
+          resets_at: cur.resetsAt,
+          updated_at: Date.now(),
+          manual_override: 0,
+        });
+      } catch (e) {
+        console.warn(`[QuotaState] resume persist failed: ${e.message}`);
+      }
+    }
     console.log(`[QuotaState] RESUMED ${type} (reason=${reason})`);
     bus.publish('system.quota_resumed', { type, reason });
   }

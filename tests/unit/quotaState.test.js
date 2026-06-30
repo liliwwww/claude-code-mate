@@ -176,6 +176,42 @@ describe('QuotaState.ingest', () => {
     expect(backoffMs > 4 * 60 * 1000).toBe(true);  // 大约 5 min
     expect(backoffMs <= 5 * 60 * 1000 + 1000).toBe(true);
   });
+
+  it('[bug@2026-06-30 #173] status=rejected with type=five_hour → 触发 PAUSED (用 RLI resetsAt)', () => {
+    reset();
+    const future = Math.floor(Date.now() / 1000) + 1800;  // 30min 后
+    // 真实线上 RLI 形态:status='rejected' + type='five_hour' + overage 被组织关
+    QuotaState.ingest({
+      rate_limit_info: {
+        status: 'rejected',
+        rateLimitType: 'five_hour',
+        resetsAt: future,
+        overageStatus: 'rejected',
+        overageDisabledReason: 'org_level_disabled',
+        isUsingOverage: false,
+      },
+    });
+    const s = QuotaState.byType.get('five_hour');
+    expect(s.status).toBe('rejected');
+    expect(QuotaState.isPaused()).toBe(true);  // 老逻辑这里返 false (bug),修后 true
+    expect(busCalls.some((c) => c.topic === 'system.quota_paused')).toBe(true);
+  });
+
+  it('[bug@2026-06-30 #173] _performResume 把 status 翻 allowed 并写 db (防脏数据)', () => {
+    reset();
+    // 模拟 paused state
+    const future = Math.floor(Date.now() / 1000) + 60;
+    QuotaState.ingest({ rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: future } });
+    expect(QuotaState.byType.get('five_hour').status).toBe('rejected');
+    busCalls.length = 0;
+    dbCalls.qsUpsertCalls.length = 0;
+    // 模拟 resume
+    QuotaState._performResume('five_hour', 'test');
+    expect(QuotaState.byType.get('five_hour').status).toBe('allowed');
+    // 应该有一次 db upsert with status='allowed'
+    const upsert = dbCalls.qsUpsertCalls.find((c) => c.status === 'allowed');
+    expect(!!upsert).toBe(true);
+  });
 });
 
 describe('QuotaState fixture replay from real samples', () => {
