@@ -251,7 +251,14 @@ function setupExportMdButton() {
   if (!btn || !dialog || !form) return;
   btn.addEventListener('click', () => {
     if (!state.focusedSlug) return;
+    // [需求@2026-07-01] 打开对话框时,若当前选中 HTML 则自动勾选"保存到项目"
+    //   (HTML 是重资产,归档到项目 doc/exports/ 更合适;user 可手动取消)
+    _applyExportFormatDefaults(form);
     dialog.showModal();
+  });
+  // 切换 format radio 时,html 联动勾 saveToProject;md 保持用户手动
+  form.querySelectorAll('input[name="export-format"]').forEach((radio) => {
+    radio.addEventListener('change', () => _applyExportFormatDefaults(form));
   });
   cancelBtn?.addEventListener('click', () => dialog.close());
   form.addEventListener('submit', async (ev) => {
@@ -290,6 +297,17 @@ function setupExportMdButton() {
       alert(t('export.failed', { error: e.message }));
     }
   });
+}
+
+// [需求@2026-07-01] HTML 默认勾"保存到项目" — user 手动取消可覆盖
+function _applyExportFormatDefaults(form) {
+  const format = form.querySelector('input[name="export-format"]:checked')?.value || 'md';
+  const saveCheckbox = form.querySelector('#export-save-to-project');
+  if (!saveCheckbox) return;
+  if (format === 'html') {
+    saveCheckbox.checked = true;
+  }
+  // md 选中时不动 checkbox — 保留用户之前的手动选择
 }
 
 function escapeHtml(s) {
