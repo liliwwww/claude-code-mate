@@ -608,7 +608,7 @@ function _performDone(fromInst, summary, { sendToThread }) {
         if (project) {
           sendToThread({
             projectId, projectRootDir: project.root_dir, threadSlug,
-            text: `[<delegate ${fromInst.displayName} done>] ${summary || '(no summary)'}\n\nYour delegated task chain finished. Above is the summary returned by ${fromInst.role.name}. Translate this result to the user and confirm whether they're satisfied — if so, emit <mate:done summary="...for user..." /> to close the thread.`,
+            text: `[<delegate ${fromInst.displayName} done>] ${summary || '(no summary)'}\n\n**这是系统内部通知,不是 user 输入**。你之前委派给 ${fromInst.role.name} 的任务链已完工,${fromInst.role.name} 返回了上面的 summary。\n\n**你现在该做的**:\n1. 把上面的技术 summary 翻译成 user 视角(业务/结果导向),向 user 汇报\n2. **等待 user 回复** — user 说话前不做任何 marker 动作\n\n**⛔ 严禁**:在没收到 user 真实反馈之前主动 emit <mate:done />。**收到这条消息后立刻 emit done 会引起 R↔H 死循环**(线索 t-mqfgby8l-bxlt 实测:曾发生过 15+ 段 done 空转)。\n\n只有当 user **明确**说"完了 / 关了 / 满意 / 通过"这类确认后,你才 emit <mate:done summary="user-facing wrap-up" />;user 如果说"还有 X 要做" → 走 <mate:handoff target="mate-H" />;user 沉默或问别的 → 就正常聊,别 emit marker。`,
             roleType: 'requirements',
             fromMarker: true,
             markerFromInst: fromInst,
