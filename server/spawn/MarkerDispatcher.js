@@ -416,6 +416,46 @@ function _performDone(fromInst, summary, { sendToThread }) {
   const thread = ThreadStore.get(projectId, threadSlug);
   const chain = thread?.metadata?.dispatch_chain || [];
 
+  // [bug@2026-07-02 #175] done 死循环护栏 — 线索 t-mqfgby8l-bxlt 实测:
+  //   H done terminal → R-notify → R emit done → 栈已空但老 fallback 反向扫
+  //   chain 找出错误 caller=H → 给 H 发 callback → H 又 done → 15+ 段循环。
+  //   两层护栏:
+  //   (1) thread.outcome === 'verified' → done 事件全部 no-op(线索早已终结,
+  //       任何 done 都是循环产生的 stale 事件)。
+  //   (2) 栈已存在但 frames 空 → 也 no-op(意思是"以栈为 SSOT 视角:栈空 =
+  //       线索已完成,不应再有 done pop 动作")。这两层都不再 append chain 也
+  //       不再发 R-notify/callback,循环被切断。
+  if (thread?.outcome === 'verified') {
+    console.warn(`[MarkerDispatcher] _performDone: thread ${threadSlug} already verified — done from ${fromInst.id} ignored (loop guard)`);
+    recordEvent('thread.done_ignored_verified', { fromInstanceId: fromInst.id, summary: (summary || '').slice(0, 200) },
+      { projectId, threadSlug });
+    return;
+  }
+  try {
+    const stackJson = thread?.call_stack_json;
+    if (stackJson) {
+      const stackCheck = JSON.parse(stackJson);
+      const framesCheck = Array.isArray(stackCheck?.frames) ? stackCheck.frames : [];
+      if (framesCheck.length === 0) {
+        console.warn(`[MarkerDispatcher] _performDone: stack empty for ${threadSlug} — done from ${fromInst.id} ignored (loop guard)`);
+        recordEvent('thread.done_ignored_stack_empty', { fromInstanceId: fromInst.id, summary: (summary || '').slice(0, 200) },
+          { projectId, threadSlug });
+        return;
+      }
+      // 栈非空但 fromInst 不在栈里 = stale done(该 inst 早已 pop 出去)
+      const inStack = framesCheck.some((f) => f.instanceId === fromInst.id);
+      if (!inStack) {
+        console.warn(`[MarkerDispatcher] _performDone: ${fromInst.id} not in stack for ${threadSlug} — stale done ignored (loop guard)`);
+        recordEvent('thread.done_ignored_not_in_stack', { fromInstanceId: fromInst.id, summary: (summary || '').slice(0, 200) },
+          { projectId, threadSlug });
+        return;
+      }
+    }
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] _performDone loop-guard stack parse failed: ${e.message}`);
+    // parse 失败 → 保守不 no-op,继续走原逻辑
+  }
+
   function _inferRoleType(name) {
     if (!name) return null;
     const n = String(name).toLowerCase();
@@ -454,12 +494,18 @@ function _performDone(fromInst, summary, { sendToThread }) {
         // fromInst 是栈底(通常是 R 自己),没 caller
         usedStackLookup = true;  // 也算"用栈成功",caller = null = terminal
       }
+      // [bug@2026-07-02 #175] idx === -1 时不再 fall through 反向扫(反向扫在栈空时会拿到
+      //   错误的老 caller,产生死循环)。上面的护栏其实已把这种情况 return 了,这里冗余保险。
+      else {
+        usedStackLookup = true;  // 视为 no caller = terminal,别 fallback
+      }
     }
   } catch (e) {
     console.warn(`[MarkerDispatcher] stack-lookup caller failed: ${e.message}, fallback to chain reverse-scan`);
   }
 
   // Fallback: 反向扫 chain 跳 callback(770ec88 算法)
+  // [bug@2026-07-02 #175] 只在**真没**栈数据(parse 失败/字段缺失)时用,栈存在时不 fall through
   if (!usedStackLookup) {
     for (let i = chain.length - 1; i >= 0; i--) {
       const seg = chain[i];
