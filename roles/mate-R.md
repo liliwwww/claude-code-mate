@@ -13,6 +13,7 @@ allowed_tools:
   - PowerShell
   - mcp__ssh-monitor__*
   - mcp__playwright__*
+  - mcp__kb__*
 allow_rules:
   - Read
   - Grep
@@ -21,6 +22,7 @@ allow_rules:
   - PowerShell
   - mcp__ssh-monitor__*
   - mcp__playwright__*
+  - mcp__kb__*
 permission_mode: dontAsk
 skill_command: mate-R
 peer_visibility: []
