@@ -292,6 +292,28 @@ function buildRouter() {
     })));
   });
 
+  // [需求@2026-07-02] 重读 roles/*.md — 改了 frontmatter (allowed_tools /
+  //   allow_rules / prompt body 等) 不用重启 mate 即可生效,下次 spawn 用新版。
+  //   已 spawn 的 disconnected/idle 实例:reset 或 restart 时也会用新 role。
+  //   busy 实例:当前 turn 跑完前不受影响(child 进程是启动时定住的 flag)。
+  r.post('/roles/reload', (req, res) => {
+    try {
+      const before = roleCatalog.list().map((r) => ({
+        name: r.name,
+        allowedTools: r.allowedTools,
+      }));
+      roleCatalog.load();
+      const after = roleCatalog.list().map((r) => ({
+        name: r.name,
+        allowedTools: r.allowedTools,
+      }));
+      res.json({ ok: true, count: after.length, before, after });
+    } catch (e) {
+      console.error('[roles reload] failed:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   r.get('/instances', requireProjectId, (req, res) => {
     res.json(spawnManager.listInstances(req.project.id));
   });
