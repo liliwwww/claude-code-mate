@@ -57,8 +57,21 @@ if (config.preheatPoolOnBoot) {
 const QuotaState = require('./quota/QuotaState');
 QuotaState.start();
 
+// [需求@2026-07-30 X1 #195] 一致性检查 cron — 每 5 分钟扫全库找 race/drift/stuck
+const ConsistencyCheck = require('./spawn/ConsistencyCheck');
+ConsistencyCheck.start();
+
+// [需求@2026-07-30 #196] boot 时 flush queued pending sends 一次,
+//   补漏"target disconnected 时 queued busy 项永不 flush"的洞
+setImmediate(() => {
+  spawnManager.bootFlushPendingQueue().catch((e) =>
+    console.warn('[boot] bootFlushPendingQueue failed:', e.message)
+  );
+});
+
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+// [需求@2026-07-22 #182] 附件上传 (~2MB image base64 -> ~2.7MB JSON) 需要更大 limit
+app.use(express.json({ limit: '30mb' }));
 // [需求@2026-06-16] no-cache header — 前端文件每次都 revalidate(304 仍有效),
 //   不然 user 改完代码刷不出来(`<script src="/app.js">` 走 browser cache)
 app.use((req, res, next) => {
@@ -103,6 +116,7 @@ async function shutdown(reason) {
   console.log(`[shutdown] reason: ${reason}`);
   try {
     QuotaState.stop();
+    ConsistencyCheck.stop();
     await spawnManager.shutdown();
   } catch (e) {
     console.error('[shutdown] spawnManager.shutdown error:', e);
