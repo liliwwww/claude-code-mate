@@ -430,6 +430,62 @@ function buildRouter() {
     }
   });
 
+  // [需求@2026-07-20 #176 Layer 3] 通用系统注入 —
+  //   user 只跟 R 对话,想给 H / B / C 说话没通道。给任何 inst 直接注入伪 user 消息,
+  //   包 <system:mate-{label}> 前缀 + "非 user 输入" 明确警告(参考 #175 R-notify 措辞)。
+  //   Body: { text, label?='operator' }
+  //         label ∈ 'system' | 'operator' | 'retry' | 'handoff'(仅影响 XML 标签名)
+  //   路由:inst 绑 thread → sendToThread(targetInstance=id);未绑 → sendDirectToInstance
+  r.post('/instances/:id/inject', (req, res) => {
+    const { text, label = 'operator' } = req.body || {};
+    if (typeof text !== 'string' || !text.length) return res.status(400).json({ error: 'text required' });
+    if (!/^[a-z_-]{1,20}$/i.test(label)) return res.status(400).json({ error: 'label must match /^[a-z_-]{1,20}$/i' });
+    const inst = spawnManager.getInstance(req.params.id);
+    if (!inst) return res.status(404).json({ error: 'instance not found' });
+    if (inst.status === 'dead') return res.status(409).json({ error: 'instance is dead' });
+
+    const tag = `system:mate-${label}`;
+    const wrapped = `<${tag}>
+${text}
+
+**这是 mate 系统注入,不是 user 输入。你可以直接决策 / 执行 / handoff,不必回复"收到"或等 user 确认。**
+</${tag}>`;
+
+    try {
+      let result;
+      if (inst.threadSlug) {
+        // 通过 sendToThread,targetInstance 锁定本 inst,markers 会正常被处理
+        const project = ProjectStore.get(inst.projectId);
+        if (!project) return res.status(500).json({ error: `project ${inst.projectId} not found` });
+        result = spawnManager.sendToThread({
+          projectId: inst.projectId,
+          projectRootDir: project.root_dir,
+          threadSlug: inst.threadSlug,
+          text: wrapped,
+          targetInstance: inst.id,
+          fromMarker: false,
+        });
+      } else {
+        result = spawnManager.sendDirectToInstance(inst.id, wrapped);
+      }
+      if (result?.deferred) {
+        return res.json({ ok: true, deferred: true, pendingSendId: result.pendingSendId, reason: 'quota_pause', label });
+      }
+      res.json({
+        ok: true,
+        injectedTo: inst.id,
+        displayName: inst.displayName,
+        label,
+        threadSlug: inst.threadSlug || null,
+        preview: text.slice(0, 200),
+      });
+    } catch (e) {
+      const code = /not found/i.test(e.message) ? 404
+                 : /busy|spawning|dead/i.test(e.message) ? 409 : 400;
+      res.status(code).json({ error: e.message });
+    }
+  });
+
   // [需求@2026-06-16] Reset Terminal — user 主动给 instance 清账
   //   行为:kill child + 丢 session_id + 翻 disconnected;下次 user 发消息 fresh spawn
   //   适用:claude 累积了错误判断 / context 太满 / 想换思路
@@ -641,6 +697,122 @@ function buildRouter() {
     })));
   });
 
+  // [需求@2026-07-29 #192] chain 走串扫描 — 全库查各 thread chain 里 reason/summary
+  //   引用别的 thread slug 的段(通常是 pool 复用 race 造成的错记)。
+  //   Query: ?since=<ISO time>  → 只返 ts >= since 的走串,默认全部
+  //   使用:UI 一键自查 + 命令行 scripts/scan_chain_crossings.js 用同一 endpoint
+  // [需求@2026-07-30 X1 #195] 触发一次一致性检查(手动 UI 用) — 返回所有异常
+  r.get('/consistency-check', async (req, res) => {
+    try {
+      const ConsistencyCheck = require('../spawn/ConsistencyCheck');
+      const result = await ConsistencyCheck.runOnce();
+      res.json({
+        ts: Date.now(),
+        baselineTs: ConsistencyCheck.getBaselineTs(),
+        totalIssues: result.inconsistencies.reduce((s, x) => s + x.count, 0),
+        selfHealed: result.selfHealed,
+        kinds: result.inconsistencies.map((x) => x.kind),
+        details: result.inconsistencies,
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // [X2 #200] threadSlug 变更审计查询 —
+  //   Query: ?instanceId=xxx (可选,不传 = 全库),&sinceHours=24,&limit=100
+  //   返回该 inst(或全部)threadSlug 每次 flip 的历史 + caller stack
+  r.get('/audit/threadslug-flips', (req, res) => {
+    const instanceId = req.query.instanceId || null;
+    const sinceHours = parseInt(req.query.sinceHours, 10) || 24;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+    const sinceTs = Date.now() - sinceHours * 3600 * 1000;
+    try {
+      let sql = `
+        SELECT ts, instance_id, payload_json FROM events
+        WHERE kind = 'debug.instance_threadslug_flip' AND ts > ?
+      `;
+      const params = [sinceTs];
+      if (instanceId) { sql += ' AND instance_id = ?'; params.push(instanceId); }
+      sql += ' ORDER BY ts DESC LIMIT ?';
+      params.push(limit);
+      const rows = db.prepare(sql).all(...params);
+      res.json({
+        count: rows.length,
+        sinceHours,
+        flips: rows.map((r) => {
+          const p = JSON.parse(r.payload_json);
+          return {
+            ts: r.ts, tsIso: new Date(r.ts).toISOString(),
+            instanceId: r.instance_id,
+            from: p.from, to: p.to,
+            callerStack: p.callerStack,
+          };
+        }),
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // [X1] 确认已知 chain crossings — 设 baseline,之后只报新走串
+  r.post('/consistency-check/acknowledge', (req, res) => {
+    try {
+      const ConsistencyCheck = require('../spawn/ConsistencyCheck');
+      const r2 = ConsistencyCheck.acknowledgeCrossings();
+      res.json(r2);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  r.get('/chain-crossings', (req, res) => {
+    try {
+      const sinceMs = req.query.since ? new Date(req.query.since).getTime() : 0;
+      const rows = db.prepare('SELECT slug, project_id, metadata_json FROM threads').all();
+      const projects = require('../db').stmts.listAllProjects.all();
+      const projById = new Map(projects.map((p) => [p.id, p.name]));
+      const crossings = [];
+      for (const r2 of rows) {
+        let chain;
+        try { chain = JSON.parse(r2.metadata_json).dispatch_chain || []; }
+        catch { continue; }
+        chain.forEach((c, i) => {
+          const text = (c.reason || c.summary || '');
+          const slugRefs = text.match(/t-m[a-z0-9]{7}-[a-z0-9]{4}/g) || [];
+          for (const s of slugRefs) {
+            if (s !== r2.slug) {
+              crossings.push({
+                host: r2.slug,
+                projectId: r2.project_id,
+                projectName: projById.get(r2.project_id) || '?',
+                idx: i,
+                ts: c.ts,
+                kind: c.kind,
+                from: c.fromRole || '',
+                to: c.toRole || c.toDisplayName || '',
+                otherSlug: s,
+                preview: text.slice(0, 200).replace(/\n/g, ' '),
+              });
+              break;
+            }
+          }
+        });
+      }
+      crossings.sort((a, b) => a.ts - b.ts);
+      const filtered = sinceMs ? crossings.filter((c) => c.ts >= sinceMs) : crossings;
+      res.json({
+        total: filtered.length,
+        threads: new Set(filtered.map((c) => c.host)).size,
+        since: sinceMs ? new Date(sinceMs).toISOString() : null,
+        latest: filtered.length ? new Date(filtered[filtered.length - 1].ts).toISOString() : null,
+        crossings: filtered,
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ---------------- Threads (Phase 2B 主视图) ----------------
   // [需求@2026-06-10] 线索是 user 需求(一等公民);所有路径以 thread_slug 为主
   r.get('/threads', requireProjectId, (req, res) => {
@@ -838,8 +1010,84 @@ function buildRouter() {
   });
 
   r.post('/threads/:slug/message', requireProjectId, (req, res) => {
-    const { text, targetInstance, clientMessageId } = req.body || {};
-    if (typeof text !== 'string' || !text.length) return res.status(400).json({ error: 'text required' });
+    const { text: rawText, targetInstance, clientMessageId, attachments } = req.body || {};
+    if (typeof rawText !== 'string') return res.status(400).json({ error: 'text required' });
+    if (!rawText.length && !(Array.isArray(attachments) && attachments.length)) {
+      return res.status(400).json({ error: 'text or attachments required' });
+    }
+    // [需求@2026-07-22 #183] 处理 attachments —
+    //   text (text/* + application/json/xml): base64 → utf8,<=100KB 内联到 text 消息尾;
+    //                                          >100KB 落 <project>/.mate/uploads/<ts>/<name>
+    //   image (image/*): base64 <=2MB(实际 base64 长度 <=2.8MB)→ 保留为 image content block
+    //                    大图落盘,text 里写路径
+    //   返 { textAugmented, imageBlocks, savedPaths }
+    let text = rawText;
+    let imageBlocks = [];
+    let savedPaths = [];
+    const TEXT_INLINE_LIMIT = 100 * 1024;     // 100KB decoded text
+    const IMAGE_INLINE_LIMIT = 2 * 1024 * 1024; // 2MB decoded image
+    if (Array.isArray(attachments) && attachments.length) {
+      const path = require('path');
+      const fs = require('fs');
+      const uploadDir = path.join(req.project.root_dir, '.mate', 'uploads', String(Date.now()));
+      let dirCreated = false;
+      const ensureDir = () => {
+        if (!dirCreated) { fs.mkdirSync(uploadDir, { recursive: true }); dirCreated = true; }
+      };
+      const inlineTextParts = [];
+      for (const att of attachments) {
+        const name = String(att?.name || 'file').replace(/[\\/:*?"<>|]/g, '_').slice(0, 200);
+        const mediaType = String(att?.mediaType || 'application/octet-stream');
+        const b64 = String(att?.dataBase64 || '');
+        if (!b64) continue;
+        const isText = /^(text\/|application\/(json|xml|javascript|x-yaml|toml|x-sh))/i.test(mediaType);
+        const isImage = /^image\//i.test(mediaType);
+        let buf;
+        try { buf = Buffer.from(b64, 'base64'); } catch (e) {
+          inlineTextParts.push(`\n\n[附件 ${name}: base64 解码失败]`);
+          continue;
+        }
+        if (isText) {
+          if (buf.length <= TEXT_INLINE_LIMIT) {
+            const content = buf.toString('utf8');
+            const lang = /\.(json|jsonc)$/i.test(name) ? 'json'
+              : /\.(md|markdown)$/i.test(name) ? 'markdown'
+              : /\.(ya?ml)$/i.test(name) ? 'yaml'
+              : /\.(js|mjs|cjs)$/i.test(name) ? 'javascript'
+              : /\.(ts|tsx)$/i.test(name) ? 'typescript'
+              : /\.py$/i.test(name) ? 'python'
+              : /\.(sh|bash)$/i.test(name) ? 'bash'
+              : '';
+            inlineTextParts.push(`\n\n---\n**📎 附件: \`${name}\`** (${buf.length} bytes)\n\n\`\`\`${lang}\n${content}\n\`\`\``);
+          } else {
+            ensureDir();
+            const fp = path.join(uploadDir, name);
+            fs.writeFileSync(fp, buf);
+            savedPaths.push(fp);
+            inlineTextParts.push(`\n\n---\n**📎 附件(过大,已落盘)**: \`${fp}\` (${Math.round(buf.length / 1024)}KB, ${mediaType})\n用 Read tool 读取。`);
+          }
+        } else if (isImage) {
+          if (buf.length <= IMAGE_INLINE_LIMIT) {
+            imageBlocks.push({ mediaType, base64: b64 });
+            inlineTextParts.push(`\n\n📎 图片附件: \`${name}\` (${Math.round(buf.length / 1024)}KB, ${mediaType}) — 直接看下面的 image`);
+          } else {
+            ensureDir();
+            const fp = path.join(uploadDir, name);
+            fs.writeFileSync(fp, buf);
+            savedPaths.push(fp);
+            inlineTextParts.push(`\n\n---\n**📎 大图附件(已落盘)**: \`${fp}\` (${Math.round(buf.length / 1024)}KB, ${mediaType})\n可用 Read tool 读取或让 mate-B 处理。`);
+          }
+        } else {
+          // 其它类型统一落盘
+          ensureDir();
+          const fp = path.join(uploadDir, name);
+          fs.writeFileSync(fp, buf);
+          savedPaths.push(fp);
+          inlineTextParts.push(`\n\n---\n**📎 附件(未知类型,已落盘)**: \`${fp}\` (${Math.round(buf.length / 1024)}KB, ${mediaType})`);
+        }
+      }
+      text = text + inlineTextParts.join('');
+    }
     try {
       // [需求@2026-06-12 §9.2] mateTerm 干预模式:targetInstance 指定 → 走 sendToThread 的指定路径
       if (targetInstance) {
@@ -850,11 +1098,12 @@ function buildRouter() {
           text,
           targetInstance,
           clientMessageId,
+          imageBlocks: imageBlocks.length ? imageBlocks : null,
         });
         if (result?.deferred) {
-          return res.json({ ok: true, deferred: true, pendingSendId: result.pendingSendId, reason: 'quota_pause', clientMessageId });
+          return res.json({ ok: true, deferred: true, pendingSendId: result.pendingSendId, reason: 'quota_pause', clientMessageId, savedPaths });
         }
-        return res.json({ ok: true, instance: result.snapshot(), routedTo: result.role.name, mode: 'intervention', clientMessageId });
+        return res.json({ ok: true, instance: result.snapshot(), routedTo: result.role.name, mode: 'intervention', clientMessageId, savedPaths });
       }
       // [需求@2026-06-12 §6.2 Gap 1] 默认路由:依据 last_questioner_role_type(谁问送回谁)
       //   - has_pending_question 且 last_questioner_role_type='orchestrator' → 送给 H
@@ -897,6 +1146,7 @@ function buildRouter() {
         text,
         roleType,
         clientMessageId,
+        imageBlocks: imageBlocks.length ? imageBlocks : null,
       });
       // [bug@2026-06-29 #170] quota PAUSED 时 sendToThread 返 {deferred:true, pendingSendId},
       //   不是 RoleInstance — 不能调 .snapshot(),否则 TypeError 让前端误以为发送失败。
@@ -907,9 +1157,10 @@ function buildRouter() {
           pendingSendId: result.pendingSendId,
           reason: 'quota_pause',
           clientMessageId,
+          savedPaths,
         });
       }
-      res.json({ ok: true, instance: result.snapshot(), routedTo: roleType, clientMessageId });
+      res.json({ ok: true, instance: result.snapshot(), routedTo: roleType, clientMessageId, savedPaths });
     } catch (e) {
       res.status(400).json({ error: e.message });
     }
@@ -1020,6 +1271,234 @@ function buildRouter() {
         markers: markers.map((m) => ({ kind: m.kind, target: m.target, reasonPreview: (m.reason || '').slice(0, 100) })),
         message: 'markers re-dispatched async',
       });
+    } catch (e) {
+      res.status(500).json({ error: e.message, stack: e.stack });
+    }
+  });
+
+  // [需求@2026-07-20 #176 Layer 2] 线索解阻塞 — user 显式触发,处理"卡死"状态。
+  //   Body: { action, targetInstanceId? }
+  //     action='retry'      → 重发最后一次给 targetInstanceId 的 handoff prompt(未指定 target
+  //                            则默认为栈顶帧)
+  //     action='notify_h'   → 给绑定的 H 注入系统消息,告知下家已卡死,让 H 决策
+  //     action='force_pop'  → 从栈 pop 掉 targetInstanceId 帧 + 追加合成 done seg +
+  //                            给 caller(通常是 H)注入通知
+  r.post('/threads/:slug/unstick', requireProjectId, async (req, res) => {
+    const { action, targetInstanceId } = req.body || {};
+    const validActions = ['retry', 'notify_h', 'force_pop'];
+    if (!validActions.includes(action)) {
+      return res.status(400).json({ error: `action must be one of ${validActions.join('/')}` });
+    }
+    try {
+      const thread = ThreadStore.get(req.project.id, req.params.slug);
+      if (!thread) return res.status(404).json({ error: 'thread not found' });
+      // [bug@2026-07-20] 不用 db.call_stack_json —— MarkerDispatcher._updateStack 在
+      //   appendDispatchChain 之前调用,导致 db 存的 stack 永远落后一段 chain
+      //   (线索 t-mrkat70r-uher 实测:db 只有 [R,H],真实 stack 是 [R,H,B])。
+      //   直接用 replayChain 从最新 chain 派生真实栈;顺便 save 回 db 修脏数据。
+      const { replayChain } = require('../threads/replayChain');
+      const TCS = require('../threads/ThreadCallStack');
+      const sessionLookup = (id) => {
+        if (!id) return null;
+        try {
+          const r = db.prepare('SELECT claude_session_id FROM role_instances WHERE id = ?').get(id);
+          return r?.claude_session_id || null;
+        } catch { return null; }
+      };
+      const replayed = replayChain(thread.metadata?.dispatch_chain || [], { lookupSessionId: sessionLookup });
+      try { TCS.save(req.project.id, req.params.slug, replayed.stack); } catch (e) {
+        console.warn(`[unstick] stack self-heal save failed: ${e.message}`);
+      }
+      const frames = replayed.stack.frames;
+      if (!frames.length) return res.status(400).json({ error: 'stack empty — nothing to unstick' });
+
+      // 默认 target = 栈顶帧
+      const topFrame = frames[frames.length - 1];
+      const stuckId = targetInstanceId || topFrame.instanceId;
+      const stuckIdx = frames.findIndex((f) => f.instanceId === stuckId);
+      if (stuckIdx < 0) return res.status(400).json({ error: `targetInstanceId ${stuckId} not in stack` });
+      const stuckFrame = frames[stuckIdx];
+      const stuckInst = spawnManager.getInstance(stuckId);
+
+      // 找 caller(栈里 stuck 帧下方一层)+ 找最后一次派给 stuck 的 handoff seg(取 reason)
+      const callerFrame = stuckIdx > 0 ? frames[stuckIdx - 1] : null;
+      const chain = thread.metadata?.dispatch_chain || [];
+      let lastHandoffToStuck = null;
+      for (let i = chain.length - 1; i >= 0; i--) {
+        if (chain[i].kind === 'handoff' && chain[i].toInstanceId === stuckId) {
+          lastHandoffToStuck = chain[i];
+          break;
+        }
+      }
+
+      // ---------------- action=retry ----------------
+      if (action === 'retry') {
+        if (!stuckInst) return res.status(404).json({ error: `instance ${stuckId} not in memory (dead?)` });
+        // [bug@2026-07-20] 之前拿"最新 user_to_role",但 B 跑 tool 循环时最新几条全是
+        //   tool_result(content[0].type='tool_result',无 text)→ 提取空串报错。
+        //   真正的 handoff prompt 是 chain 里 handoff seg 之后的第一条 user_to_role,
+        //   用 chain[N].ts 定位就精准。
+        if (!lastHandoffToStuck) {
+          return res.status(400).json({ error: `no handoff seg found for ${stuckId} in chain — cannot retry` });
+        }
+        // 用 chain handoff.ts 作为 anchor,找 ts >= anchor 的最早一条 user_to_role
+        // (放宽 -5s 容忍 handoff record 和 message record 之间的微小时间偏差)
+        const anchorTs = (lastHandoffToStuck.ts || 0) - 5000;
+        const row = db.prepare(`
+          SELECT payload_json, ts FROM messages
+          WHERE instance_id = ? AND direction = 'user_to_role' AND thread_slug = ? AND ts >= ?
+          ORDER BY ts ASC LIMIT 1
+        `).get(stuckId, req.params.slug, anchorTs);
+        if (!row) return res.status(400).json({ error: `no user_to_role message at/after chain handoff ts to retry` });
+        let text;
+        try {
+          const p = JSON.parse(row.payload_json);
+          const content = p?.message?.content;
+          text = Array.isArray(content)
+            ? content.filter((c) => c.type === 'text').map((c) => c.text).join('')
+            : (typeof content === 'string' ? content : '');
+        } catch { return res.status(500).json({ error: 'payload parse failed' }); }
+        if (!text) {
+          return res.status(400).json({
+            error: `handoff prompt not found (msg at ${new Date(row.ts).toISOString()} has no text content — likely tool_result)`,
+            hint: 'chain handoff ts anchor may be off by more than 5s, or handoff message was purged',
+          });
+        }
+        text = text.replace(/^\[Thread:\s*[^\]]+\]\n\n/, '');
+
+        const result = spawnManager.sendToThread({
+          projectId: req.project.id,
+          projectRootDir: req.project.root_dir,
+          threadSlug: req.params.slug,
+          text,
+          targetInstance: stuckId,
+          fromMarker: false,
+        });
+        if (result?.deferred) {
+          return res.json({ ok: true, action, deferred: true, pendingSendId: result.pendingSendId, target: stuckId });
+        }
+        return res.json({ ok: true, action, target: stuckId, displayName: stuckInst.displayName, resent: true });
+      }
+
+      // ---------------- action=notify_h ----------------
+      if (action === 'notify_h') {
+        // 找栈里最近一层 H frame(通常是 caller,若栈顶就是 H 则通知栈顶)
+        let hFrame = null;
+        for (let i = frames.length - 1; i >= 0; i--) {
+          if (frames[i].role === 'H') { hFrame = frames[i]; break; }
+        }
+        if (!hFrame) return res.status(400).json({ error: 'no H frame in stack to notify' });
+        const hInst = spawnManager.getInstance(hFrame.instanceId);
+        if (!hInst) return res.status(404).json({ error: `H instance ${hFrame.instanceId} not in memory` });
+
+        const stuckDisplay = stuckInst?.displayName || stuckId;
+        const stuckSince = new Date(stuckFrame.lastActivityAt || stuckFrame.pushedAt).toISOString();
+        const reasonPreview = (lastHandoffToStuck?.reason || '').slice(0, 500);
+        const injectText = `下派给 ${stuckDisplay}(${stuckId})的任务已卡死,自 ${stuckSince} 起无进展。可能原因:mid-turn 429 / session limit / 逻辑卡壳。
+
+${reasonPreview ? `原 handoff reason:\n${reasonPreview}` : '(未找到原 handoff reason)'}
+
+请决策下一步:
+  (a) 重新派工同一 delegate(可缩小任务范围)
+  (b) 换 slot 或换 role 派工
+  (c) 上报 R,由 user 决策是否继续`;
+
+        const tag = 'system:mate-operator';
+        const wrapped = `<${tag}>
+${injectText}
+
+**这是 mate 系统注入,不是 user 输入。你可以直接决策 / 执行 / handoff,不必回复"收到"或等 user 确认。**
+</${tag}>`;
+
+        const result = spawnManager.sendToThread({
+          projectId: req.project.id,
+          projectRootDir: req.project.root_dir,
+          threadSlug: req.params.slug,
+          text: wrapped,
+          targetInstance: hFrame.instanceId,
+          fromMarker: false,
+        });
+        if (result?.deferred) {
+          return res.json({ ok: true, action, deferred: true, pendingSendId: result.pendingSendId, target: hFrame.instanceId });
+        }
+        return res.json({
+          ok: true, action, notifiedH: hFrame.instanceId, hDisplayName: hInst.displayName,
+          stuckTarget: stuckId, stuckDisplayName: stuckDisplay,
+        });
+      }
+
+      // ---------------- action=force_pop ----------------
+      if (action === 'force_pop') {
+        const TCS = require('../threads/ThreadCallStack');
+        // 1. pop stuck 帧及以上所有帧
+        const popped = frames.splice(stuckIdx);
+        TCS.save(req.project.id, req.params.slug, { frames });
+        // 2. 追加合成 done seg(标注 forced,非 terminal)
+        const isTerminal = frames.length === 0 || frames[frames.length - 1].role === 'R';
+        try {
+          const updated = ThreadStore.appendDispatchChain(req.project.id, req.params.slug, {
+            kind: 'done',
+            fromRole: stuckFrame.role === 'R' ? 'mate-R' : stuckFrame.role === 'H' ? 'mate-H' : stuckFrame.role === 'B' ? 'mate-B' : 'mate-C',
+            fromInstanceId: stuckId,
+            summary: `[operator force-pop] frame popped due to stuck state`,
+            callerInstanceId: callerFrame?.instanceId || null,
+            isTerminal,
+            forced: true,
+          });
+          const bus = require('../messageBus');
+          bus.publish('dispatch.chain_updated', {
+            projectId: req.project.id,
+            threadSlug: req.params.slug,
+            chain: updated?.metadata?.dispatch_chain || [],
+          });
+        } catch (e) {
+          console.warn(`[unstick force_pop] append chain failed: ${e.message}`);
+        }
+        // 3. 若栈非空且顶层是 role != R 的 caller,注入通知让它决策
+        let notifiedCaller = null;
+        if (callerFrame && callerFrame.role !== 'R') {
+          const callerInst = spawnManager.getInstance(callerFrame.instanceId);
+          if (callerInst) {
+            const stuckDisplay = stuckInst?.displayName || stuckId;
+            const tag = 'system:mate-operator';
+            const wrapped = `<${tag}>
+你下派给 ${stuckDisplay}(${stuckId})的任务被 operator 强制 pop(卡死状态)。栈已回退到你这一层。
+
+请决策下一步:重新派工 / 换 delegate / 上报 R。
+
+**这是 mate 系统注入,不是 user 输入。**
+</${tag}>`;
+            try {
+              spawnManager.sendToThread({
+                projectId: req.project.id,
+                projectRootDir: req.project.root_dir,
+                threadSlug: req.params.slug,
+                text: wrapped,
+                targetInstance: callerFrame.instanceId,
+                fromMarker: false,
+              });
+              notifiedCaller = callerFrame.instanceId;
+            } catch (e) {
+              console.warn(`[unstick force_pop] notify caller failed: ${e.message}`);
+            }
+          }
+        }
+        // 4. 若栈空 or 顶层是 R,清 outcome(避免脏 verified 阻挡后续 done 处理)
+        if (frames.length === 0) {
+          try {
+            db.prepare(`UPDATE threads SET outcome = NULL WHERE project_id = ? AND slug = ?`)
+              .run(req.project.id, req.params.slug);
+          } catch {}
+        }
+        return res.json({
+          ok: true, action, popped: popped.length,
+          poppedFrames: popped.map((f) => ({ role: f.role, instanceId: f.instanceId })),
+          notifiedCaller,
+          stackDepth: frames.length,
+        });
+      }
+
+      return res.status(400).json({ error: `unhandled action ${action}` });
     } catch (e) {
       res.status(500).json({ error: e.message, stack: e.stack });
     }
