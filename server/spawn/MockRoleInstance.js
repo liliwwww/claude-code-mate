@@ -86,7 +86,7 @@ class MockRoleInstance {
       this.role = role;
       this.projectId = restoreState.projectId;
       this.projectRootDir = restoreState.projectRootDir;
-      this.threadSlug = restoreState.threadSlug || null;
+      this._threadSlug = restoreState.threadSlug || null;
       this.poolSlot = restoreState.poolSlot ?? null;
       this.status = 'disconnected';
       this.pid = null;
@@ -100,7 +100,7 @@ class MockRoleInstance {
       this.role = role;
       this.projectId = projectId;
       this.projectRootDir = projectRootDir || '/mock';
-      this.threadSlug = threadSlug;
+      this._threadSlug = threadSlug ?? null;
       this.poolSlot = poolSlot;
       this.status = 'spawning';
       this.pid = null;
@@ -146,6 +146,17 @@ class MockRoleInstance {
     this.status = newStatus;
     this.lastActiveAt = Date.now();
     this._emit('status_change', { from: old, to: newStatus });
+  }
+
+  // [X2 #200] threadSlug 审计 — 同 RoleInstance,mock 也 emit 便于测试断言
+  get threadSlug() { return this._threadSlug; }
+  set threadSlug(newVal) {
+    const old = this._threadSlug;
+    if (old === newVal) return;
+    this._threadSlug = newVal;
+    const stack = new Error().stack || '';
+    const callerStack = stack.split('\n').slice(2, 10).map((l) => l.trim()).join(' | ');
+    this._emit('threadslug_change', { from: old, to: newVal, callerStack });
   }
 
   // 同 RoleInstance.spawn — 合成 init,不开真子进程

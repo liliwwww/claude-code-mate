@@ -59,6 +59,11 @@ const ROLE_TYPE_TO_TCS = {
 //   - frame.status 现在反映"chain 历史最后一刻该 frame 的状态",不反映
 //     user 直接发消息后的实时 running(backlog #154 — 维持现状,跟 chain 派生
 //     一致即可,UI 实时状态由 inst.status 单独显示)
+//
+// [bug@2026-07-28 #186] 调用顺序契约(重要):
+//   4 个 marker 处理函数必须先 appendDispatchChain 再 _updateStack。
+//   否则 replayChain 读到的是老 chain,派生栈永远滞后一段 → 脏 stage/stack。
+//   实测撞过 3 条线索(t-mqfgby8l-bxlt / t-mrkat70r-uher / t-mrx143jk-xva2)。
 function _updateStack(projectId, threadSlug, _mutatorIgnored) {
   try {
     // 1. 取最新 chain(已经被调用方 appendDispatchChain 更新过了)
@@ -279,10 +284,36 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread, tas
     return;
   }
 
+  // [需求@2026-06-15 Phase 2G M1.2] dispatch_chain 追加段
+  // [bug@2026-07-28 #186] 时序修复 — 必须在 _updateStack 之前 append,
+  //   否则 _updateStack 用旧 chain 派生栈,栈永远滞后一段(实测线索 t-mrx143jk-xva2
+  //   / t-mrkat70r-uher / t-mqfgby8l-bxlt 都撞过脏 stage/stack)。
+  try {
+    const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
+      kind: 'handoff',
+      fromRole: fromInst.role.name,
+      fromInstanceId: fromInst.id,
+      toRole: targetRoleName,
+      toInstanceId: inst.id,
+      toDisplayName: inst.displayName,
+      targetSpec,
+      reason: reason || '',
+    });
+    bus.publish('dispatch.chain_updated', {
+      projectId: fromInst.projectId,
+      threadSlug: fromInst.threadSlug,
+      chain: updated?.metadata?.dispatch_chain || [],
+    });
+  } catch (e) {
+    console.warn(`[MarkerDispatcher] dispatch_chain append failed: ${e.message}`);
+  }
+
   // [Phase 3.2 @2026-06-17] 栈双写 — handoff = push/pop/bounce 三种语义
   //   - B/C → H = callback: pop B/C(子工返回)
   //   - H → R = bounce: pop H + 替换栈底 R
   //   - 其它 push down (R→H 或 H→B/C): push to-frame
+  // [bug@2026-07-28 #186] mutator 早已被 _updateStack 忽略(纯 replayChain 派生),
+  //   保留仅为兼容;真正驱动栈变化的是上面 appendDispatchChain 已加的新 seg。
   _updateStack(fromInst.projectId, fromInst.threadSlug, (stack) => {
     const fromTcsType = ROLE_TYPE_TO_TCS[fromInst.role?.type];
     const toTcsType = ROLE_TYPE_TO_TCS[targetRole?.type];
@@ -314,27 +345,6 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread, tas
       TCS.push(stack, _frameFromInst(inst, targetRole));
     }
   });
-
-  // [需求@2026-06-15 Phase 2G M1.2] dispatch_chain 追加段
-  try {
-    const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
-      kind: 'handoff',
-      fromRole: fromInst.role.name,
-      fromInstanceId: fromInst.id,
-      toRole: targetRoleName,
-      toInstanceId: inst.id,
-      toDisplayName: inst.displayName,
-      targetSpec,
-      reason: reason || '',
-    });
-    bus.publish('dispatch.chain_updated', {
-      projectId: fromInst.projectId,
-      threadSlug: fromInst.threadSlug,
-      chain: updated?.metadata?.dispatch_chain || [],
-    });
-  } catch (e) {
-    console.warn(`[MarkerDispatcher] dispatch_chain append failed: ${e.message}`);
-  }
 
   recordEvent('thread.handoff', {
     from: fromInst.role.name, target: targetSpec, resolvedRole: targetRoleName,
@@ -524,25 +534,9 @@ function _performDone(fromInst, summary, { sendToThread }) {
   // 判 terminal — caller 是 R 或没 caller
   const isTerminalDoneEarly = !callerInstId || callerRoleType === 'mate-R' || callerRoleType === 'requirements';
 
-  // [Phase 3.2 @2026-06-17] 栈双写 — done = pop frame
-  //   terminal: 整栈清空 + outcome=verified
-  //   非 terminal: 弹自己一层
-  _updateStack(projectId, threadSlug, (stack) => {
-    if (isTerminalDoneEarly) {
-      stack.frames.length = 0;
-      // outcome 设栈外字段(threads.outcome 列)— 用 ThreadStore 同步落
-    } else {
-      // pop self(找到自己再弹)
-      const idx = stack.frames.findIndex((f) => f.instanceId === fromInst.id);
-      if (idx >= 0) {
-        stack.frames.splice(idx); // 从 idx 起全弹(包括自己)
-      } else {
-        TCS.pop(stack); // 没找到 fallback 弹栈顶
-      }
-    }
-  });
-
   // append done segment to chain(无论 pop 还是 terminal)
+  // [bug@2026-07-28 #186] 时序修复 — chain 必须先追加,_updateStack 才能读到最新 chain
+  //   派生正确的栈(否则脏 stack 会漏掉 done 效果 → stage/outcome 不一致)。
   try {
     const updated = ThreadStore.appendDispatchChain(projectId, threadSlug, {
       kind: 'done',
@@ -559,6 +553,26 @@ function _performDone(fromInst, summary, { sendToThread }) {
   } catch (e) {
     console.warn(`[MarkerDispatcher] dispatch_chain done append failed: ${e.message}`);
   }
+
+  // [Phase 3.2 @2026-06-17] 栈双写 — done = pop frame
+  //   terminal: 整栈清空 + outcome=verified
+  //   非 terminal: 弹自己一层
+  // [bug@2026-07-28 #186] mutator 仅兼容参数,真正驱动是上面新追加的 done seg,
+  //   replayChain 会正确识别 terminal → outcome=verified + 栈清空
+  _updateStack(projectId, threadSlug, (stack) => {
+    if (isTerminalDoneEarly) {
+      stack.frames.length = 0;
+      // outcome 设栈外字段(threads.outcome 列)— 用 ThreadStore 同步落
+    } else {
+      // pop self(找到自己再弹)
+      const idx = stack.frames.findIndex((f) => f.instanceId === fromInst.id);
+      if (idx >= 0) {
+        stack.frames.splice(idx); // 从 idx 起全弹(包括自己)
+      } else {
+        TCS.pop(stack); // 没找到 fallback 弹栈顶
+      }
+    }
+  });
 
   recordEvent('thread.done', { summary, fromInstanceId: fromInst.id, callerInstanceId: callerInstId },
     { projectId, threadSlug });
@@ -683,18 +697,8 @@ function _performBlocked(fromInst, question, severity) {
     console.warn(`[MarkerDispatcher] blocked metadata persist failed:`, e.message);
     return;
   }
-  // [Phase 3.2 @2026-06-17] 栈双写 — blocked = 栈顶 frame 状态 blocked + pending_question
-  _updateStack(fromInst.projectId, fromInst.threadSlug, (stack) => {
-    // 找到 fromInst 那一帧(应该是栈顶),设 blocked
-    const idx = stack.frames.findIndex((f) => f.instanceId === fromInst.id);
-    const frame = idx >= 0 ? stack.frames[idx] : TCS.peek(stack);
-    if (frame) {
-      frame.status = TCS.FrameStatus.BLOCKED;
-      frame.pendingQuestion = question || null;
-      frame.pendingQuestionMeta = { severity: severity || 'mid' };
-    }
-  });
   // [Phase 2G M1.2] append blocked segment to chain
+  // [bug@2026-07-28 #186] 时序修复 — chain 先追加,_updateStack 派生的栈才能包含 blocked 效果
   try {
     const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
       kind: 'blocked',
@@ -711,6 +715,19 @@ function _performBlocked(fromInst, question, severity) {
   } catch (e) {
     console.warn(`[MarkerDispatcher] dispatch_chain blocked append failed: ${e.message}`);
   }
+  // [Phase 3.2 @2026-06-17] 栈双写 — blocked = 栈顶 frame 状态 blocked + pending_question
+  // [bug@2026-07-28 #186] mutator 兼容留;真正驱动是新追加的 blocked seg,
+  //   replayChain._applyBlocked 会把栈顶 frame.status/pendingQuestion 设好
+  _updateStack(fromInst.projectId, fromInst.threadSlug, (stack) => {
+    // 找到 fromInst 那一帧(应该是栈顶),设 blocked
+    const idx = stack.frames.findIndex((f) => f.instanceId === fromInst.id);
+    const frame = idx >= 0 ? stack.frames[idx] : TCS.peek(stack);
+    if (frame) {
+      frame.status = TCS.FrameStatus.BLOCKED;
+      frame.pendingQuestion = question || null;
+      frame.pendingQuestionMeta = { severity: severity || 'mid' };
+    }
+  });
   recordEvent('thread.blocked', { question, severity, fromInstanceId: fromInst.id },
     { projectId: fromInst.projectId, threadSlug: fromInst.threadSlug });
   // [需求@2026-06-19] 派工文件追加 Blocked section
@@ -744,24 +761,8 @@ function _performBlocked(fromInst, question, severity) {
 //     2. dispatch_chain append { kind: 'reject', reason }
 //     3. 不真正 dispatch 给 bounce_to(留 user 处理) — 只记录"H 拒了"+ reason
 function _performReject(fromInst, reason, bounceTo, { sendToThread } = {}) {
-  // [Phase 3.2 @2026-06-17] 栈双写 — reject = pop self
-  _updateStack(fromInst.projectId, fromInst.threadSlug, (stack) => {
-    const idx = stack.frames.findIndex((f) => f.instanceId === fromInst.id);
-    if (idx >= 0) {
-      stack.frames.splice(idx);
-    } else {
-      TCS.pop(stack);
-    }
-    if (TCS.isEmpty(stack)) {
-      // 整栈被弹空 → outcome=aborted
-      try {
-        db.prepare(`UPDATE threads SET outcome = 'aborted', updated_at = ? WHERE project_id = ? AND slug = ?`)
-          .run(Date.now(), fromInst.projectId, fromInst.threadSlug);
-      } catch {}
-    }
-  });
-
   // chain append
+  // [bug@2026-07-28 #186] 时序修复 — chain 先追加,_updateStack 才能派生带 reject seg 的栈
   try {
     const updated = ThreadStore.appendDispatchChain(fromInst.projectId, fromInst.threadSlug, {
       kind: 'reject',
@@ -777,7 +778,27 @@ function _performReject(fromInst, reason, bounceTo, { sendToThread } = {}) {
     });
   } catch (e) {
     console.warn(`[MarkerDispatcher] reject chain append failed: ${e.message}`);
+    return;
   }
+
+  // [Phase 3.2 @2026-06-17] 栈双写 — reject = pop self
+  // [bug@2026-07-28 #186] mutator 兼容留;真正驱动是新追加的 reject seg,
+  //   replayChain._applyReject 弹空栈会返 'unwound_to_empty' 让 outcome=aborted
+  _updateStack(fromInst.projectId, fromInst.threadSlug, (stack) => {
+    const idx = stack.frames.findIndex((f) => f.instanceId === fromInst.id);
+    if (idx >= 0) {
+      stack.frames.splice(idx);
+    } else {
+      TCS.pop(stack);
+    }
+    if (TCS.isEmpty(stack)) {
+      // 整栈被弹空 → outcome=aborted
+      try {
+        db.prepare(`UPDATE threads SET outcome = 'aborted', updated_at = ? WHERE project_id = ? AND slug = ?`)
+          .run(Date.now(), fromInst.projectId, fromInst.threadSlug);
+      } catch {}
+    }
+  });
 
   recordEvent('dispatch.rejected', {
     fromInstanceId: fromInst.id,

@@ -80,6 +80,14 @@ class SpawnManager {
       // 真写 stdin
       // [Phase 2G M1.2] 把 currentTaskSlug 翻成这次要跑的 thread(给 UI 看)
       inst.currentTaskSlug = pendingRow.threadSlug || inst.currentTaskSlug;
+      // [bug@2026-07-28 #187] chain 走串根因 — flush queue 时只翻 currentTaskSlug 没翻
+      //   inst.threadSlug,导致 pooled H 从线索 A 转跑线索 B 的 queued send 时,
+      //   处理完 emit <mate:done /> 走 MarkerDispatcher 用 inst.threadSlug 找线索,
+      //   落到旧线索 A 的 chain 上。实测 t-mrx143jk-xva2 的 ADR done 落到
+      //   t-mrwwnh63-8g3f chain[51]。修法:flush 时同步翻 inst.threadSlug。
+      if (pendingRow.threadSlug) {
+        inst.threadSlug = pendingRow.threadSlug;
+      }
       // [Phase 2H Phase 2] 记录当前 pending send id — result 事件时 dispatch.completed 用
       inst._currentPendingSend = {
         id: pendingRow.id,
@@ -119,10 +127,15 @@ class SpawnManager {
   }
 
   // [需求@2026-06-27 #167] quota resume 时按 enqueuedAt 顺序 flush 已入队的 send
+  // [需求@2026-07-20 #176 Layer 1] 同时 flush quota_mid_turn(中途 429 重试)
+  // [需求@2026-07-22 #180 Layer 4] 同时 flush session_lost(死实例后重派)
   async _flushQuotaPaused() {
-    const rows = PendingSends.listByReasonAndStatus('quota_pause', 'queued');
+    const pauseRows = PendingSends.listByReasonAndStatus('quota_pause', 'queued');
+    const midTurnRows = PendingSends.listByReasonAndStatus('quota_mid_turn', 'queued');
+    const sessionLostRows = PendingSends.listByReasonAndStatus('session_lost', 'queued');
+    const rows = [...pauseRows, ...midTurnRows, ...sessionLostRows].sort((a, b) => a.enqueuedAt - b.enqueuedAt);
     if (!rows.length) return;
-    console.log(`[SpawnManager] quota resumed — flushing ${rows.length} deferred send(s)`);
+    console.log(`[SpawnManager] flushing ${rows.length} deferred send(s) (${pauseRows.length} pause + ${midTurnRows.length} mid_turn + ${sessionLostRows.length} session_lost)`);
     for (const row of rows) {
       try {
         if (row.kind === 'thread_send') {
@@ -139,6 +152,7 @@ class SpawnManager {
             markerFromInst: row.payload.markerFromInstId ? this.instances.get(row.payload.markerFromInstId) : null,
             markerSpec: row.payload.markerSpec,
             markerReason: row.payload.markerReason,
+            imageBlocks: row.payload.imageBlocks || null,  // #182 附件跟着 flush
             _skipQuotaGate: true,
           });
         } else if (row.kind === 'direct_send') {
@@ -158,6 +172,239 @@ class SpawnManager {
         bus.publish('quota.send_failed', { pendingSendId: row.id, error: e.message, ts: Date.now() });
       }
     }
+  }
+
+  // [需求@2026-07-20 #176 Layer 1] mid-turn 429 处理:
+  //   1. 找最近一次派给本 inst 的 user_to_role 消息(即卡半路那条 handoff prompt)
+  //   2. 剥掉 [Thread: ...] 前缀(sendToThread 会重新加,不剥就双前缀)
+  //   3. enqueue 一条 thread_send,reason='quota_mid_turn',target 锁本 inst
+  //   4. 若当前 quota 已 allowed(边缘 race):立即 _tryFlushFor 主动派发
+  //      否则等 system.quota_resumed 事件触发 _flushQuotaPaused
+  async _handleMidTurn429(inst) {
+    if (!inst.threadSlug) return;
+    // [bug@2026-07-20] 之前拿"最新 user_to_role",但 tool 循环时最新几条全是
+    //   tool_result(content[0].type='tool_result',无 text)。用 chain 里最后一段
+    //   toInstanceId=inst.id 的 handoff ts 作为 anchor 定位真正的 handoff prompt。
+    const t = ThreadStore.get(inst.projectId, inst.threadSlug);
+    const chain = t?.metadata?.dispatch_chain || [];
+    let fromInstanceId = null;
+    let anchorTs = null;
+    for (let i = chain.length - 1; i >= 0; i--) {
+      if (chain[i].kind === 'handoff' && chain[i].toInstanceId === inst.id) {
+        fromInstanceId = chain[i].fromInstanceId || null;
+        anchorTs = (chain[i].ts || 0) - 5000;
+        break;
+      }
+    }
+    if (anchorTs === null) {
+      console.warn(`[SpawnManager] mid-turn 429 (${inst.id}): no handoff seg in chain — cannot retry`);
+      return;
+    }
+    const row = db.prepare(`
+      SELECT payload_json FROM messages
+      WHERE instance_id = ? AND direction = 'user_to_role' AND thread_slug = ? AND ts >= ?
+      ORDER BY ts ASC LIMIT 1
+    `).get(inst.id, inst.threadSlug, anchorTs);
+    if (!row) {
+      console.warn(`[SpawnManager] mid-turn 429 (${inst.id}): no user_to_role at/after handoff ts`);
+      return;
+    }
+    let text;
+    try {
+      const p = JSON.parse(row.payload_json);
+      const content = p?.message?.content;
+      text = Array.isArray(content)
+        ? content.filter((c) => c.type === 'text').map((c) => c.text).join('')
+        : (typeof content === 'string' ? content : '');
+    } catch {
+      console.warn(`[SpawnManager] mid-turn 429 (${inst.id}): payload parse failed`);
+      return;
+    }
+    if (!text) {
+      console.warn(`[SpawnManager] mid-turn 429 (${inst.id}): handoff prompt msg has no text (likely tool_result)`);
+      return;
+    }
+    text = text.replace(/^\[Thread:\s*[^\]]+\]\n\n/, '');
+
+    const project = stmts.getProject.get(inst.projectId);
+    if (!project) return;
+
+    // 入队,reason='quota_mid_turn' — _flushQuotaPaused 会跟 quota_pause 一起 flush
+    const psId = PendingSends.enqueue({
+      kind: 'thread_send',
+      targetKind: 'instance',
+      targetId: inst.id,
+      projectId: inst.projectId,
+      payload: {
+        text,
+        projectRootDir: project.root_dir,
+        roleType: inst.role.type,
+        targetSlot: inst.poolSlot,
+        targetInstanceId: inst.id,
+        clientMessageId: null,
+        fromMarker: false,       // 不是新 marker,是重试同 prompt
+        midTurnRetry: true,      // UI 标签用
+      },
+      reason: 'quota_mid_turn',
+      status: 'queued',
+      threadSlug: inst.threadSlug,
+      fromInstanceId,
+    });
+    console.log(`[SpawnManager] mid-turn 429 detected on ${inst.id} — enqueued retry ps#${psId}`);
+    bus.publish('instance.mid_turn_429_queued', {
+      instanceId: inst.id,
+      displayName: inst.displayName,
+      threadSlug: inst.threadSlug,
+      projectId: inst.projectId,
+      pendingSendId: psId,
+      fromInstanceId,
+      ts: Date.now(),
+    });
+    try {
+      recordEvent('instance.mid_turn_429_queued', { pendingSendId: psId, fromInstanceId },
+        { projectId: inst.projectId, threadSlug: inst.threadSlug, instanceId: inst.id });
+    } catch {}
+
+    // 若 quota 当前已 allowed,立即尝试派发(避免等下一次 resume 事件)
+    if (!QuotaState.isPaused()) {
+      setImmediate(() => {
+        this._flushQuotaPaused().catch((e) =>
+          console.warn(`[SpawnManager] mid-turn 429 immediate flush failed: ${e.message}`)
+        );
+      });
+    }
+  }
+
+  // [需求@2026-07-22 #180 Layer 4] session-lost 处理:
+  //   现象:老 inst 存的 claude_session_id 在 CLI 本地已被清理(卸载/清 cache/长期不用),
+  //         --resume 立即失败,inst 变 dead,派工者永远等不到 callback。
+  //   修法:
+  //     1. 把这个 dead inst 从内存 + db 彻底删掉(不留 pool_slot 占位),
+  //        让 pool 下次派工时**新起一个 fresh 实例**(fresh session)
+  //     2. 清 thread.metadata.current_role_instances[roleType]
+  //     3. 找 chain 里最后一条 target=inst.id 的 handoff,重新入队 pending_sends
+  //        重派时用 fromMarker=true + markerFromInst=caller,让 _sendToPooledRole 走
+  //        标准 spawn/dispatch 路径,新的 fresh C 会 spawn 起来
+  async _handleSessionLost(inst, raw) {
+    if (!inst.threadSlug) return;
+    const errors = raw?.errors || [];
+    const errMsg = errors.find((e) => /No conversation found/i.test(String(e))) || String(errors[0] || '');
+    console.warn(`[SpawnManager] session-lost detected: ${inst.id} sess=${inst.sessionId} — ${errMsg}`);
+
+    const projectId = inst.projectId;
+    const threadSlug = inst.threadSlug;
+    const roleType = inst.role?.type;
+    const roleName = inst.role?.name;
+
+    // 1. 找 chain 里最后一条 target=inst.id 的 handoff — 拿 caller + 原 prompt
+    const t = ThreadStore.get(projectId, threadSlug);
+    const chain = t?.metadata?.dispatch_chain || [];
+    let fromInstanceId = null;
+    let anchorTs = null;
+    let targetSpec = null;
+    let markerReason = null;
+    for (let i = chain.length - 1; i >= 0; i--) {
+      if (chain[i].kind === 'handoff' && chain[i].toInstanceId === inst.id) {
+        fromInstanceId = chain[i].fromInstanceId || null;
+        anchorTs = (chain[i].ts || 0) - 5000;
+        targetSpec = chain[i].targetSpec || chain[i].toDisplayName || roleName;
+        markerReason = chain[i].reason || '';
+        break;
+      }
+    }
+    if (anchorTs === null) {
+      console.warn(`[SpawnManager] session-lost (${inst.id}): no handoff seg found — cannot retry`);
+      return;
+    }
+    // 找原 handoff prompt text
+    const row = db.prepare(`
+      SELECT payload_json FROM messages
+      WHERE instance_id = ? AND direction = 'user_to_role' AND thread_slug = ? AND ts >= ?
+      ORDER BY ts ASC LIMIT 1
+    `).get(inst.id, threadSlug, anchorTs);
+    let text = null;
+    if (row) {
+      try {
+        const p = JSON.parse(row.payload_json);
+        const content = p?.message?.content;
+        text = Array.isArray(content)
+          ? content.filter((c) => c.type === 'text').map((c) => c.text).join('')
+          : (typeof content === 'string' ? content : '');
+        if (text) text = text.replace(/^\[Thread:\s*[^\]]+\]\n\n/, '');
+      } catch {}
+    }
+    if (!text) {
+      console.warn(`[SpawnManager] session-lost (${inst.id}): handoff prompt text not found`);
+      return;
+    }
+
+    // 2. 从 db + 内存彻底移除死实例(pool_slot 会腾空 → 下次派工新起)
+    try {
+      db.prepare('DELETE FROM role_instances WHERE id = ?').run(inst.id);
+    } catch (e) { console.warn(`[SpawnManager] delete dead inst failed: ${e.message}`); }
+    this.instances.delete(inst.id);
+
+    // 3. 清 thread metadata 里 current_role_instances 对该 roleType 的绑定
+    try {
+      const cur = ThreadStore.get(projectId, threadSlug);
+      const meta = cur?.metadata || {};
+      if (meta.current_role_instances?.[roleType] === inst.id) {
+        meta.current_role_instances[roleType] = null;
+        db.prepare(`UPDATE threads SET metadata_json = ? WHERE project_id = ? AND slug = ?`)
+          .run(JSON.stringify(meta), projectId, threadSlug);
+      }
+    } catch (e) { console.warn(`[SpawnManager] clear thread binding failed: ${e.message}`); }
+
+    // 4. 找 caller inst 作为 markerFromInst(重派时看谁的名义)
+    const fromInst = fromInstanceId ? this.instances.get(fromInstanceId) : null;
+
+    // 5. 入队 pending_sends,fromMarker=true 让 flush 时走 _sendToPooledRole → spawn fresh 实例
+    const project = stmts.getProject.get(projectId);
+    const psId = PendingSends.enqueue({
+      kind: 'thread_send',
+      targetKind: 'thread',
+      targetId: threadSlug,
+      projectId,
+      payload: {
+        text,
+        projectRootDir: project?.root_dir,
+        roleType,
+        targetSlot: inst.poolSlot,
+        targetInstanceId: null,     // 不锁具体 inst,让 pool 新起一个
+        clientMessageId: null,
+        fromMarker: true,
+        markerFromInstId: fromInstanceId,
+        markerSpec: targetSpec,
+        markerReason,
+        sessionLostRetry: true,     // UI 标签用
+      },
+      reason: 'session_lost',
+      status: 'queued',
+      threadSlug,
+      fromInstanceId,
+    });
+    console.log(`[SpawnManager] session-lost ${inst.id} → enqueued respawn+retry ps#${psId}`);
+    bus.publish('instance.session_lost_recovered', {
+      deadInstanceId: inst.id,
+      displayName: inst.displayName,
+      threadSlug, projectId,
+      pendingSendId: psId,
+      fromInstanceId,
+      lostSessionId: inst.sessionId,
+      ts: Date.now(),
+    });
+    try {
+      recordEvent('instance.session_lost_recovered',
+        { pendingSendId: psId, fromInstanceId, lostSessionId: inst.sessionId, errMsg },
+        { projectId, threadSlug, instanceId: inst.id });
+    } catch {}
+
+    // 6. 立即 flush(session_lost 跟 quota 无关,别等 quota resume)
+    setImmediate(() => {
+      this._flushQuotaPaused().catch((e) =>
+        console.warn(`[SpawnManager] session-lost immediate flush failed: ${e.message}`)
+      );
+    });
   }
 
   // [需求@2026-06-10] lazy resurrection: on boot, restore non-dead instances
@@ -266,13 +513,31 @@ class SpawnManager {
   }
 
   _wireListeners(inst) {
+    // [X2 #200] threadSlug 审计桥接 — inst 每次 flip threadSlug 都 recordEvent
+    //   目的:未来 chain 走串 debug 时可 SQL 直接查 events 表看谁在哪 flip
+    inst.on('threadslug_change', ({ from, to, callerStack }) => {
+      try {
+        recordEvent('debug.instance_threadslug_flip', {
+          from, to, callerStack,
+        }, { instanceId: inst.id, projectId: inst.projectId });
+      } catch (e) { console.warn('[SpawnManager] threadslug audit failed:', e.message); }
+    });
+
     inst.on('status_change', (chg) => {
       this._persistInstanceUpsert(inst);
       bus.publish('instance.status_change', { instance: inst.snapshot(), ...chg });
       // [arch §1.3 ✅] 派工 ready/spawning/failed 检测移到 HandoffTracker
       HandoffTracker.observeStatusChange(inst.id, chg.to);
       // [需求@2026-06-15 Phase 2G M1.1] inst → idle 触发队列 flush
-      if (chg.to === 'idle') {
+      // [bug@2026-07-29 #191] 关键根治 — status_change 在 'event' 之前 fire,
+      //   SYNC 触发 flush 会翻 inst.threadSlug,导致后续 recordMessage / markers
+      //   用错 threadSlug → chain 走串。#187/#188 没解决,#191 才是根治。
+      //   逻辑:
+      //     - busy → idle (result 事件专属):交给 'event' handler 里 #188 setImmediate flush
+      //       (那时 recordMessage + markers 已经用 sync 正确 threadSlug 处理完)
+      //     - spawning → idle (首次 spawn / system_init):保留 flush,这是唯一触发点
+      //     - disconnected → idle 等其它罕见转换:保留 flush 兜底
+      if (chg.to === 'idle' && chg.from !== 'busy') {
         QueueDispatcher.onInstanceIdle(inst, { dispatchCb: this._queueDispatchCb })
           .catch((e) => console.warn(`[SpawnManager] queue flush failed for ${inst.id}: ${e.message}`));
       }
@@ -360,6 +625,23 @@ class SpawnManager {
       //   marker 由前端在 assistant 文本里识别后**灰色提示**显示,不触发 side effect。
       // [Phase 2H Phase 2] result 事件 → dispatch.completed(如果这是 queue flush 派的)
       //   流程:queueDispatchCb 把 _currentPendingSend 写 inst,等 result 来时这里清并发事件
+      // [bug@2026-07-28 #188] 关键 flag:此轮 result 后是否需要 flush queue。
+      //   原代码在这里直接 setImmediate(flush),但 flush 会在 dispatchCb 里翻
+      //   inst.threadSlug → 让下面 marker 处理误读到"新任务的 threadSlug",导致
+      //   H 本轮 emit 的 handoff 落到错误的 chain(实测 t-mrx143jk-xva2 RTL 的
+      //   H→B handoff 落到 t-mrwwnh63-8g3f chain[54])。
+      //   修法:先 flag,等 marker/ThreadHooks 都 schedule 完再 setImmediate flush,
+      //   FIFO 保证 markers 先跑完(此时 inst.threadSlug 还没被翻),再 flush。
+      // [bug@2026-07-30 #194] #191 阻止 status_change busy→idle 触发 flush,只依赖 #188 触发。
+      //   但 #188 老代码只在 _currentPendingSend 非空(本轮 turn 从 queue flush 出来)时
+      //   set flag。直接派工(R→H, H→B 首轮,非 queue)的 result 事件不触发 flush,
+      //   → queue 里等这个 inst 的 pending_send 永远 stuck(实测 ps=26 挂了 15h)。
+      //   修法:任何 result 事件都 set _needsQueueFlushAfterMarkers=true,统一在
+      //   event handler 末尾 setImmediate flush,保证 markers 先跑完(FIFO)不破坏 #191。
+      let _needsQueueFlushAfterMarkers = false;
+      if (isResult(eventType)) {
+        _needsQueueFlushAfterMarkers = true;   // 任何 turn 结束都要 check queue
+      }
       if (isResult(eventType) && inst._currentPendingSend) {
         const ps = inst._currentPendingSend;
         const PendingSends = require('./PendingSends');
@@ -380,11 +662,39 @@ class SpawnManager {
           ts: Date.now(),
         });
         inst._currentPendingSend = null;
-        // 派下一项 — 异步 fire-and-forget(避免阻塞 stream event)
-        setImmediate(() => {
-          QueueDispatcher.onInstanceIdle(inst, { dispatchCb: this._queueDispatchCb })
-            .catch((e) => console.warn(`[SpawnManager] post-completion flush err: ${e.message}`));
-        });
+      }
+
+      // [需求@2026-07-20 #176 Layer 1] mid-turn 429 auto-retry —
+      //   B/H 收 handoff prompt 处理途中撞 five_hour session limit,claude CLI 返 synthetic
+      //   result {is_error:true, api_error_status:429}。原代码走 else 分支被吞掉,派工者(H)
+      //   卡 awaiting_callee 永远等不到 callback。
+      //   修法:检测 429 → 找最近一次派给本 inst 的 handoff prompt → enqueue 到 pending_sends
+      //   (reason='quota_mid_turn')→ QuotaState 恢复时自动 flush 或 idle 时 QueueDispatcher
+      //   自动派发。
+      if (isResult(eventType) && raw.is_error === true && raw.api_error_status === 429) {
+        if (!isDirect && inst.threadSlug) {
+          setImmediate(() => this._handleMidTurn429(inst).catch((e) =>
+            console.warn(`[SpawnManager] mid-turn 429 handler failed for ${inst.id}: ${e.message}`)
+          ));
+        }
+      }
+
+      // [需求@2026-07-22 #180 Layer 4] session-lost auto-recover —
+      //   现象:claude CLI 用 --resume <old-sess-id> 起来,本地 ~/.claude 已忘该 session,
+      //   立刻返 { subtype:'error_during_execution', is_error:true, api_error_status:undefined,
+      //           errors:["No conversation found with session ID: xxx"] }
+      //   老代码走 else 吞掉,派工者(H)等 callback 等不到 → 死锁。
+      //   修法:检测 → 清 inst.sessionId + 标 disconnected → 找 chain handoff prompt 重派
+      //   → 会自动 spawn 一个 fresh session 的新实例。跟 Layer 1(429)同款框架。
+      if (isResult(eventType) && raw.is_error === true
+          && raw.api_error_status == null
+          && Array.isArray(raw.errors)
+          && raw.errors.some((e) => /No conversation found with session ID/i.test(String(e)))) {
+        if (!isDirect && inst.threadSlug) {
+          setImmediate(() => this._handleSessionLost(inst, raw).catch((e) =>
+            console.warn(`[SpawnManager] session-lost handler failed for ${inst.id}: ${e.message}`)
+          ));
+        }
       }
 
       if (isResult(eventType) && raw.is_error !== true) {
@@ -425,6 +735,16 @@ class SpawnManager {
         }
         // result 后清除直连标志(若有);下一轮 user 再发才会再置位
         if (isDirect) inst._directMode = false;
+      }
+
+      // [bug@2026-07-28 #188] 现在才 schedule flush — 排在 markers/ThreadHooks 之后,
+      //   setImmediate FIFO 保证 markers 先跑完(读到正确 inst.threadSlug),再 flush
+      //   翻 threadSlug 迎接下一个 pending send。
+      if (_needsQueueFlushAfterMarkers) {
+        setImmediate(() => {
+          QueueDispatcher.onInstanceIdle(inst, { dispatchCb: this._queueDispatchCb })
+            .catch((e) => console.warn(`[SpawnManager] post-completion flush err: ${e.message}`));
+        });
       }
     });
 
@@ -508,7 +828,9 @@ class SpawnManager {
   // [需求@2026-06-15 Phase 2G M1.1] fromMarker 标志 — true 时(MarkerDispatcher 调用),
   //   池化 inst 是 busy 时触发 QueueDispatcher.enqueueBusy 而非直发 stdin。
   //   markerFromInst/markerSpec/markerReason:busy_prompt 需要的元数据
-  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null, targetInstance = null, clientMessageId = null, fromMarker = false, markerFromInst = null, markerSpec = null, markerReason = null, _skipQuotaGate = false }) {
+  // [需求@2026-07-22 #182] imageBlocks: 可选,[{mediaType:'image/png', base64:'...'}]
+  //   非空时 → 发送时构造 content blocks [text, image, image, ...] 而非 plain text
+  sendToThread({ projectId, projectRootDir, threadSlug, text, roleType = 'requirements', targetSlot = null, targetInstance = null, clientMessageId = null, fromMarker = false, markerFromInst = null, markerSpec = null, markerReason = null, imageBlocks = null, _skipQuotaGate = false }) {
     if (!projectId) throw new Error('sendToThread requires projectId');
     if (!projectRootDir) throw new Error('sendToThread requires projectRootDir');
     if (!threadSlug) throw new Error('sendToThread requires threadSlug');
@@ -531,6 +853,7 @@ class SpawnManager {
           clientMessageId,
           fromMarker, markerSpec, markerReason,
           markerFromInstId: markerFromInst?.id || null,
+          imageBlocks,  // #182 附件也要跟着走 quota_pause flush
           projectRootDir,
         },
         reason: 'quota_pause',
@@ -560,9 +883,33 @@ class SpawnManager {
     if (!role) throw new Error(`no role found of type ${roleType}`);
 
     if (role.type === 'requirements') {
-      return this._sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType, clientMessageId });
+      return this._sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType, clientMessageId, imageBlocks });
     }
-    return this._sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot, clientMessageId, fromMarker, markerFromInst, markerSpec, markerReason });
+    return this._sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot, clientMessageId, fromMarker, markerFromInst, markerSpec, markerReason, imageBlocks });
+  }
+
+  // [需求@2026-07-22 #182] 把 text + imageBlocks 拼成 content blocks 数组
+  //   text 永远是第一个 block(带 tag/reason prefix);images 依次跟在后面
+  _composeContent(text, imageBlocks) {
+    const blocks = [{ type: 'text', text }];
+    if (Array.isArray(imageBlocks)) {
+      for (const img of imageBlocks) {
+        if (!img?.base64 || !img?.mediaType) continue;
+        blocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: img.mediaType, data: img.base64 },
+        });
+      }
+    }
+    return blocks;
+  }
+
+  _sendUserToInst(inst, text, imageBlocks) {
+    if (Array.isArray(imageBlocks) && imageBlocks.length > 0) {
+      inst.sendUserContent(this._composeContent(text, imageBlocks));
+    } else {
+      inst.sendUserText(text);
+    }
   }
 
   // [需求@2026-06-12 §9 mateTerm] 直连模式 — user 直接对某个实例说话。
@@ -620,10 +967,12 @@ class SpawnManager {
   }
 
   // R 走原 per-thread 路径
-  _sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType, clientMessageId = null }) {
+  // [需求@2026-07-22 #182] imageBlocks 可选,非空时改走 sendUserContent
+  _sendToPerThreadRole({ projectId, projectRootDir, threadSlug, text, role, roleType, clientMessageId = null, imageBlocks = null }) {
     const thread = ThreadStore.get(projectId, threadSlug);
     const boundId = thread.metadata?.current_role_instances?.[roleType];
     let inst = boundId ? this.instances.get(boundId) : null;
+    const hasImages = Array.isArray(imageBlocks) && imageBlocks.length > 0;
 
     if (!inst || inst.status === 'dead') {
       const alive = this._countAliveInstances(projectId, role.name);
@@ -631,7 +980,10 @@ class SpawnManager {
         throw new Error(`role ${role.name} in this project at parallelism limit (${role.parallelismLimit})`);
       }
       inst = new RoleInstance({ role, projectId, projectRootDir, threadSlug, poolSlot: null });
-      inst._pendingUserText = text;
+      // pending 承载 blocks(BLOCKS: 前缀)或 text
+      inst._pendingUserText = hasImages
+        ? 'BLOCKS:' + JSON.stringify(this._composeContent(text, imageBlocks))
+        : text;
       this._enqueueClientId(inst, clientMessageId);
       this.instances.set(inst.id, inst);
       this._wireListeners(inst);
@@ -647,13 +999,13 @@ class SpawnManager {
     if (inst.status === 'disconnected') {
       inst.threadSlug = threadSlug;
       this._enqueueClientId(inst, clientMessageId);
-      inst.sendUserText(text);
+      this._sendUserToInst(inst, text, imageBlocks);
       ThreadStore.touch(projectId, threadSlug, roleType);
       return inst;
     }
 
     this._enqueueClientId(inst, clientMessageId);
-    inst.sendUserText(text);
+    this._sendUserToInst(inst, text, imageBlocks);
     ThreadStore.touch(projectId, threadSlug, roleType);
     this._clearPendingQuestion(projectId, threadSlug);
     return inst;
@@ -675,7 +1027,7 @@ class SpawnManager {
   //   4. [§8.5] H 还要前置 task board snapshot(活跃线索 + 池子状态 + 最近决策)
   //   5. 派工(idle → sendUserText / disconnected → resurrect / 新 → spawn with pending)
   //   6. 绑定到 thread.metadata + touch
-  _sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot, clientMessageId = null, fromMarker = false, markerFromInst = null, markerSpec = null, markerReason = null }) {
+  _sendToPooledRole({ projectId, projectRootDir, threadSlug, text, role, roleType, targetSlot, clientMessageId = null, fromMarker = false, markerFromInst = null, markerSpec = null, markerReason = null, imageBlocks = null }) {
     const inst = this._acquirePoolInstance({ projectId, projectRootDir, role, requestedSlot: targetSlot, threadSlug });
     if (!inst) throw new Error(`could not acquire pool instance for ${role.name}`);
 
@@ -735,13 +1087,18 @@ class SpawnManager {
     //   stdin 写入也丢失,user 沉默。
     //   修复:'spawning' 分支检查 inst._child;若 null 表示"还没真 spawn,只是 ctor 默认态",
     //   先设 pending 再 spawn(顺序确保 spawn 时 _pendingUserText 已有,suppressGreeting 路径会 flush)。
+    // [需求@2026-07-22 #182] imageBlocks 非空 → content blocks 路径
+    const hasImages = Array.isArray(imageBlocks) && imageBlocks.length > 0;
+    const pendingSerial = hasImages
+      ? 'BLOCKS:' + JSON.stringify(this._composeContent(taggedText, imageBlocks))
+      : taggedText;
     if (inst.status === 'idle' || inst.status === 'busy') {
       // busy 路径:非 marker(user 直发)就直接顺序写 stdin(claude 顺序处理,跟原行为一致)
-      inst.sendUserText(taggedText);
+      this._sendUserToInst(inst, taggedText, imageBlocks);
     } else if (inst.status === 'disconnected') {
-      inst.sendUserText(taggedText); // lazy resurrect via Phase 1 mechanism
+      this._sendUserToInst(inst, taggedText, imageBlocks); // lazy resurrect via Phase 1 mechanism
     } else if (inst.status === 'spawning') {
-      inst._pendingUserText = taggedText;
+      inst._pendingUserText = pendingSerial;
       if (!inst._child) {
         // _createPoolInstance 创建后 ctor 默认 'spawning' 但还没真 spawn — 现在补
         inst.spawn({ suppressGreeting: true });
@@ -749,7 +1106,7 @@ class SpawnManager {
       // 否则真的在 spawn 中,pending 会在 init 完成时 flush
     } else {
       // Defensive fallback(理论上 ctor 把 status 限定在 spawning/disconnected,这里走不到)
-      inst._pendingUserText = taggedText;
+      inst._pendingUserText = pendingSerial;
       inst.spawn({ suppressGreeting: true });
     }
 
@@ -901,6 +1258,40 @@ class SpawnManager {
     } catch (e) {
       console.warn(`[SpawnManager] _clearPendingQuestion failed: ${e.message}`);
     }
+  }
+
+  // [需求@2026-07-30 #196] boot 时 flush 所有 queued pending_sends 一次 —
+  //   修复"target 是 disconnected 时,queued busy 项永远没触发 flush"这个 gap。
+  //   触发 dispatchCb → 若 target disconnected,inst.sendUserText 触发 lazy resurrect。
+  //   若 target dead / 不存在,dispatchCb throw,QueueDispatcher 会 markCancelled。
+  async bootFlushPendingQueue() {
+    const PendingSends = require('./PendingSends');
+    const QueueDispatcher = require('./QueueDispatcher');
+    const queued = PendingSends.listByStatus('queued');
+    if (!queued.length) return { flushed: 0 };
+    console.log(`[SpawnManager] boot flush: ${queued.length} queued pending sends`);
+    // 按 target 分组,每个 target 只调 onInstanceIdle 一次(_tryFlushFor 会自己按 FIFO 挑)
+    const seen = new Set();
+    let flushed = 0;
+    for (const row of queued) {
+      const key = row.targetKind + ':' + row.targetId;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (row.targetKind !== 'instance') continue;  // thread target 走别的路径
+      const inst = this.instances.get(row.targetId);
+      if (!inst) {
+        console.warn(`[SpawnManager] boot flush: target ${row.targetId} not in memory, skip`);
+        continue;
+      }
+      try {
+        await QueueDispatcher.onInstanceIdle(inst, { dispatchCb: this._queueDispatchCb });
+        flushed++;
+      } catch (e) {
+        console.warn(`[SpawnManager] boot flush ${row.targetId} failed:`, e.message);
+      }
+    }
+    console.log(`[SpawnManager] boot flush: triggered ${flushed} target(s)`);
+    return { flushed };
   }
 
   async shutdown() {

@@ -44,6 +44,14 @@ function buildUserMessage(text) {
   };
 }
 
+// [需求@2026-07-22 #182] 直接给 content blocks 数组(支持 text+image 混合)
+function buildUserMessageFromContent(contentBlocks) {
+  return {
+    type: 'user',
+    message: { role: 'user', content: contentBlocks },
+  };
+}
+
 function buildSpawnArgs({ role, sessionId, resumeSessionId, forkSession, cwd, modelOverride = null }) {
   const args = [
     '-p',
@@ -92,12 +100,14 @@ class RoleInstance {
     // cwd 用 project.root_dir,不再用全局 config.siblingProjectDir。
     // [需求@2026-06-12 §8.3] poolSlot: 1..N for pooled roles (H/execB/testC/mateBot),
     //   null for per-thread R. Stable across restarts.
+    // [X2 #200] threadSlug 用 _threadSlug backing field,ctor 直接赋值不触发 audit
+    //   (ctor 是"起始快照",非 mutation);后续所有赋值走 setter 触发 audit。
     if (restoreState) {
       this.id = restoreState.id;
       this.role = role;
       this.projectId = restoreState.projectId;
       this.projectRootDir = restoreState.projectRootDir;
-      this.threadSlug = restoreState.threadSlug || null;
+      this._threadSlug = restoreState.threadSlug || null;
       this.poolSlot = restoreState.poolSlot ?? null;
       this.status = 'disconnected';
       this.pid = null;
@@ -112,7 +122,7 @@ class RoleInstance {
       this.role = role;
       this.projectId = projectId;
       this.projectRootDir = projectRootDir;
-      this.threadSlug = threadSlug;
+      this._threadSlug = threadSlug ?? null;
       this.poolSlot = poolSlot;
       this.status = 'spawning';
       this.pid = null;
@@ -168,6 +178,21 @@ class RoleInstance {
     this._emit('status_change', { from: old, to: newStatus });
   }
 
+  // [X2 #200] threadSlug 读写代理 — 任何变更 emit 'threadslug_change' 事件,
+  //   SpawnManager 桥接到 events 表(recordEvent 'debug.instance_threadslug_flip')。
+  //   目的:未来 chain 走串等 race 时,可以查 events 表看是谁在哪 flip 了 threadSlug。
+  //   契约:合约里说 RoleInstance 不直接 recordEvent — 走 _emit → SpawnManager 桥接。
+  get threadSlug() { return this._threadSlug; }
+  set threadSlug(newVal) {
+    const old = this._threadSlug;
+    if (old === newVal) return;
+    this._threadSlug = newVal;
+    // 抓 caller stack(截前 8 层,去掉 setter 本身 + Error 那两行)
+    const stack = new Error().stack || '';
+    const callerStack = stack.split('\n').slice(2, 10).map((l) => l.trim()).join(' | ');
+    this._emit('threadslug_change', { from: old, to: newVal, callerStack });
+  }
+
   spawn({ resumeSessionId = null, suppressGreeting = false } = {}) {
     // If resuming, don't preallocate session-id (resume uses the saved one).
     // [需求@2026-06-10] cwd 取自 projectRootDir(per-project),不再用全局配置
@@ -220,8 +245,16 @@ class RoleInstance {
       }
     } else if (this._pendingUserText) {
       // Lazy resurrection path: flush the queued user message as first stdin
+      // [需求@2026-07-22 #182] 'BLOCKS:' 前缀 = content blocks JSON,反序列化后送
       try {
-        this._child.stdin.write(JSON.stringify(buildUserMessage(this._pendingUserText)) + '\n');
+        let payload;
+        if (this._pendingUserText.startsWith('BLOCKS:')) {
+          const blocks = JSON.parse(this._pendingUserText.slice('BLOCKS:'.length));
+          payload = buildUserMessageFromContent(blocks);
+        } else {
+          payload = buildUserMessage(this._pendingUserText);
+        }
+        this._child.stdin.write(JSON.stringify(payload) + '\n');
         this._pendingUserText = null;
       } catch (e) {
         console.error(`[RoleInstance ${this.id}] pending stdin write failed:`, e);
@@ -306,6 +339,42 @@ class RoleInstance {
     // Always forward the parsed event
     this._emit('event', { eventType, raw });
     this.lastActiveAt = Date.now();
+  }
+
+  // [需求@2026-07-22 #182] 发原始 content blocks(支持 text + image 混合)。
+  //   sendUserText 现在是它的薄包装(用一条 text block 组消息)。
+  //   contentBlocks: [{type:'text',text:'...'}, {type:'image',source:{...}}, ...]
+  sendUserContent(contentBlocks) {
+    if (!Array.isArray(contentBlocks) || contentBlocks.length === 0) {
+      throw new Error('sendUserContent: contentBlocks must be non-empty array');
+    }
+    // 为了让 lazy resurrect + queue 路径复用,把 blocks 序列化成 JSON 字符串塞
+    //   _pendingUserText;spawn 完 flush 时反序列化。识别标志:以 `BLOCKS:` 前缀。
+    //   text 路径见 sendUserText,直接透明。
+    const isSingleText = contentBlocks.length === 1 && contentBlocks[0].type === 'text';
+    if (isSingleText) {
+      return this.sendUserText(contentBlocks[0].text || '');
+    }
+    // 有 image 或多 block → 走 content 路径
+    if (this.status === 'dead') throw new Error(`Cannot send to dead instance ${this.id}`);
+    if (this.status === 'disconnected' || (this.status === 'spawning' && !this._child)) {
+      // pendingUserText 现在也可能承载 content blocks(用 marker 前缀区分)
+      this._pendingUserText = 'BLOCKS:' + JSON.stringify(contentBlocks);
+      if (this.status === 'disconnected') {
+        // 复用 sendUserText 里的 resume/fresh 分支;简化:直接 spawn resume
+        if (this.sessionId) {
+          this.spawn({ resumeSessionId: this.sessionId, suppressGreeting: true });
+        } else {
+          this.spawn({ suppressGreeting: true });
+        }
+        this._setStatus('busy');
+      }
+      return;
+    }
+    if (!this._child) throw new Error(`Cannot send: instance ${this.id} has no child process`);
+    const line = JSON.stringify(buildUserMessageFromContent(contentBlocks)) + '\n';
+    this._child.stdin.write(line);
+    this._setStatus('busy');
   }
 
   sendUserText(text) {
