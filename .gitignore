@@ -8,9 +8,14 @@ node_modules/
 data/*.sqlite
 data/*.sqlite-wal
 data/*.sqlite-shm
+data/*.sqlite.bak-*
 data/snapshots/
 data/runlog/
 data/sandbox_proj_test/
+data/test-sandbox/
+
+# 本地启动脚本 (per-user)
+start_*.ps1
 
 # Probe artifacts (scripts themselves are committed, only logs ignored)
 probe/log/
@@ -46,6 +51,7 @@ spike-*/
 # release notes scratch files
 .release-notes-*.md
 
+.z常用命令.md
 # E2E test artifacts
 test-results/
 playwright-report/
