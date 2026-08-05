@@ -65,7 +65,12 @@
 html, body { margin: 0; padding: 0; height: 100vh; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: var(--bg-base); color: var(--text-primary); font-size: 14px; transition: background 0.2s, color 0.2s; }
 body { display: flex; flex-direction: column; }
 
-#topbar { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
+#topbar { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--bg-card); border-bottom: 1px solid var(--border); min-width: 0; }
+/* [需求@2026-07-28] 顶栏其它块不因 runtime-chip 变宽被挤扁 — 只让 chip 可缩 */
+#topbar > .brand,
+#topbar > .project-switcher,
+#topbar > .banners,
+#topbar > .actions { flex-shrink: 0; }
 .brand { font-weight: 600; }
 .brand .phase { font-size: 11px; color: var(--accent); margin-left: 6px; }
 
@@ -122,7 +127,7 @@ body { display: flex; flex-direction: column; }
 /* [需求@2026-06-12 §8.6] 仪表盘 — 4 tab 化,比原 terminals modal 更宽 */
 #terminals-dialog { min-width: 900px; max-width: 95vw; }
 #terminals-dialog form { gap: 8px; }
-.dashboard-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 -20px 8px; padding: 0 16px; }
+.dashboard-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 -20px 8px; padding: 0 16px; flex-wrap: wrap; }
 .dashboard-tabs .tab-btn { background: transparent; color: var(--text-secondary); border: none; border-bottom: 2px solid transparent; padding: 6px 14px; font-size: 12px; font-family: inherit; cursor: pointer; transition: color 0.15s, border-color 0.15s; }
 .dashboard-tabs .tab-btn:hover { color: var(--text-primary); }
 .dashboard-tabs .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
@@ -331,6 +336,17 @@ main { flex: 1; display: flex; min-height: 0; }
 .msg.user.msg-failed { background: rgba(180, 60, 60, 0.22); border-left-color: #d44a4a; cursor: pointer; }
 /* [bug@2026-06-29 #170] quota paused 时入队不是失败 — 黄边提示等 resume 自动 flush */
 .msg.user.msg-queued { background: rgba(200, 150, 40, 0.18); border-left-color: #d8a33a; }
+/* [需求@2026-07-28 #190] pending 补渲染徽标 */
+.msg.user .msg-restored-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  background: rgba(120, 130, 200, 0.25);
+  color: #a5b4fc;
+  vertical-align: middle;
+}
 .msg.user.msg-queued::after { content: ' ⏸ 排队中'; font-size: 10px; color: #d8a33a; margin-left: 8px; }
 .msg.user.msg-failed .msg-status { color: #ff7878; }
 .msg.user.msg-failed .msg-status::before { content: '✗ 发送失败 · 点击重填'; display: block; }
@@ -375,11 +391,22 @@ main { flex: 1; display: flex; min-height: 0; }
 /* KaTeX block adjustments */
 .msg.assistant .body .katex-display { margin: 6px 0; overflow-x: auto; overflow-y: hidden; }
 
-#send-form { display: flex; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--border); background: var(--bg-card); }
+#send-form { display: flex; flex-direction: column; gap: 6px; padding: 8px 16px; border-top: 1px solid var(--border); background: var(--bg-card); }
+#send-form .send-row { display: flex; gap: 8px; align-items: stretch; }
+#send-form .send-actions { display: flex; flex-direction: column; gap: 4px; justify-content: flex-end; }
 #msg-input { flex: 1; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-light); border-radius: 4px; padding: 6px 8px; font-family: inherit; font-size: 13px; resize: vertical; }
 #send-form button { padding: 6px 16px; background: var(--accent-green); color: #fff; border: none; border-radius: 4px; cursor: pointer; }
 #send-form button:hover:not([disabled]) { opacity: 0.85; }
 #send-form button[disabled] { background: var(--bg-card); color: var(--text-muted); cursor: not-allowed; opacity: 0.6; }
+#attach-btn { padding: 4px 10px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border-light); border-radius: 4px; cursor: pointer; font-size: 16px; }
+#attach-btn:hover { background: var(--bg-card); }
+#attach-preview { display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 0; }
+#attach-preview .attach-chip { display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--bg-elevated); border: 1px solid var(--border-light); border-radius: 12px; font-size: 11px; max-width: 240px; }
+#attach-preview .attach-chip .att-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+#attach-preview .attach-chip .att-size { color: var(--text-muted); font-family: ui-monospace, Consolas, monospace; }
+#attach-preview .attach-chip .att-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 0 2px; line-height: 1; }
+#attach-preview .attach-chip .att-remove:hover { color: var(--accent-red, #ff6b6b); }
+#attach-preview .attach-chip .att-thumb { width: 32px; height: 32px; object-fit: cover; border-radius: 3px; border: 1px solid var(--border-light); }
 
 /* [需求@2026-06-12 §9 mateTerm] tab 4 终端直连 */
 .mateterm-bar { display: flex; align-items: center; gap: 12px; padding: 8px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px; flex-wrap: wrap; font-size: 12px; }
@@ -406,7 +433,11 @@ main { flex: 1; display: flex; min-height: 0; }
 .mateterm-form button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* [需求@2026-06-12 Phase 2E §14] runtime chip + popover */
-#runtime-chip-mount { display: flex; align-items: center; }
+/* [需求@2026-07-28] 长 term/activity 撑变顶栏 — 加三重防护:
+     ① rc-terms 横向可滚(max-width 40vw + overflow-x auto)
+     ② rc-term 单个 max-width + ellipsis(防单条 activity 撑爆)
+     ③ .runtime-chip 整体 max-width 60vw + flex-shrink 让给其它 topbar 元素 */
+#runtime-chip-mount { display: flex; align-items: center; min-width: 0; flex-shrink: 1; }
 .runtime-chip {
   display: inline-flex;
   align-items: center;
@@ -422,13 +453,31 @@ main { flex: 1; display: flex; min-height: 0; }
   user-select: none;
   white-space: nowrap;
   transition: background-color 0.15s;
+  max-width: 60vw;
+  min-width: 0;
+  overflow: hidden;
 }
 .runtime-chip:hover { background: var(--bg-card-hover, #252525); }
 .runtime-chip .rc-loading { color: var(--text-muted); }
-.runtime-chip .rc-counts { color: var(--text-primary, #eee); font-weight: 600; }
-.runtime-chip .rc-sep { color: var(--text-muted, #666); }
-.runtime-chip .rc-busy-label { color: var(--text-muted, #888); }
+.runtime-chip .rc-counts { color: var(--text-primary, #eee); font-weight: 600; flex-shrink: 0; }
+.runtime-chip .rc-sep { color: var(--text-muted, #666); flex-shrink: 0; }
+.runtime-chip .rc-busy-label { color: var(--text-muted, #888); flex-shrink: 0; }
 .runtime-chip .rc-no-busy { color: var(--text-muted, #666); font-style: italic; }
+.runtime-chip .rc-terms {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 40vw;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.runtime-chip .rc-terms::-webkit-scrollbar { height: 4px; }
+.runtime-chip .rc-terms::-webkit-scrollbar-track { background: transparent; }
+.runtime-chip .rc-terms::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 2px; }
+.runtime-chip .rc-terms::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.35); }
 .runtime-chip .rc-term {
   display: inline-block;
   padding: 1px 7px;
@@ -436,7 +485,12 @@ main { flex: 1; display: flex; min-height: 0; }
   font-weight: 600;
   color: #fff;
   cursor: help;
-  white-space: pre-line;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+  vertical-align: middle;
 }
 .runtime-chip .rc-term-busy {
   background: linear-gradient(135deg, #f5a623 0%, #e8740c 100%);
@@ -468,10 +522,11 @@ main { flex: 1; display: flex; min-height: 0; }
   padding: 1px 7px;
   border-radius: 3px;
   font-size: 11px;
+  flex-shrink: 0;
 }
 .runtime-chip .rc-pending-none { color: var(--text-muted, #666); }
 .runtime-chip .rc-pending-has  { background: #5a4a1f; color: #ffd88a; font-weight: 600; }
-.runtime-chip .rc-quota { padding: 1px 7px; border-radius: 3px; font-size: 11px; }
+.runtime-chip .rc-quota { padding: 1px 7px; border-radius: 3px; font-size: 11px; flex-shrink: 0; }
 .runtime-chip .rc-quota.quota-ok { color: var(--accent-green, #88dd88); background: rgba(40, 80, 40, 0.3); }
 .runtime-chip .rc-quota.quota-warn { color: #ffd88a; background: rgba(80, 60, 30, 0.4); }
 .runtime-chip .rc-quota.quota-danger {
@@ -488,6 +543,7 @@ main { flex: 1; display: flex; min-height: 0; }
   font-size: 10px;
   color: var(--text-muted, #888);
   background: rgba(60, 60, 60, 0.3);
+  flex-shrink: 0;
 }
 .runtime-chip .rc-cap-warn { color: #ff7878; background: rgba(120, 30, 30, 0.5); font-weight: 700; }
 
@@ -866,6 +922,100 @@ main { flex: 1; display: flex; min-height: 0; }
   font-size: 10px;
   margin-left: 4px;
   font-weight: 400;
+}
+
+/* ============================================================ */
+/* [需求@2026-07-20 #176 Layer 2] 卡死解阻塞面板 */
+/* ============================================================ */
+#unstick-panel {
+  padding: 8px 12px;
+  background: var(--bg-msg-error, #5a1f1f);
+  border-top: 2px solid var(--accent-red, #ff6b6b);
+  border-bottom: 2px solid var(--accent-red, #ff6b6b);
+  color: var(--text-primary);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#unstick-panel .unstick-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+#unstick-panel .unstick-badge {
+  background: var(--accent-red, #ff6b6b);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: 600;
+  font-size: 11px;
+}
+#unstick-panel .unstick-since {
+  color: var(--text-secondary);
+  font-family: ui-monospace, Consolas, monospace;
+  flex: 1;
+}
+#unstick-panel .unstick-dismiss {
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 6px;
+  line-height: 1;
+}
+#unstick-panel .unstick-dismiss:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border-radius: 3px;
+}
+#unstick-panel .unstick-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#unstick-panel .unstick-btn {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+#unstick-panel .unstick-btn:hover {
+  background: var(--bg-elevated);
+  border-color: var(--accent);
+}
+#unstick-panel .unstick-pop {
+  border-color: var(--accent-red, #ff6b6b);
+  color: var(--accent-red, #ff6b6b);
+}
+
+/* [需求@2026-07-20 #176 Layer 3] 注入 dialog */
+#inject-dialog {
+  min-width: 500px;
+  max-width: 720px;
+  padding: 20px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+#inject-dialog .dialog-hint {
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+#inject-dialog #inject-textarea {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px;
+  margin-top: 4px;
 }
 
 #queue-backlog-panel {

@@ -527,8 +527,13 @@ function isFocusedThreadBusy() {
   if (!state.focusedSlug) return false;
   const t = state.threads.get(state.focusedSlug);
   if (!t) return false;
-  // [bug@2026-06-16] verified 线索一定不 busy(防元数据漂移)
-  if (t.stage === 'verified' || t.stage === 'closed') return false;
+  // [bug@2026-07-28 #189] 移除 stage=verified/closed 的短路 —
+  //   老意图是防元数据漂移,但 line 下面 `inst.threadSlug 匹配 focused` 那条
+  //   已足够处理复用场景。verified 线索被 user 重新激活时(比如再发一句问题
+  //   触发 R lazy resurrect → R busy),老逻辑还是短路成 false,导致输入框不
+  //   disable → user 继续 mash 发送 → claude stdin buffer 排队 → 用户以为消息丢。
+  //   [closed 线索若被复用同理] 只信 inst.status,不看 stage。
+  if (t.stage === 'closed') return false;  // closed 是真终结态,保留
   const bound = t.metadata?.current_role_instances || {};
   for (const id of Object.values(bound)) {
     if (!id) continue;
@@ -539,6 +544,13 @@ function isFocusedThreadBusy() {
     if (inst.threadSlug && inst.threadSlug !== state.focusedSlug) continue;
     return true;
   }
+  // [需求@2026-07-30 #197] 队列里有 active pending(queued/processing/backlog)也算 busy —
+  //   否则 user 看到"排队中 → mate-H" 但 send 按钮显示"发送",以为线索空闲,可能重复发。
+  //   语义:线索有派工链未走完(即使当下 inst 都 idle,还有排队等派发)= 该显示"停止"
+  const queue = queueByThread.get(state.focusedSlug) || [];
+  const hasActiveQueue = queue.some((q) =>
+    ['queued', 'processing', 'backlog', 'waiting_user'].includes(q.status));
+  if (hasActiveQueue) return true;
   return false;
 }
 
@@ -555,9 +567,24 @@ function applyBusyUiState() {
     return;
   }
   els.msgInput.disabled = busy;
-  els.msgInput.placeholder = busy
-    ? t('send.placeholderBusy')
-    : t('send.placeholder');
+  // [需求@2026-07-30 #197] 区分"inst busy" vs "只是 queue busy"的提示文案
+  if (busy) {
+    const bound = (state.threads.get(state.focusedSlug)?.metadata?.current_role_instances) || {};
+    const hasBusyInst = Object.values(bound).filter(Boolean).some((id) => {
+      const inst = state.instances.get(id);
+      return inst && (inst.status === 'busy' || inst.status === 'spawning')
+        && (!inst.threadSlug || inst.threadSlug === state.focusedSlug);
+    });
+    if (hasBusyInst) {
+      els.msgInput.placeholder = t('send.placeholderBusy');
+    } else {
+      const queue = queueByThread.get(state.focusedSlug) || [];
+      const nActive = queue.filter((q) => ['queued', 'processing', 'backlog', 'waiting_user'].includes(q.status)).length;
+      els.msgInput.placeholder = `⏸ 本线索 ${nActive} 项排队中,派发前先想清楚。点 ■ 停止可取消排队`;
+    }
+  } else {
+    els.msgInput.placeholder = t('send.placeholder');
+  }
   els.sendBtn.classList.toggle('stop-mode', busy);
   els.sendBtn.textContent = busy ? t('send.stopBtn') : t('send.btn');
   // sendBtn 始终 enabled — busy 时点击 = stop;idle 时点击 = submit
@@ -574,8 +601,57 @@ async function focusThread(slug) {
   els.stream.innerHTML = '';
   state.streamingAssistants.delete(slug);
   await loadThreadHistory(slug);
+  // [需求@2026-07-28 #190] pending 乐观泡补渲染 — history 加完后,把 sessionStorage 里
+  //   还没 echo 回的乐观泡再补到 stream 末尾。防止"切走再回来消息看似消失"
+  restorePendingBubbles(slug);
   // [需求@2026-06-15 Phase 2G M1.4] 拉队列/backlog
   refreshQueueForFocusedThread();
+}
+
+// [需求@2026-07-28 #190] 从 sessionStorage 拿 pending 乐观泡,补到 stream 末尾。
+//   跳过已经在 history 里出现过的(dataset.clientId 匹配)。
+function restorePendingBubbles(slug) {
+  const list = purgeStalePendingBubbles(slug);
+  if (!list.length) return;
+  const alreadyRendered = new Set();
+  els.stream.querySelectorAll('.msg.user[data-client-id]').forEach(el => {
+    alreadyRendered.add(el.dataset.clientId);
+  });
+  // 也扫 history 里的 user 泡(通过 clientMessageId 属性或消息内容匹配)
+  // 简化:只按 data-client-id 匹配;history load 的 user 泡没有 client-id
+  //   → 就用 text 内容近似匹配去重(避免同一条既在 history 又在 pending 出现)
+  const historyTexts = new Set();
+  els.stream.querySelectorAll('.msg.user .body').forEach(el => {
+    historyTexts.add((el.textContent || '').trim().slice(0, 100));
+  });
+  for (const b of list) {
+    if (alreadyRendered.has(b.clientMessageId)) continue;
+    const textKey = (b.text || '').trim().slice(0, 100);
+    if (historyTexts.has(textKey)) {
+      // history 里已有,说明后端 echo 早已回来。清 pending。
+      removePendingBubble(slug, b.clientMessageId);
+      continue;
+    }
+    // 补渲染
+    const node = appendOptimisticUserBubble(b.text, b.clientMessageId);
+    node.classList.remove('msg-sending');
+    if (b.state === 'sent') {
+      node.classList.add('msg-sent');
+      // status 隐藏(msg-sent 样式已把 msg-status 藏起来)
+    } else if (b.state === 'queued') {
+      node.classList.add('msg-queued');
+      node.title = t('send.deferredTip', { reason: b.reason || 'paused' });
+    } else if (b.state === 'failed') {
+      node.classList.add('msg-failed');
+      node.title = t('send.failedTip', { error: b.reason || 'unknown' });
+    }
+    // 加"pending 未回执"提示徽标,让 user 一眼看出是还在等的 send
+    const badge = document.createElement('span');
+    badge.className = 'msg-restored-badge';
+    badge.textContent = '⏳ 等 echo';
+    badge.title = '此消息已发送,LLM 还在处理上一 turn,回执到达前展示的乐观泡';
+    node.appendChild(badge);
+  }
 }
 
 // [需求@2026-06-16 B1] "看更早" 按钮 — 长跑线索一次 5000 events 还不够,加分页
@@ -960,6 +1036,10 @@ function handleWsMsg({ type, payload }) {
     // [bug@2026-06-15] claude 完 turn → result → _setStatus('idle') → status_change
     //   走这条路径(非 exited),需要重算 busy UI 才能把 ■停止 翻 发送
     applyBusyUiState();
+    // [需求@2026-07-20 #176] status_change 也需重画卡死面板 —
+    //   H 从 idle→busy 时,anyBusy 变 true,panel 应立即 hide;反向亦然。
+    //   老版本 status_change 只 applyBusyUiState,unstick panel 停留在旧判定 → 误显示。
+    if (state.focusedSlug) renderBreadcrumb();
   } else if (type === 'instance.exited') {
     const inst = payload.instance;
     // [需求@2026-06-11 §3] 事件流 — kill/exit 推一条
@@ -970,14 +1050,23 @@ function handleWsMsg({ type, payload }) {
     renderThreads();
     // [需求@2026-06-13 §18] 实例状态变化 → 重算焦点 thread 是否 busy
     applyBusyUiState();
+    if (state.focusedSlug) renderBreadcrumb();
   } else if (type === 'instance.event') {
     if (payload.projectId !== state.activeProjectId) return;
+    // [需求@2026-07-28 #190] 无论 focused 是不是当前线索,user_to_role echo 都清 pending
+    //   (清 sessionStorage,防止切回来时补渲染重复)
+    if (payload.eventType === 'user' && payload.clientMessageId && payload.threadSlug) {
+      removePendingBubble(payload.threadSlug, payload.clientMessageId);
+    }
     if (payload.threadSlug === state.focusedSlug) {
       // [需求@2026-06-12 Phase 2E §12] 乐观 UI dedup:user echo back 时,如果存在临时 bubble 匹配 clientMessageId → 不重复渲染
       if (payload.eventType === 'user' && payload.clientMessageId) {
         const existing = els.stream.querySelector(`.msg.user[data-client-id="${CSS.escape(payload.clientMessageId)}"]`);
         if (existing) {
           existing.dataset.serverId = payload.serverMessageId || '';
+          // 清"⏳等 echo"徽标(如果之前是补渲染的)
+          const badge = existing.querySelector('.msg-restored-badge');
+          if (badge) badge.remove();
           return;  // 已有 bubble,跳过 echo 渲染
         }
       }
@@ -1061,6 +1150,20 @@ function handleWsMsg({ type, payload }) {
     // [需求@2026-06-12 §8.10] 全局软上限超出 — 顶栏红条 banner
     showSystemBanner('cap_warn', t('banner.capWarn', { alive: payload.alive, cap: payload.cap }));
     pushTickerEvent('blocked', t('ticker.capWarn', { alive: payload.alive, cap: payload.cap }));
+  } else if (type === 'system.consistency_alert') {
+    // [需求@2026-07-30 X1 #195] 一致性检查发现异常 — 顶栏红条 + ticker
+    const s = payload.summary || {};
+    const kinds = (s.kinds || []).join(', ');
+    // 如果异常只有 chain_crossings 一类,加"确认已知"按钮(设 baseline 静音老走串)
+    const onlyCrossings = kinds === 'chain_crossings';
+    showConsistencyBanner(
+      `⚠ 一致性异常 ${s.totalItems}项 (${kinds}) · 自愈 ${s.selfHealed || 0}`,
+      onlyCrossings);
+    pushTickerEvent('blocked', `⚠ ${s.totalItems}项一致性异常: ${kinds}`);
+  } else if (type === 'system.consistency_ok') {
+    // 清红条
+    const node = document.getElementById('sys-banner-consistency');
+    if (node) node.remove();
   } else if (type === 'instance.ttl_soon') {
     // [需求@2026-06-12 §8.10] 黄色提示:即将到期
     pushTickerEvent('handoff', t('ticker.ttlSoon', { name: payload.displayName, minutes: payload.minutesUntilExpiry }));
@@ -1148,6 +1251,26 @@ function handleWsMsg({ type, payload }) {
     // [Phase 2I] thread 真 verified(R 在 stack 底 emit done)
     if (payload.projectId !== state.activeProjectId) return;
     pushTickerEvent('done', `🎉 ${payload.threadSlug} TERMINAL DONE (R confirmed)`);
+    // [需求@2026-07-30 #198] payload 带最新 thread(含 stage=verified),更新 state 并重渲染
+    //   否则 breadcrumb 停留在旧 stack(还看得到 mate-B-2 等),视觉上跟 🎉 done 矛盾
+    if (payload.thread) {
+      state.threads.set(payload.threadSlug, payload.thread);
+      renderThreads();
+      if (payload.threadSlug === state.focusedSlug) {
+        renderConvHeader();
+        renderBreadcrumb();
+        applyBusyUiState();
+      }
+    }
+  } else if (type === 'system.quota_resumed' || type === 'quota.send_dispatched' || type === 'quota.send_failed') {
+    // [bug@2026-07-21] mate 自动 flush quota_pause 队列时,后端已 remove 行,
+    //   但前端 queueByThread Map 从没被清 → UI 排队条一直显示 + 点取消 404。
+    //   修法:这几个事件收到就刷新 focused thread 的 queue(payload 里可能没
+    //   threadSlug,直接刷 focused 最省事)
+    if (state.focusedSlug) refreshQueueForThread(state.focusedSlug);
+    if (type === 'system.quota_resumed') {
+      pushTickerEvent('done', `▶ quota 已恢复 (${payload.reason || ''})`);
+    }
   }
 }
 
@@ -1161,7 +1284,11 @@ async function refreshQueueForThread(threadSlug) {
   try {
     const items = await api(`/queue?projectId=${state.activeProjectId}&threadSlug=${encodeURIComponent(threadSlug)}`);
     queueByThread.set(threadSlug, items);
-    if (threadSlug === state.focusedSlug) renderQueueAndBacklog();
+    if (threadSlug === state.focusedSlug) {
+      renderQueueAndBacklog();
+      // [需求@2026-07-30 #197] 队列变化也要重算 busy — active queue 也算 busy(显 停止 按钮)
+      applyBusyUiState();
+    }
   } catch (e) {
     console.warn('[queue] refresh failed', e.message);
   }
@@ -1341,6 +1468,13 @@ function renderBreadcrumb() {
   //   防 chain 里有遗留 isTerminal=true 但线索后来又重新激活的情况
   isComplete = (t2?.stage === 'verified');
 
+  // [需求@2026-07-30 #198] stage=verified 时强制清栈到只剩 R —
+  //   防"前端 chain 还没收到 terminal done seg,但 stage-verified 已推 UI"造成
+  //   "🎉 done 已显示 + 栈里还有 B/C 中间态"这种矛盾。
+  if (isComplete && stack.length > 1) {
+    stack = [stack[0]];
+  }
+
   // 渲染当前栈
   const depthBadge = maxDepth > 0 ? `<span class="bc-max-depth" title="max stack depth reached">[${maxDepth}]</span>` : '';
   const completeBadge = isComplete ? `<span class="bc-complete" title="thread verified">🎉 done</span>` : '';
@@ -1358,11 +1492,199 @@ function renderBreadcrumb() {
     const sep = i > 0 ? '<span class="bc-sep">→</span>' : '';
     const isTop = i === stack.length - 1;
     const cls = `bc-seg bc-handoff${isTop ? ' bc-top' : ''}` + (i > 0 ? ` bc-d${Math.min(i, 5)}` : '');
-    return `${sep}<span class="${cls}" title="${escapeHtml(frame.instanceId || '')} (stack depth ${i})">${escapeHtml(frame.label)}</span>`;
+    // [需求@2026-07-20 #176 Layer 3] frame 加 data-inst-id → 点击弹注入菜单
+    return `${sep}<span class="${cls}" data-inst-id="${escapeHtml(frame.instanceId || '')}" title="${escapeHtml(frame.instanceId || '')} (stack depth ${i}) · 右键 or 长按注入系统消息">${escapeHtml(frame.label)}</span>`;
   }).join('');
 
   host.innerHTML = `<span class="bc-label">${t('breadcrumb.label')}:</span>${depthBadge}${stackHtml}${completeBadge}${eventBadge}`;
   host.hidden = false;
+
+  // [需求@2026-07-20 #176 Layer 3] 每个 frame chip 右键 / 长按弹注入菜单
+  host.querySelectorAll('.bc-seg[data-inst-id]').forEach((el) => {
+    const instId = el.dataset.instId;
+    if (!instId) return;
+    el.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      openInjectDialog(instId);
+    });
+  });
+
+  // [需求@2026-07-20 #176 Layer 2] 卡死检测 + 三键面板
+  renderUnstickPanel(t2, stack);
+}
+
+// [需求@2026-07-20 #176 Layer 2] 卡死检测规则(v2):
+//   - 栈非空(chain 派生)
+//   - 所有绑定 inst 都 idle 或 disconnected(有 busy/spawning 则线索在跑不算卡)
+//   - 栈顶帧对应的 chain 最后一段 ts > STUCK_THRESHOLD_MS
+//   命中 → 顶端加红条 + 三按钮(retry / notify_h / force_pop)
+//   [v2] 去掉 stage != 'verified' 判定 —— 脏 verified(栈非空但 stage=verified)
+//        恰恰是最典型的卡死场景,不能 skip
+const STUCK_THRESHOLD_MS = 60 * 1000; // 60s 无活动即视为卡死
+function renderUnstickPanel(thread, stack) {
+  let host = document.querySelector('#unstick-panel');
+  const bc = document.querySelector('#dispatch-breadcrumb');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'unstick-panel';
+    host.hidden = true;
+    if (bc && bc.parentNode) bc.parentNode.insertBefore(host, bc);
+  }
+  if (!thread || !stack.length) {
+    host.hidden = true;
+    host.innerHTML = '';
+    return;
+  }
+  // [v2] user dismiss 检查 — 关闭过就 sessionStorage 记一下,当条 thread 本会话不再弹
+  const dismissKey = `unstick-dismiss:${thread.slug}`;
+  if (sessionStorage.getItem(dismissKey) === '1') {
+    host.hidden = true;
+    host.innerHTML = '';
+    return;
+  }
+  // 栈顶帧
+  const top = stack[stack.length - 1];
+  // [v3] 栈顶是 R —— 线索完工/等 user 输入,不算"卡死"。
+  //   真卡死场景一定是 H/B/C 挂在栈顶等 delegate 或等 kick。
+  //   terminal done 后 chain 派生的栈只剩 [R],这条判定把 t-mr36jsdc-keau 这种
+  //   真 verified 场景排除掉。
+  if (top?.roleType === 'requirements') {
+    host.hidden = true;
+    host.innerHTML = '';
+    return;
+  }
+  // [v2] stuckSince = 栈顶 inst.lastActiveAt(每 result event 更新)
+  //   老版本用 chain 最后 seg ts,会把"B 跑完/正在跑但没 emit marker"误判卡死
+  const topInstObj = top?.instanceId ? state.instances.get(top.instanceId) : null;
+  let stuckSince = topInstObj?.lastActiveAt || null;
+  if (!stuckSince) {
+    // fallback:inst 不在 memory(dead)或前端 state 未同步 → 用 chain 最后 seg ts
+    const chain = thread.metadata?.dispatch_chain || [];
+    stuckSince = chain[chain.length - 1]?.ts || thread.updatedAt || null;
+  }
+  if (!stuckSince) { host.hidden = true; return; }
+  const idleMs = Date.now() - stuckSince;
+  if (idleMs < STUCK_THRESHOLD_MS) { host.hidden = true; return; }
+  // 检查绑定 inst 状态 — 任何 busy/spawning 就不算卡死
+  const bound = thread.metadata?.current_role_instances || {};
+  const boundIds = ['requirements', 'orchestrator', 'executor', 'validator']
+    .map((rt) => bound[rt]).filter(Boolean);
+  const anyBusy = boundIds.some((id) => {
+    const inst = state.instances.get(id);
+    return inst && (inst.status === 'busy' || inst.status === 'spawning');
+  });
+  if (anyBusy) { host.hidden = true; return; }
+
+  const mins = Math.round(idleMs / 60000);
+  const topName = top.label || top.instanceId;
+  const topInstId = top.instanceId;
+  host.innerHTML = `
+    <div class="unstick-header">
+      <span class="unstick-badge">${t('unstick.badge')}</span>
+      <span class="unstick-since">${t('unstick.since', { name: escapeHtml(topName), minutes: mins })}</span>
+      <button class="unstick-dismiss" title="dismiss (仅本次会话)" data-thread="${escapeHtml(thread.slug)}">×</button>
+    </div>
+    <div class="unstick-actions">
+      <button class="unstick-btn unstick-retry" title="${escapeHtml(t('unstick.actionRetryTip'))}" data-target="${escapeHtml(topInstId)}">${t('unstick.actionRetry', { name: escapeHtml(topName) })}</button>
+      <button class="unstick-btn unstick-notify" title="${escapeHtml(t('unstick.actionNotifyHTip'))}" data-target="${escapeHtml(topInstId)}">${t('unstick.actionNotifyH')}</button>
+      <button class="unstick-btn unstick-pop" title="${escapeHtml(t('unstick.actionForcePopTip'))}" data-target="${escapeHtml(topInstId)}">${t('unstick.actionForcePop')}</button>
+    </div>
+  `;
+  host.hidden = false;
+
+  const slug = thread.slug;
+  const pid = state.activeProjectId;
+  // × 关闭 —— sessionStorage 记住本会话不再弹
+  host.querySelector('.unstick-dismiss')?.addEventListener('click', (ev) => {
+    const s = ev.currentTarget.dataset.thread;
+    sessionStorage.setItem(`unstick-dismiss:${s}`, '1');
+    host.hidden = true;
+    host.innerHTML = '';
+  });
+  host.querySelector('.unstick-retry')?.addEventListener('click', async (ev) => {
+    const target = ev.currentTarget.dataset.target;
+    try {
+      const r = await api(`/threads/${slug}/unstick?projectId=${pid}`, {
+        method: 'POST',
+        body: { action: 'retry', targetInstanceId: target, projectId: pid },
+      });
+      if (r?.deferred) pushTickerEvent('handoff',t('unstick.deferred'));
+      else pushTickerEvent('handoff',t('unstick.retrySuccess', { name: r?.displayName || target }));
+    } catch (e) { pushTickerEvent('blocked', t('unstick.failed', { error: e.message })); }
+  });
+  host.querySelector('.unstick-notify')?.addEventListener('click', async (ev) => {
+    const target = ev.currentTarget.dataset.target;
+    try {
+      const r = await api(`/threads/${slug}/unstick?projectId=${pid}`, {
+        method: 'POST',
+        body: { action: 'notify_h', targetInstanceId: target, projectId: pid },
+      });
+      if (r?.deferred) pushTickerEvent('handoff',t('unstick.deferred'));
+      else pushTickerEvent('handoff',t('unstick.notifyHSuccess', { name: r?.hDisplayName || r?.notifiedH || 'H' }));
+    } catch (e) { pushTickerEvent('blocked', t('unstick.failed', { error: e.message })); }
+  });
+  host.querySelector('.unstick-pop')?.addEventListener('click', async (ev) => {
+    const target = ev.currentTarget.dataset.target;
+    if (!confirm(t('unstick.forcePopConfirm', { name: topName }))) return;
+    try {
+      const r = await api(`/threads/${slug}/unstick?projectId=${pid}`, {
+        method: 'POST',
+        body: { action: 'force_pop', targetInstanceId: target, projectId: pid },
+      });
+      pushTickerEvent('handoff',t('unstick.forcePopSuccess', { count: r?.popped ?? 1 }));
+    } catch (e) { pushTickerEvent('blocked', t('unstick.failed', { error: e.message })); }
+  });
+}
+
+// [需求@2026-07-20 #176 Layer 3] 通用系统注入 dialog — user 给任意 inst 发系统消息
+function openInjectDialog(instId) {
+  const inst = state.instances.get(instId);
+  const name = inst?.displayName || instId;
+  let dlg = document.querySelector('#inject-dialog');
+  if (!dlg) {
+    dlg = document.createElement('dialog');
+    dlg.id = 'inject-dialog';
+    dlg.innerHTML = `
+      <form id="inject-form" method="dialog">
+        <h3 id="inject-title"></h3>
+        <div class="dialog-hint" id="inject-hint"></div>
+        <label id="inject-textarea-label"></label>
+        <textarea id="inject-textarea" rows="8" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
+        <div class="dialog-actions">
+          <button type="button" id="inject-cancel"></button>
+          <button type="submit" id="inject-confirm"></button>
+        </div>
+        <div id="inject-error" class="error"></div>
+      </form>
+    `;
+    document.body.appendChild(dlg);
+  }
+  dlg.querySelector('#inject-title').textContent = t('inject.dialogTitle', { name });
+  dlg.querySelector('#inject-hint').innerHTML = t('inject.dialogHint', { name: escapeHtml(name) });
+  dlg.querySelector('#inject-textarea-label').textContent = t('inject.textareaLabel');
+  dlg.querySelector('#inject-cancel').textContent = t('inject.cancel');
+  dlg.querySelector('#inject-confirm').textContent = t('inject.confirm');
+  dlg.querySelector('#inject-error').textContent = '';
+  const ta = dlg.querySelector('#inject-textarea');
+  ta.value = '';
+  dlg.showModal();
+  dlg.querySelector('#inject-cancel').onclick = () => dlg.close();
+  dlg.querySelector('#inject-form').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const text = ta.value.trim();
+    if (!text) return;
+    try {
+      const r = await api(`/instances/${instId}/inject`, {
+        method: 'POST',
+        body: { text, label: 'operator' },
+      });
+      dlg.close();
+      if (r?.deferred) pushTickerEvent('handoff',t('unstick.deferred'));
+      else pushTickerEvent('handoff',t('inject.success', { name }));
+    } catch (e) {
+      dlg.querySelector('#inject-error').textContent = t('inject.failed', { error: e.message });
+    }
+  };
 }
 
 // 当前线索的 queue / backlog 列表(放在面包屑下方)
@@ -1434,9 +1756,104 @@ function showSystemBanner(kind, text) {
   node.textContent = text;
 }
 
+// [X1 #195] 一致性红条,可带"确认已知"按钮(点击调 acknowledge API 设 baseline)
+function showConsistencyBanner(text, showAckBtn) {
+  const id = 'sys-banner-consistency';
+  let node = document.getElementById(id);
+  if (!node) {
+    node = document.createElement('span');
+    node.id = id;
+    node.className = 'banner';
+    node.style.background = '#5a1f1f';
+    node.style.color = '#ffaaaa';
+    els.banners.appendChild(node);
+  }
+  node.innerHTML = '';
+  const txt = document.createElement('span');
+  txt.textContent = text;
+  txt.style.cursor = 'default';
+  node.appendChild(txt);
+  if (showAckBtn) {
+    const ackBtn = document.createElement('button');
+    ackBtn.textContent = '✓ 已知,静音';
+    ackBtn.title = '确认这些老走串已知,后台设 baseline,以后只报 baseline 之后新出现的';
+    ackBtn.style.cssText = 'margin-left:8px;padding:1px 8px;font-size:10px;background:#333;color:#eee;border:1px solid #666;border-radius:3px;cursor:pointer';
+    ackBtn.addEventListener('click', async () => {
+      ackBtn.disabled = true;
+      try {
+        const r = await api('/consistency-check/acknowledge', { method: 'POST', body: {} });
+        if (r?.ok) {
+          node.remove();
+          pushTickerEvent('done', `✓ 已 ack 老走串 · baseline=${new Date(r.baselineTs).toISOString().slice(0,19)}`);
+        }
+      } catch (e) {
+        ackBtn.disabled = false;
+        alert('ack 失败: ' + e.message);
+      }
+    });
+    node.appendChild(ackBtn);
+  }
+  // × 关闭仍可用(临时隐藏,下次 alert 又出来)
+  const closeBtn = document.createElement('span');
+  closeBtn.textContent = ' × ';
+  closeBtn.style.cssText = 'margin-left:6px;cursor:pointer;color:#888';
+  closeBtn.title = '临时隐藏(不设 baseline,下次 alert 会再出现)';
+  closeBtn.addEventListener('click', () => node.remove());
+  node.appendChild(closeBtn);
+}
+
 // [需求@2026-06-12 Phase 2E §12] 乐观 UI helpers
 function makeClientMessageId() {
   return `c${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// [需求@2026-07-28 #190] pending 乐观泡跨线索切换存活 —
+//   老行为:submit → optimistic bubble → 切走 → stream.innerHTML='' 泡被清 →
+//   切回 → history reload 时 R busy 还没 echo → 用户看不到,以为丢了 → 重发
+//   → 3 条堆在 claude stdin buffer 里
+//   新行为:submit 时同步存 sessionStorage 一份,focusThread reload 后补渲染
+//         echo/deferred/failed 时清 sessionStorage
+const PENDING_KEY_PREFIX = 'mate.pending.bubbles.';
+function pendingBubblesKey(slug) { return PENDING_KEY_PREFIX + slug; }
+function loadPendingBubbles(slug) {
+  try {
+    return JSON.parse(sessionStorage.getItem(pendingBubblesKey(slug)) || '[]');
+  } catch { return []; }
+}
+function savePendingBubbles(slug, list) {
+  try {
+    if (!list.length) sessionStorage.removeItem(pendingBubblesKey(slug));
+    else sessionStorage.setItem(pendingBubblesKey(slug), JSON.stringify(list));
+  } catch {}
+}
+function addPendingBubble(slug, clientMessageId, text, state = 'sending', reason = null) {
+  const list = loadPendingBubbles(slug);
+  // 幂等:同 id 存在就更新
+  const idx = list.findIndex(b => b.clientMessageId === clientMessageId);
+  const entry = { clientMessageId, text, state, reason, ts: Date.now() };
+  if (idx >= 0) list[idx] = entry;
+  else list.push(entry);
+  savePendingBubbles(slug, list);
+}
+function updatePendingBubble(slug, clientMessageId, state, reason = null) {
+  const list = loadPendingBubbles(slug);
+  const b = list.find(x => x.clientMessageId === clientMessageId);
+  if (!b) return;
+  b.state = state;
+  if (reason !== null) b.reason = reason;
+  savePendingBubbles(slug, list);
+}
+function removePendingBubble(slug, clientMessageId) {
+  const list = loadPendingBubbles(slug);
+  const filtered = list.filter(b => b.clientMessageId !== clientMessageId);
+  savePendingBubbles(slug, filtered);
+}
+// 老化:超过 10 分钟仍未 echo 的清掉(claude 卡死场景兜底)
+function purgeStalePendingBubbles(slug, maxAgeMs = 10 * 60 * 1000) {
+  const now = Date.now();
+  const list = loadPendingBubbles(slug).filter(b => now - b.ts < maxAgeMs);
+  savePendingBubbles(slug, list);
+  return list;
 }
 
 function appendOptimisticUserBubble(text, clientMessageId) {
@@ -1535,6 +1952,104 @@ async function updateTerminalsCount() {
 }
 
 // ---------------- Input wiring ----------------
+// [需求@2026-07-22 #184] 附件上传相关
+//   attachState.files: [{name, mediaType, size, dataBase64, previewUrl?}]
+const attachState = { files: [] };
+const ATTACH_TEXT_LIMIT = 100 * 1024;         // 100KB
+const ATTACH_IMAGE_LIMIT = 2 * 1024 * 1024;   // 2MB
+const ATTACH_MAX_TOTAL = 25 * 1024 * 1024;    // 25MB 硬顶(留 5MB 给 JSON 结构本身,body limit 30MB)
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // reader.result 是 data URL: "data:<mime>;base64,<data>"
+      const s = String(reader.result || '');
+      const idx = s.indexOf(',');
+      resolve(idx >= 0 ? s.slice(idx + 1) : s);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addAttachments(files) {
+  const added = [];
+  let currentTotal = attachState.files.reduce((s, f) => s + (f.size || 0), 0);
+  for (const file of files) {
+    // 硬顶保护
+    if (currentTotal + file.size > ATTACH_MAX_TOTAL) {
+      pushTickerEvent('blocked', `${file.name} 太大或总量超 25MB — 跳过`);
+      continue;
+    }
+    const isText = /^(text\/|application\/(json|xml|javascript|x-yaml|toml|x-sh))/i.test(file.type) ||
+      /\.(md|json|yaml|yml|txt|log|csv|xml|jsonl)$/i.test(file.name);
+    const isImage = /^image\//i.test(file.type);
+    // 单文件阈值(仅提示,不阻拦 — 让后端决定 inline vs 落盘)
+    if (isText && file.size > ATTACH_TEXT_LIMIT) {
+      pushTickerEvent('handoff', `${file.name} > 100KB,发送时会自动存到项目 .mate/uploads/`);
+    }
+    if (isImage && file.size > ATTACH_IMAGE_LIMIT) {
+      pushTickerEvent('handoff', `${file.name} > 2MB,发送时会自动存到项目 .mate/uploads/`);
+    }
+    try {
+      const dataBase64 = await fileToBase64(file);
+      const entry = {
+        name: file.name,
+        mediaType: file.type || 'application/octet-stream',
+        size: file.size,
+        dataBase64,
+        isImage,
+      };
+      if (isImage) {
+        entry.previewUrl = `data:${entry.mediaType};base64,${dataBase64}`;
+      }
+      attachState.files.push(entry);
+      added.push(entry);
+      currentTotal += file.size;
+    } catch (e) {
+      pushTickerEvent('blocked', `读文件 ${file.name} 失败: ${e.message}`);
+    }
+  }
+  renderAttachPreview();
+  return added;
+}
+
+function renderAttachPreview() {
+  const host = document.querySelector('#attach-preview');
+  if (!host) return;
+  if (!attachState.files.length) {
+    host.hidden = true;
+    host.innerHTML = '';
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = attachState.files.map((f, i) => {
+    const sizeKB = Math.round(f.size / 1024);
+    const thumb = f.previewUrl ? `<img class="att-thumb" src="${f.previewUrl}" alt="" />` : '';
+    return `<span class="attach-chip" data-idx="${i}">
+      ${thumb}
+      <span class="att-name" title="${escapeHtml(f.name)} (${f.mediaType})">${escapeHtml(f.name)}</span>
+      <span class="att-size">${sizeKB}KB</span>
+      <button type="button" class="att-remove" data-idx="${i}" title="${t('attach.chip.remove')}">×</button>
+    </span>`;
+  }).join('');
+  host.querySelectorAll('.att-remove').forEach((btn) => {
+    btn.addEventListener('click', (ev) => {
+      const i = parseInt(ev.currentTarget.dataset.idx, 10);
+      attachState.files.splice(i, 1);
+      renderAttachPreview();
+    });
+  });
+}
+
+function clearAttachments() {
+  attachState.files.length = 0;
+  const inp = document.querySelector('#attach-input');
+  if (inp) inp.value = '';
+  renderAttachPreview();
+}
+
 function wireInputs() {
   els.projectPicker.addEventListener('change', async () => {
     const newId = parseInt(els.projectPicker.value, 10);
@@ -1655,7 +2170,45 @@ function wireInputs() {
     ev.preventDefault();
     if (!state.focusedSlug) return;
     // [需求@2026-06-13 §18] busy 状态下 sendBtn 是 ■ 停止 — 点击触发 stop 而非 send
+    // [需求@2026-07-30 #197] 判断 busy 来源:
+    //   - 有 busy/spawning inst → kill inst(老行为)
+    //   - 只是 queue 有 active → 提供"取消排队 N 项" 选项(不 kill inst)
     if (isFocusedThreadBusy()) {
+      const bound = (state.threads.get(state.focusedSlug)?.metadata?.current_role_instances) || {};
+      const boundIds = Object.values(bound).filter(Boolean);
+      const hasBusyInst = boundIds.some((id) => {
+        const inst = state.instances.get(id);
+        return inst && (inst.status === 'busy' || inst.status === 'spawning')
+          && (!inst.threadSlug || inst.threadSlug === state.focusedSlug);
+      });
+      const queue = queueByThread.get(state.focusedSlug) || [];
+      const activeQueue = queue.filter((q) => ['queued', 'processing', 'backlog', 'waiting_user'].includes(q.status));
+
+      if (!hasBusyInst && activeQueue.length > 0) {
+        // 纯 queue busy — 提示是否取消排队
+        const msg = `本线索还有 ${activeQueue.length} 项排队中(正在等派发)。\n\n` +
+                    `选择:\n` +
+                    `  OK   → 取消所有排队项\n` +
+                    `  Cancel → 保留,等自然派发`;
+        if (!confirm(msg)) return;
+        els.sendBtn.disabled = true;
+        try {
+          let ok = 0, fail = 0;
+          for (const q of activeQueue) {
+            try {
+              if (q.status === 'processing') continue;  // processing 无法 cancel
+              await api(`/queue/${q.id}/cancel`, { method: 'POST', body: {} });
+              ok++;
+            } catch { fail++; }
+          }
+          pushTickerEvent('kill', `✕ 已取消 ${ok} 项排队${fail ? ' (失败 ' + fail + ')' : ''}`);
+        } finally {
+          els.sendBtn.disabled = false;
+        }
+        return;
+      }
+
+      // 老逻辑:有真 busy inst,kill 之
       if (!confirm(t('send.stopConfirm'))) return;
       els.sendBtn.disabled = true;
       try {
@@ -1668,49 +2221,108 @@ function wireInputs() {
         streamAutoScroll(true);
         stopWaitIndicator();
       } catch (e) {
-        alert(t('send.stopFailed', { error: e.message }));
+        alert(t('send.failedTip', { error: e.message }));
       } finally {
         els.sendBtn.disabled = false;
       }
       return;
     }
     const text = els.msgInput.value.trim();
-    if (!text) return;
+    // [需求@2026-07-22 #184] 允许"只有附件没有文字"发送
+    const hasAttachments = attachState.files.length > 0;
+    if (!text && !hasAttachments) return;
     // [需求@2026-06-12 Phase 2E §12] 乐观 UI:立即渲染 bubble,带 sending 标志;后端 echo back 时 dedup
     const clientMessageId = makeClientMessageId();
-    const bubble = appendOptimisticUserBubble(text, clientMessageId);
+    const bubbleText = text || `📎 (${attachState.files.length} 个附件)`;
+    const bubble = appendOptimisticUserBubble(bubbleText, clientMessageId);
+    // [需求@2026-07-28 #190] 存 sessionStorage 让切走再切回时仍能补渲染
+    addPendingBubble(state.focusedSlug, clientMessageId, bubbleText, 'sending');
     const sentText = text;
+    const sentAttachments = attachState.files.map((f) => ({
+      name: f.name, mediaType: f.mediaType, dataBase64: f.dataBase64,
+    }));
     els.msgInput.value = '';
+    clearAttachments();
     try {
+      const body = { text: sentText, clientMessageId };
+      if (sentAttachments.length) body.attachments = sentAttachments;
       const resp = await api(`/threads/${encodeURIComponent(state.focusedSlug)}/message?projectId=${state.activeProjectId}`, {
-        method: 'POST', body: { text: sentText, clientMessageId },
+        method: 'POST', body,
       });
       bubble.classList.remove('msg-sending');
+      if (resp?.savedPaths?.length) {
+        // 提示大附件落盘路径
+        for (const p of resp.savedPaths) pushTickerEvent('handoff', t('attach.saved', { path: p }));
+      }
       // [bug@2026-06-29 #170] quota PAUSED 时 server 返 {deferred:true, pendingSendId} —
       //   消息已入队,等 resume 自动 flush。不是失败,也不是即时 sent;标 'queued'
       //   让 user 知道在排队,而不是误以为失败要重发。
       if (resp?.deferred) {
         bubble.classList.add('msg-queued');
         bubble.title = t('send.deferredTip', { reason: resp.reason || 'paused' });
+        updatePendingBubble(state.focusedSlug, clientMessageId, 'queued', resp.reason || 'paused'); // #190
         return;
       }
       bubble.classList.add('msg-sent');
+      // pending 保持 sent 状态,等 echo 到达时才 remove(避免 echo 前切走再切回丢泡)
+      updatePendingBubble(state.focusedSlug, clientMessageId, 'sent'); // #190
       // [需求@2026-06-13 §19] 发完 user → 立即显 LLM 等待 indicator
       startWaitIndicator('user-send');
-      const t = await api(`/threads/${encodeURIComponent(state.focusedSlug)}?projectId=${state.activeProjectId}`);
-      state.threads.set(t.slug, t);
+      const th = await api(`/threads/${encodeURIComponent(state.focusedSlug)}?projectId=${state.activeProjectId}`);
+      state.threads.set(th.slug, th);
       renderThreads();
       applyBusyUiState();
     } catch (e) {
       bubble.classList.remove('msg-sending');
       bubble.classList.add('msg-failed');
       bubble.title = t('send.failedTip', { error: e.message });
+      updatePendingBubble(state.focusedSlug, clientMessageId, 'failed', e.message); // #190
       bubble.addEventListener('click', () => {
         els.msgInput.value = sentText;
         els.msgInput.focus();
         bubble.remove();
+        removePendingBubble(state.focusedSlug, clientMessageId); // #190
       }, { once: true });
     }
+  });
+
+  // [需求@2026-07-22 #184] 附件按钮 / paste 事件 / 拖拽
+  const attachBtn = document.querySelector('#attach-btn');
+  const attachInput = document.querySelector('#attach-input');
+  if (attachBtn && attachInput) {
+    attachBtn.addEventListener('click', () => attachInput.click());
+    attachInput.addEventListener('change', async () => {
+      const files = Array.from(attachInput.files || []);
+      if (!files.length) return;
+      const added = await addAttachments(files);
+      if (added.length) pushTickerEvent('handoff', t('attach.picked', { n: added.length }));
+      attachInput.value = '';
+    });
+  }
+  // msg-input paste — 抓剪贴板里的图片/文件
+  els.msgInput.addEventListener('paste', async (ev) => {
+    const items = ev.clipboardData?.items || [];
+    const files = [];
+    for (const item of items) {
+      if (item.kind === 'file') {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (!files.length) return;
+    ev.preventDefault();  // 防止默认粘贴行为(比如粘贴文件名字符串)
+    const added = await addAttachments(files);
+    if (added.length) pushTickerEvent('handoff', t('attach.pasted', { n: added.length }));
+  });
+  // 拖拽到 textarea 也可
+  ['dragover', 'drop'].forEach((evt) => {
+    els.msgInput.addEventListener(evt, (ev) => { ev.preventDefault(); });
+  });
+  els.msgInput.addEventListener('drop', async (ev) => {
+    const files = Array.from(ev.dataTransfer?.files || []);
+    if (!files.length) return;
+    const added = await addAttachments(files);
+    if (added.length) pushTickerEvent('handoff', t('attach.picked', { n: added.length }));
   });
 
   els.msgInput.addEventListener('keydown', (ev) => {

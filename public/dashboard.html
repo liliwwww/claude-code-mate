@@ -38,6 +38,8 @@
       <button type="button" class="tab-btn" data-tab="logs" data-i18n="dashboard.tabs.logs">日志流</button>
       <!-- [需求@2026-06-15 Phase 2G M2] tab 6:状态图 -->
       <button type="button" class="tab-btn" data-tab="graph" data-i18n="dashboard.tabs.graph">状态图</button>
+      <!-- [需求@2026-07-29 #192] tab 7:chain 自检 —— 扫走串 -->
+      <button type="button" class="tab-btn" data-tab="chaincheck" data-i18n="dashboard.tabs.chaincheck">🔍 Chain 自检</button>
     </div>
 
     <div class="tab-content" data-tab="terminals">
@@ -133,6 +135,33 @@
       </form>
     </div>
 
+    <!-- [需求@2026-07-29 #192] tab 7 — chain 自检 -->
+    <div class="tab-content" data-tab="chaincheck" hidden>
+      <div class="chaincheck-toolbar">
+        <label><span data-i18n="dashboard.chaincheck.windowLabel">时间窗:</span>
+          <select id="chaincheck-window">
+            <option value="3600000" data-i18n="dashboard.chaincheck.win.1h">最近 1h</option>
+            <option value="21600000" data-i18n="dashboard.chaincheck.win.6h">最近 6h</option>
+            <option value="86400000" selected data-i18n="dashboard.chaincheck.win.24h">最近 24h</option>
+            <option value="604800000" data-i18n="dashboard.chaincheck.win.7d">最近 7d</option>
+            <option value="0" data-i18n="dashboard.chaincheck.win.all">全部</option>
+          </select>
+        </label>
+        <button id="chaincheck-run" type="button" data-i18n="dashboard.chaincheck.run">🔍 立即扫描</button>
+        <button id="chaincheck-copy" type="button" hidden data-i18n="dashboard.chaincheck.copy" data-i18n-attr-title="dashboard.chaincheck.copyTip" title="复制扫描结果到剪贴板(方便贴给开发定位)">📋 复制结果</button>
+        <span id="chaincheck-summary" class="muted" style="font-size:12px;margin-left:12px"></span>
+      </div>
+      <div class="chaincheck-hint" style="margin:8px 0;padding:8px 12px;background:var(--bg-elevated);border-left:3px solid var(--accent);font-size:11px;color:var(--text-secondary);line-height:1.6">
+        <div data-i18n="dashboard.chaincheck.hint1">
+          <b>什么是"chain 走串"?</b> 某条线索的 dispatch_chain 里出现别的线索 slug 引用,通常是 pool 复用(H 同时被两条线索派工)race 造成的错记。
+        </div>
+        <div data-i18n="dashboard.chaincheck.hint2" style="margin-top:6px">
+          <b>0 命中</b> = 该时间窗内 mate 完全没错记 chain,#191 修复生效。<b>有命中</b> = 还有未修的 race,把结果发给开发定位。
+        </div>
+      </div>
+      <div id="chaincheck-results"></div>
+    </div>
+
     <!-- [需求@2026-06-15 Phase 2G M2] tab 6 — 状态图(SVG 节点-边图) -->
     <div class="tab-content" data-tab="graph" hidden>
       <div class="graph-toolbar">
@@ -144,8 +173,10 @@
         </label>
         <label><input type="checkbox" id="graph-show-disc" /> <span data-i18n="dashboard.graph.showDisc">含 disconnected</span></label>
         <button id="graph-refresh" type="button">⟳</button>
+        <button id="graph-diagnose" type="button" title="诊断:显示当前 snapshot 的 group 计数,判断数据 vs 渲染 bug">📊 诊断</button>
         <span id="graph-info" class="muted" style="font-size:11px;margin-left:10px"></span>
       </div>
+      <div id="graph-diagnose-out" hidden style="margin-top:8px;padding:10px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:4px;font-family:ui-monospace,Consolas,monospace;font-size:11px;white-space:pre-wrap;color:var(--text-secondary)"></div>
       <div id="graph-canvas-wrap">
         <svg id="graph-svg" xmlns="http://www.w3.org/2000/svg" width="100%" height="640"></svg>
       </div>

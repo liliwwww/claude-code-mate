@@ -986,11 +986,12 @@ async function refreshActiveTab() {
   else if (currentTab === 'control') await refreshMatetermInstances();  // 只刷实例下拉,不重拉历史(避免打断对话)
   else if (currentTab === 'logs') await refreshLogStream();
   else if (currentTab === 'graph') await refreshGraph();
+  else if (currentTab === 'chaincheck') { /* 手动触发,不 auto */ }
   updateLastRefresh();
 }
 
 function switchTab(target) {
-  if (!['terminals', 'queue', 'dispatch', 'control', 'logs', 'graph'].includes(target)) target = 'terminals';
+  if (!['terminals', 'queue', 'dispatch', 'control', 'logs', 'graph', 'chaincheck'].includes(target)) target = 'terminals';
   const isEnteringControl = currentTab !== 'control' && target === 'control';
   const isEnteringLogs = currentTab !== 'logs' && target === 'logs';
   const isEnteringGraph = currentTab !== 'graph' && target === 'graph';
@@ -1418,6 +1419,8 @@ function wireGraphUI() {
   const cb = el('#graph-show-disc');
   if (cb) cb.checked = GRAPH_STATE.showDisc;
   el('#graph-refresh').addEventListener('click', () => refreshGraph());
+  const diagBtn = el('#graph-diagnose');
+  if (diagBtn) diagBtn.addEventListener('click', diagnoseGraph);
 }
 
 let graphRefreshDebounce = null;
@@ -1437,6 +1440,63 @@ function setupGraphWS() {
       graphRefreshDebounce = setTimeout(() => refreshGraph(), 250);
     });
   }
+}
+
+// [需求@2026-07-29] 诊断按钮 — 显示当前 snapshot 的 group 计数 + 每个 inst,
+//   帮 user 判断是数据没到还是渲染丢了
+function diagnoseGraph() {
+  const out = document.querySelector('#graph-diagnose-out');
+  if (!out) return;
+  const lines = [];
+  const snap = GRAPH_STATE.snapshot;
+  const wrap = document.querySelector('#graph-canvas-wrap');
+  const svg = document.querySelector('#graph-svg');
+  lines.push('=== 前端状态 ===');
+  lines.push('scope: ' + GRAPH_STATE.scope + '  (global=看全部, 数字=某 project)');
+  lines.push('showDisc: ' + GRAPH_STATE.showDisc);
+  lines.push('容器尺寸: ' + (wrap ? wrap.clientWidth + '×' + wrap.clientHeight : 'no wrap'));
+  lines.push('SVG 尺寸: ' + (svg ? svg.getAttribute('width') + '×' + svg.getAttribute('height') : 'no svg'));
+  lines.push('SVG 里 <g class="gn"> 节点数: ' + (svg ? svg.querySelectorAll('g.gn').length : 0));
+  lines.push('');
+  if (!snap) {
+    lines.push('❌ GRAPH_STATE.snapshot 为空 — 数据没到,试点 ⟳ 刷新');
+    out.textContent = lines.join('\n');
+    out.hidden = false;
+    return;
+  }
+  lines.push('=== snapshot 内容 (project ' + (snap.project?.id || 'global') + ') ===');
+  lines.push('counts: ' + JSON.stringify(snap.counts));
+  const groups = { requirements: [], orchestrator: [], executor: [], validator: [] };
+  const allInsts = [
+    ...(snap.instances?.idle || []),
+    ...(snap.instances?.busy || []),
+    ...(snap.instances?.spawning || []),
+  ];
+  const discAll = snap.instances?.disconnected || [];
+  if (GRAPH_STATE.showDisc) allInsts.push(...discAll);
+  else for (const i of discAll) if (i.roleType === 'requirements') allInsts.push(i);
+  for (const i of allInsts) {
+    const g = groups[i.roleType];
+    if (g) g.push(i);
+    else lines.push('⚠ inst ' + i.id + ' roleType=' + i.roleType + ' 不认识,丢弃');
+  }
+  lines.push('');
+  lines.push('=== 应渲染的分层 ===');
+  for (const [t, list] of Object.entries(groups)) {
+    lines.push(`  ${t}: ${list.length} 个 → ${list.map(i => i.displayName || i.id).join(', ') || '(empty)'}`);
+  }
+  lines.push('');
+  if (!groups.orchestrator.length && !groups.executor.length) {
+    lines.push('❌ H 和 B 分层都是空的 — 数据源(snapshot)没这些实例,不是渲染问题');
+    lines.push('   → 点 ⟳ 刷新试试;仍空 → 后端 API 问题');
+  } else if (svg && svg.querySelectorAll('g.gn').length === 0) {
+    lines.push('❌ 数据里有节点但 SVG 里 <g class="gn"> 数为 0 — 渲染没跑或被覆盖');
+    lines.push('   → 点 ⟳ 刷新触发重渲染');
+  } else {
+    lines.push('✅ 数据 + 节点数吻合。如果视觉上看不到,可能是浏览器窗口太窄/滚动到底 — 试试放大浏览器或滚动 graph');
+  }
+  out.textContent = lines.join('\n');
+  out.hidden = false;
 }
 
 async function refreshGraph() {
@@ -1572,7 +1632,7 @@ function renderNode(inst, x, y, color) {
     <text x="${x + 8}" y="${y + 16}" fill="${color}" font-size="12" font-family="ui-monospace,Consolas,monospace" font-weight="600">${escapeHtml(inst.displayName || inst.id)}</text>
     <text x="${x + 8}" y="${y + 32}" fill="#aaa" font-size="10">${escapeHtml(inst.status)}${taskShort ? ' · ' + escapeHtml(taskShort) : ''}</text>
     <text x="${x + 8}" y="${y + 46}" fill="#777" font-size="10">${escapeHtml(act)}</text>
-    <title>${escapeHtml(inst.id)} · ${escapeHtml(inst.status)}${taskSlug ? '\nthread: ' + taskSlug : ''}${act ? '\nact: ' + inst.currentActivity : ''}</title>
+    <title>${escapeHtml(inst.id)} · ${escapeHtml(inst.status)}${taskSlug ? '\nthread: ' + escapeHtml(taskSlug) : ''}${act ? '\nact: ' + escapeHtml(inst.currentActivity) : ''}</title>
   </g>`;
 }
 
@@ -1658,4 +1718,177 @@ function drawEdge(fromId, toId, nodePos, cls) {
   if (currentTab === 'logs') initLogStreamTab();
   // 首次 tab=graph 时也要初始化
   if (currentTab === 'graph') initGraphTab();
+  // 首次 tab=chaincheck 时挂事件
+  initChaincheckTab();
 })();
+
+// ============================== #192 Chain 自检 tab ==============================
+let _lastChaincheckData = null;  // 缓存最后一次扫描结果给 copy 用
+
+function initChaincheckTab() {
+  const btn = document.querySelector('#chaincheck-run');
+  if (!btn) return;
+  btn.addEventListener('click', runChaincheckScan);
+  const copyBtn = document.querySelector('#chaincheck-copy');
+  if (copyBtn) copyBtn.addEventListener('click', copyChaincheckResults);
+}
+
+// 把 chaincheck 结果格式化成 markdown 风格纯文本(便于粘贴到 chat / issue)
+function formatChaincheckForCopy(data) {
+  if (!data) return '(no data)';
+  const lines = [];
+  lines.push(`# Mate Chain 自检结果`);
+  lines.push('');
+  lines.push(`- 扫描时间: ${new Date().toISOString()}`);
+  lines.push(`- 时间窗: ${data.since || 'ALL time'}`);
+  lines.push(`- 走串总数: **${data.total}** across ${data.threads} threads`);
+  if (data.latest) lines.push(`- 最新走串时间: ${data.latest}`);
+  lines.push('');
+  if (data.total === 0) {
+    lines.push('✅ 该时间窗内 chain 完全干净,无走串。');
+    lines.push('');
+    return lines.join('\n');
+  }
+  lines.push('## 走串明细');
+  lines.push('');
+  const byHost = {};
+  for (const c of data.crossings) {
+    if (!byHost[c.host]) byHost[c.host] = [];
+    byHost[c.host].push(c);
+  }
+  for (const [host, list] of Object.entries(byHost)) {
+    lines.push(`### ${host} (project ${list[0].projectName}, ${list.length} 走串)`);
+    lines.push('');
+    for (const c of list) {
+      lines.push(`- **[${c.idx}]** ${new Date(c.ts).toISOString()} \`${c.kind}\` ${c.from}→${c.to}`);
+      lines.push(`  - refs: \`${c.otherSlug}\``);
+      lines.push(`  - preview: ${c.preview.replace(/\n/g,' ').slice(0,300)}`);
+    }
+    lines.push('');
+  }
+  lines.push('---');
+  lines.push('## Raw JSON');
+  lines.push('```json');
+  lines.push(JSON.stringify(data, null, 2));
+  lines.push('```');
+  return lines.join('\n');
+}
+
+async function copyChaincheckResults() {
+  const btn = document.querySelector('#chaincheck-copy');
+  const summary = document.querySelector('#chaincheck-summary');
+  const text = formatChaincheckForCopy(_lastChaincheckData);
+  try {
+    await navigator.clipboard.writeText(text);
+    const orig = btn.textContent;
+    btn.textContent = t('dashboard.chaincheck.copied');
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  } catch (e) {
+    // fallback: textarea 选中复制
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
+    if (ok) {
+      const orig = btn.textContent;
+      btn.textContent = t('dashboard.chaincheck.copied');
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    } else {
+      summary.textContent = t('dashboard.chaincheck.copyFailed', { error: e.message });
+      summary.style.color = 'var(--accent-red, #ff6b6b)';
+    }
+  }
+}
+
+async function runChaincheckScan() {
+  const btn = document.querySelector('#chaincheck-run');
+  const copyBtn = document.querySelector('#chaincheck-copy');
+  const summary = document.querySelector('#chaincheck-summary');
+  const results = document.querySelector('#chaincheck-results');
+  const winSel = document.querySelector('#chaincheck-window');
+  if (!btn || !results) return;
+  const winMs = parseInt(winSel.value, 10) || 0;
+  btn.disabled = true;
+  if (copyBtn) copyBtn.hidden = true;
+  _lastChaincheckData = null;
+  summary.textContent = '扫描中…';
+  results.innerHTML = '';
+  try {
+    let url = '/api/chain-crossings';
+    if (winMs > 0) {
+      const since = new Date(Date.now() - winMs).toISOString();
+      url += '?since=' + encodeURIComponent(since);
+    }
+    const r = await fetch(url);
+    const data = await r.json();
+    if (r.status !== 200) throw new Error(data?.error || 'HTTP ' + r.status);
+    _lastChaincheckData = data;
+    if (copyBtn) copyBtn.hidden = false;  // 扫完再显 copy 按钮
+    renderChaincheckResults(data);
+  } catch (e) {
+    summary.textContent = '扫描失败: ' + e.message;
+    summary.style.color = 'var(--accent-red, #ff6b6b)';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderChaincheckResults(data) {
+  const summary = document.querySelector('#chaincheck-summary');
+  const results = document.querySelector('#chaincheck-results');
+  if (!data.total) {
+    summary.style.color = 'var(--accent-green, #88dd88)';
+    summary.textContent = `✅ 该窗口内 0 走串 (查了全库所有 threads)`;
+    results.innerHTML = `
+      <div style="padding:20px;text-align:center;background:rgba(60,180,60,0.08);border:1px solid rgba(60,180,60,0.3);border-radius:6px;color:var(--accent-green, #88dd88);font-size:14px">
+        ✅ 干净 — 该时间窗内没有 chain 走串<br>
+        <span style="font-size:11px;color:var(--text-muted)">${data.since ? 'since ' + data.since : 'ALL time'}</span>
+      </div>
+    `;
+    return;
+  }
+  summary.style.color = 'var(--accent-yellow, #d8a33a)';
+  summary.textContent = `⚠ ${data.total} 走串 across ${data.threads} threads · 最新 ${data.latest}`;
+  // group by host
+  const byHost = {};
+  for (const c of data.crossings) {
+    if (!byHost[c.host]) byHost[c.host] = [];
+    byHost[c.host].push(c);
+  }
+  const rows = [];
+  for (const [host, list] of Object.entries(byHost)) {
+    rows.push(`
+      <div style="margin:12px 0;padding:10px;background:var(--bg-elevated);border-left:3px solid var(--accent-red, #ff6b6b);border-radius:4px">
+        <div style="font-family:ui-monospace,Consolas,monospace;font-size:12px;font-weight:600;color:var(--text-primary)">
+          ${escapeHtmlChaincheck(host)} <span style="color:var(--text-muted);font-weight:400">(project ${list[0].projectName}, ${list.length} 走串)</span>
+        </div>
+        <table style="width:100%;margin-top:8px;font-size:11px;border-collapse:collapse">
+          <thead><tr style="color:var(--text-muted);text-align:left">
+            <th style="padding:4px">#</th><th style="padding:4px">时间</th><th style="padding:4px">类型</th><th style="padding:4px">from→to</th><th style="padding:4px">refs</th><th style="padding:4px">预览</th>
+          </tr></thead>
+          <tbody>
+            ${list.map(c => `
+              <tr style="border-top:1px solid var(--border)">
+                <td style="padding:4px;font-family:monospace">[${c.idx}]</td>
+                <td style="padding:4px;font-family:monospace;color:var(--text-secondary)">${new Date(c.ts).toISOString().replace('T',' ').slice(0,19)}</td>
+                <td style="padding:4px">${c.kind}</td>
+                <td style="padding:4px;font-family:monospace">${escapeHtmlChaincheck(c.from)}→${escapeHtmlChaincheck(c.to)}</td>
+                <td style="padding:4px;color:var(--accent-red, #ff6b6b);font-family:monospace;font-size:10px">${escapeHtmlChaincheck(c.otherSlug)}</td>
+                <td style="padding:4px;color:var(--text-secondary);max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtmlChaincheck(c.preview)}">${escapeHtmlChaincheck(c.preview)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `);
+  }
+  results.innerHTML = rows.join('');
+}
+
+function escapeHtmlChaincheck(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
