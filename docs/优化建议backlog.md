@@ -163,18 +163,38 @@ get threadSlug() { return this._threadSlug; }
 
 ### 加固 X3:结构化 warning
 
-**status**: ⬜ pending
+**status**: 🚧 **partial** (2026-08-06,骨架 + 3 核心文件已迁)
 
-引入轻量 logger(pino 或自写 30 行),替换 `console.warn`:
+**已完成**:
+- `server/logger.js` 骨架(~70 行,零依赖,pretty + JSON 双模式,MATE_LOG_LEVEL/MATE_LOG_JSON 环境变量控制)
+- `server/spawn/ConsistencyCheck.js` 12/12 warn 迁完
+- `server/spawn/MarkerDispatcher.js` 31/31 warn 迁完
+- `server/spawn/SpawnManager.js` 36/36 warn 迁完
 
-```javascript
-const log = require('./logger');
-log.warn({module:'SpawnManager', event:'queue_flush_failed', pendingSendId:next.id, error:e.message});
+**Followup(64 处 warn/error 剩余 in 14 文件,机械替换,按需分批做)**:
+```
+server/db.js                            server/quota/QuotaState.js
+server/index.js                         server/threads/DispatchLogWriter.js
+server/system-agent/ThreadHooks.js      server/spawn/MockRoleInstance.js
+server/api/http.js                      server/roles/RoleCatalog.js
+server/spawn/PoolAllocator.js           server/spawn/QueueDispatcher.js
+server/spawn/RoleInstance.js            server/spawn/ScanRecycler.js
+server/api/ws.js                        server/spawn/SlotPool.js
 ```
 
-**收益**:生产可以 grep 类型统计 bug 频率。
+**用法**:
+```javascript
+const log = require('./logger');   // 或相对路径 ../logger
+log.warn({ module: 'SpawnManager', event: 'queue_flush_failed', pendingSendId: 42, error: e.message });
+log.info({ module: 'boot', event: 'ready', port: 8721 });
+```
 
-**预估工作量**:1 天(改所有现有 console.warn)
+**输出**(默认 pretty,一行):
+```
+[2026-08-06T12:00:00.000Z] [WARN] [SpawnManager] queue_flush_failed pendingSendId=42 error="target dead"
+```
+
+**收益**:生产可以 grep event 名统计 bug 频率(`grep 'event=queue_flush_failed' logs`)。
 
 ---
 
@@ -252,13 +272,33 @@ t-mrwwnh63-8g3f 上还有 6 段老走串脏数据,视觉上误导 R 判断。
 
 ### 加固 UI4:mate-R 权限精细化
 
-**status**: ⬜ pending
+**status**: ❌ **skip** (2026-08-06,原议已过时 + wrong direction)
 
-`allow_rules: [Bash]` 裸声明覆盖不到 curl 这种敏感子命令(见早期"R 想 curl mate API 被拒"事件)。
+原议:显式列 `Bash(curl:*)`, `Bash(grep:*)` 等,不用裸 `Bash`。
 
-建议:显式列 `Bash(curl:*)`, `Bash(grep:*)` 等,不用裸 `Bash`。
+**为什么不做**:
+1. 原始动机"R 想 curl mate API 被拒"早已不复存在 —— role prompt 里
+   现在明确指导 R `curl http://127.0.0.1:8721/api/threads/...` 做状态查询,
+   permission_mode=dontAsk + 裸 Bash 组合工作正常
+2. role 用 Bash 的场景高度动态(python -c、node -e、wmic、netstat、git、
+   ls、cat...),显式白名单**必定不全**,反而频繁被拒破坏可用性
+3. mate role 是可信 executor,不是不受信内容,不需要 role 层白名单 sandbox
 
-**预估工作量**:1 小时(改 4 个 roles/*.md)
+**真正的安全隐患**(destructive 命令)另外解决,应走 **deny list** 而不是收窄
+allow list。等有实际 incident 再补 —— 目前 4 次 chain 走串都不是权限问题。
+
+**如果要做**:改 `server/roles/RoleCatalog.js` schema 加 `deny_rules`,
+`server/spawn/RoleInstance.js` 里 --settings 的 permissions 加 deny 字段,
+给 4 role 统一加:
+```yaml
+deny_rules:
+  - Bash(rm -rf:*)
+  - Bash(sudo:*)
+  - Bash(git push --force*)
+  - Bash(git reset --hard*)
+  - PowerShell(Remove-Item * -Recurse -Force*)
+```
+预估 2 小时。等有需要时再启动。
 
 ---
 
@@ -348,7 +388,37 @@ t-mrwwnh63-8g3f 上还有 6 段老走串脏数据,视觉上误导 R 判断。
 
 ---
 
+## 新发现待查(2026-08-06)
+
+**PoolAllocator.create 可能继承 slot 上一个 dead inst 的 threadSlug**
+- 现象:H.lo335h(bound=t-mrwwnh63-8g3f)dead 后,mate 为 slot 1 spawn H.c5fwsp,
+  X2 audit 显示 c5fwsp 的第一次 flip `from=t-mrwwnh63-8g3f → to=t-msgvzn3o-t9kc`
+- 期望:新 spawn 应该 `from=null` 起步
+- 假设:PoolAllocator.create 从 dead inst 拷了 threadSlug,或者 _acquirePoolInstance
+  某分支传了错的 threadSlug 给 ctor
+- 优先级:低(setter 后续会拨对,不引发功能问题),但可能是"陈迹污染 → 未来 race"的
+  隐患 → A1 根治 threadSlug mutable 时一起处理
+- 定位:grep PoolAllocator.js 里 `threadSlug` 的 create 路径
+
+**chain-crossings scanner 只该扫路由字段,别扫 reason/summary 文本** ✅ done (2026-08-06 #202)
+- 决策:文本匹配没有可靠路由字段可依赖(chain 段本身没有 targetThread 字段),
+  真"走串"信号已被 X2 audit(`debug.instance_threadslug_flip`)完全覆盖 —
+  X2 有 caller stack + 精确 ts,比文本引用报告 actionable 得多
+- 落地:
+  - ConsistencyCheck Check 5 移除(不再触发 `system.consistency_alert`)
+  - `/api/chain-crossings` endpoint 保留(dashboard "Chain 自检" tab 手动扫),
+    response 加 `advisory: true` 标记 + `advisoryNote` 提示
+  - dashboard.js 渲染时显式说明"文本引用扫描,不代表真走串,真走串看
+    /api/audit/threadslug-flips"
+- 遗留:`acknowledgeCrossings` API + baseline meta key 保留但已无实际作用
+
 ## 已实施的经验教训(reference)
+
+**从 2026-08-06 chain 走串复发学到**:**改代码 ≠ 生效**
+- mate 从 08-03 起没重启,08-05 加的 X2 audit 完全没触发,#187/#194 也是 dormant
+- 08-06 又发生一次 chain 走串,原本 X2 audit 该秒定位,但因为老代码在跑 → 一片空白
+- **规则**:每次 commit 后 ticker/顶栏提示"代码变更未生效,请择机重启 mate"。以及 `/api/system` 加一个字段返"loaded_code_mtime",跟当前 mtime diff → 让用户和 UI 都知道要重启
+- 长远:探索 hot-reload 部分模块(至少 ConsistencyCheck / HTTP router 这类)
 
 **从 #199 学到**(2026-08-02):**任何"检查外部信号"的模块都必须用最鲜活的数据源**
 - 优先级:messages 表(每 event 直接写)> 派生字段(如 role_instances.last_active_at,仅 status_change 更新)> 内存缓存

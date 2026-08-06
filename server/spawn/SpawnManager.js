@@ -64,6 +64,8 @@ const HandoffTracker = require('./HandoffTracker');
 const MarkerDispatcher = require('./MarkerDispatcher');
 const QueueDispatcher = require('./QueueDispatcher');
 const PendingSends = require('./PendingSends');
+const log = require('../logger');
+const MOD = 'SpawnManager';
 
 class SpawnManager {
   constructor() {
@@ -105,7 +107,7 @@ class SpawnManager {
           ThreadStore.bindInstance(pendingRow.projectId, pendingRow.threadSlug, inst.role.type, inst.id);
           ThreadStore.touch(pendingRow.projectId, pendingRow.threadSlug, inst.role.type);
         } catch (e) {
-          console.warn(`[SpawnManager] queue flush bindInstance failed: ${e.message}`);
+          log.warn({ module: MOD, event: 'queue_bind_instance_failed', error: e.message });
         }
       }
     };
@@ -117,11 +119,11 @@ class SpawnManager {
         bus.subscribe('system.quota_resumed', () => {
           if (QuotaState.isPaused()) return;  // 另一轨还 paused → 不 flush
           this._flushQuotaPaused().catch((e) => {
-            console.error('[SpawnManager] quota flush failed:', e.message);
+            log.error({ module: MOD, event: 'quota_flush_failed', error: e.message });
           });
         });
       } catch (e) {
-        console.warn('[SpawnManager] quota_resumed subscribe failed:', e.message);
+        log.warn({ module: MOD, event: 'quota_resumed_subscribe_failed', error: e.message });
       }
     });
   }
@@ -161,13 +163,13 @@ class SpawnManager {
             _skipQuotaGate: true,
           });
         } else {
-          console.warn(`[SpawnManager] quota flush: unknown kind ${row.kind} for ps ${row.id}`);
+          log.warn({ module: MOD, event: 'quota_flush_unknown_kind', kind: row.kind, pendingSendId: row.id });
           PendingSends.markCancelled(row.id, `quota-flush: unknown kind ${row.kind}`);
         }
         PendingSends.remove(row.id);
         bus.publish('quota.send_dispatched', { pendingSendId: row.id, ts: Date.now() });
       } catch (e) {
-        console.error(`[SpawnManager] quota flush ps#${row.id} failed:`, e.message);
+        log.error({ module: MOD, event: 'quota_flush_ps_failed', pendingSendId: row.id, error: e.message });
         PendingSends.markCancelled(row.id, `quota-flush-error: ${e.message}`);
         bus.publish('quota.send_failed', { pendingSendId: row.id, error: e.message, ts: Date.now() });
       }
@@ -197,7 +199,7 @@ class SpawnManager {
       }
     }
     if (anchorTs === null) {
-      console.warn(`[SpawnManager] mid-turn 429 (${inst.id}): no handoff seg in chain — cannot retry`);
+      log.warn({ module: MOD, event: 'midturn_429_no_handoff_seg', instanceId: inst.id });
       return;
     }
     const row = db.prepare(`
@@ -206,7 +208,7 @@ class SpawnManager {
       ORDER BY ts ASC LIMIT 1
     `).get(inst.id, inst.threadSlug, anchorTs);
     if (!row) {
-      console.warn(`[SpawnManager] mid-turn 429 (${inst.id}): no user_to_role at/after handoff ts`);
+      log.warn({ module: MOD, event: 'midturn_429_no_user_msg', instanceId: inst.id });
       return;
     }
     let text;
@@ -217,11 +219,11 @@ class SpawnManager {
         ? content.filter((c) => c.type === 'text').map((c) => c.text).join('')
         : (typeof content === 'string' ? content : '');
     } catch {
-      console.warn(`[SpawnManager] mid-turn 429 (${inst.id}): payload parse failed`);
+      log.warn({ module: MOD, event: 'midturn_429_payload_parse_failed', instanceId: inst.id });
       return;
     }
     if (!text) {
-      console.warn(`[SpawnManager] mid-turn 429 (${inst.id}): handoff prompt msg has no text (likely tool_result)`);
+      log.warn({ module: MOD, event: 'midturn_429_no_prompt_text', instanceId: inst.id, note: 'likely_tool_result' });
       return;
     }
     text = text.replace(/^\[Thread:\s*[^\]]+\]\n\n/, '');
@@ -269,7 +271,7 @@ class SpawnManager {
     if (!QuotaState.isPaused()) {
       setImmediate(() => {
         this._flushQuotaPaused().catch((e) =>
-          console.warn(`[SpawnManager] mid-turn 429 immediate flush failed: ${e.message}`)
+          log.warn({ module: MOD, event: 'midturn_429_immediate_flush_failed', error: e.message })
         );
       });
     }
@@ -289,7 +291,7 @@ class SpawnManager {
     if (!inst.threadSlug) return;
     const errors = raw?.errors || [];
     const errMsg = errors.find((e) => /No conversation found/i.test(String(e))) || String(errors[0] || '');
-    console.warn(`[SpawnManager] session-lost detected: ${inst.id} sess=${inst.sessionId} — ${errMsg}`);
+    log.warn({ module: MOD, event: 'session_lost_detected', instanceId: inst.id, sessionId: inst.sessionId, error: errMsg });
 
     const projectId = inst.projectId;
     const threadSlug = inst.threadSlug;
@@ -313,7 +315,7 @@ class SpawnManager {
       }
     }
     if (anchorTs === null) {
-      console.warn(`[SpawnManager] session-lost (${inst.id}): no handoff seg found — cannot retry`);
+      log.warn({ module: MOD, event: 'session_lost_no_handoff_seg', instanceId: inst.id });
       return;
     }
     // 找原 handoff prompt text
@@ -334,14 +336,14 @@ class SpawnManager {
       } catch {}
     }
     if (!text) {
-      console.warn(`[SpawnManager] session-lost (${inst.id}): handoff prompt text not found`);
+      log.warn({ module: MOD, event: 'session_lost_no_prompt_text', instanceId: inst.id });
       return;
     }
 
     // 2. 从 db + 内存彻底移除死实例(pool_slot 会腾空 → 下次派工新起)
     try {
       db.prepare('DELETE FROM role_instances WHERE id = ?').run(inst.id);
-    } catch (e) { console.warn(`[SpawnManager] delete dead inst failed: ${e.message}`); }
+    } catch (e) { log.warn({ module: MOD, event: 'delete_dead_inst_failed', error: e.message }); }
     this.instances.delete(inst.id);
 
     // 3. 清 thread metadata 里 current_role_instances 对该 roleType 的绑定
@@ -353,7 +355,7 @@ class SpawnManager {
         db.prepare(`UPDATE threads SET metadata_json = ? WHERE project_id = ? AND slug = ?`)
           .run(JSON.stringify(meta), projectId, threadSlug);
       }
-    } catch (e) { console.warn(`[SpawnManager] clear thread binding failed: ${e.message}`); }
+    } catch (e) { log.warn({ module: MOD, event: 'clear_thread_binding_failed', error: e.message }); }
 
     // 4. 找 caller inst 作为 markerFromInst(重派时看谁的名义)
     const fromInst = fromInstanceId ? this.instances.get(fromInstanceId) : null;
@@ -402,7 +404,7 @@ class SpawnManager {
     // 6. 立即 flush(session_lost 跟 quota 无关,别等 quota resume)
     setImmediate(() => {
       this._flushQuotaPaused().catch((e) =>
-        console.warn(`[SpawnManager] session-lost immediate flush failed: ${e.message}`)
+        log.warn({ module: MOD, event: 'session_lost_immediate_flush_failed', error: e.message })
       );
     });
   }
@@ -422,7 +424,7 @@ class SpawnManager {
     for (const r of rows) {
       const role = roleCatalog.get(r.role_name);
       if (!role) {
-        console.warn(`[SpawnManager] restore skipped ${r.id}: unknown role ${r.role_name}`);
+        log.warn({ module: MOD, event: 'restore_skipped', reason: 'unknown_role', instanceId: r.id, roleName: r.role_name });
         skipped++;
         continue;
       }
@@ -434,7 +436,7 @@ class SpawnManager {
       // [需求@2026-06-10] 恢复时拿到 project_id,从 projects 表查 root_dir
       const proj = db.prepare(`SELECT id, root_dir FROM projects WHERE id = ?`).get(r.project_id);
       if (!proj) {
-        console.warn(`[SpawnManager] restore skipped ${r.id}: project ${r.project_id} not found`);
+        log.warn({ module: MOD, event: 'restore_skipped', reason: 'project_not_found', instanceId: r.id, projectId: r.project_id });
         stmts.setInstanceDied.run(Date.now(), r.id);
         skipped++;
         continue;
@@ -520,7 +522,7 @@ class SpawnManager {
         recordEvent('debug.instance_threadslug_flip', {
           from, to, callerStack,
         }, { instanceId: inst.id, projectId: inst.projectId });
-      } catch (e) { console.warn('[SpawnManager] threadslug audit failed:', e.message); }
+      } catch (e) { log.warn({ module: MOD, event: 'threadslug_audit_failed', error: e.message }); }
     });
 
     inst.on('status_change', (chg) => {
@@ -539,7 +541,7 @@ class SpawnManager {
       //     - disconnected → idle 等其它罕见转换:保留 flush 兜底
       if (chg.to === 'idle' && chg.from !== 'busy') {
         QueueDispatcher.onInstanceIdle(inst, { dispatchCb: this._queueDispatchCb })
-          .catch((e) => console.warn(`[SpawnManager] queue flush failed for ${inst.id}: ${e.message}`));
+          .catch((e) => log.warn({ module: MOD, event: 'queue_flush_failed', instanceId: inst.id, error: e.message }));
       }
     });
 
@@ -548,7 +550,7 @@ class SpawnManager {
       //   claude 在每条 user 消息处理时会推送 5h + 7d 双轨,QuotaState 维护全局状态
       // [arch-debt §14 ✅] 不再 hardcode eventType
       if (isRateLimitEvent(eventType)) {
-        try { QuotaState.ingest(raw); } catch (e) { console.warn(`[SpawnManager] QuotaState.ingest failed: ${e.message}`); }
+        try { QuotaState.ingest(raw); } catch (e) { log.warn({ module: MOD, event: 'quota_ingest_failed', error: e.message }); }
       }
 
       const direction =
@@ -583,7 +585,7 @@ class SpawnManager {
             directTarget: isDirect ? inst.id : null,
           });
         } catch (e) {
-          console.warn(`[SpawnManager] recordMessage failed for ${inst.id}: ${e.message}`);
+          log.warn({ module: MOD, event: 'record_message_failed', instanceId: inst.id, error: e.message });
         }
       }
 
@@ -674,7 +676,7 @@ class SpawnManager {
       if (isResult(eventType) && raw.is_error === true && raw.api_error_status === 429) {
         if (!isDirect && inst.threadSlug) {
           setImmediate(() => this._handleMidTurn429(inst).catch((e) =>
-            console.warn(`[SpawnManager] mid-turn 429 handler failed for ${inst.id}: ${e.message}`)
+            log.warn({ module: MOD, event: 'midturn_429_handler_failed', instanceId: inst.id, error: e.message })
           ));
         }
       }
@@ -692,7 +694,7 @@ class SpawnManager {
           && raw.errors.some((e) => /No conversation found with session ID/i.test(String(e)))) {
         if (!isDirect && inst.threadSlug) {
           setImmediate(() => this._handleSessionLost(inst, raw).catch((e) =>
-            console.warn(`[SpawnManager] session-lost handler failed for ${inst.id}: ${e.message}`)
+            log.warn({ module: MOD, event: 'session_lost_handler_failed', instanceId: inst.id, error: e.message })
           ));
         }
       }
@@ -704,7 +706,7 @@ class SpawnManager {
               projectId: inst.projectId,
               threadSlug: inst.threadSlug,
               instanceId: inst.id,
-            }).catch((e) => console.warn(`[SpawnManager] ThreadHooks error:`, e.message));
+            }).catch((e) => log.warn({ module: MOD, event: 'threadhooks_error', error: e.message }));
           });
 
           // [需求@2026-06-10 §6.1-6.4] 自动状态机:detect mate markers,自动 handoff 下一角色
@@ -716,7 +718,7 @@ class SpawnManager {
             // [arch-debt §13 ✅] 看起来有 marker 意图但 parse 失败 → 显式 emit 失败信号
             //   不再 silent fail(2026-06-13 H 在 reason 内嵌 JSON " 撞过这个)
             const hint = 'marker pattern detected but parser returned 0 — likely "/<unescaped chars in reason/summary/question';
-            console.warn(`[SpawnManager] marker.malformed from ${inst.id}: ${hint}`);
+            log.warn({ module: MOD, event: 'marker_malformed', instanceId: inst.id, hint });
             bus.publish('marker.malformed', {
               instanceId: inst.id,
               displayName: inst.displayName,
@@ -743,7 +745,7 @@ class SpawnManager {
       if (_needsQueueFlushAfterMarkers) {
         setImmediate(() => {
           QueueDispatcher.onInstanceIdle(inst, { dispatchCb: this._queueDispatchCb })
-            .catch((e) => console.warn(`[SpawnManager] post-completion flush err: ${e.message}`));
+            .catch((e) => log.warn({ module: MOD, event: 'post_completion_flush_failed', error: e.message }));
         });
       }
     });
@@ -777,7 +779,7 @@ class SpawnManager {
         pool_slot: inst.poolSlot,
       });
     } catch (e) {
-      console.warn(`[SpawnManager] upsertInstance failed for ${inst.id}: ${e.message}`);
+      log.warn({ module: MOD, event: 'upsert_instance_failed', instanceId: inst.id, error: e.message });
     }
   }
 
@@ -1256,7 +1258,7 @@ class SpawnManager {
         projectId, threadSlug, thread: ThreadStore.get(projectId, threadSlug),
       });
     } catch (e) {
-      console.warn(`[SpawnManager] _clearPendingQuestion failed: ${e.message}`);
+      log.warn({ module: MOD, event: 'clear_pending_question_failed', error: e.message });
     }
   }
 
@@ -1280,14 +1282,14 @@ class SpawnManager {
       if (row.targetKind !== 'instance') continue;  // thread target 走别的路径
       const inst = this.instances.get(row.targetId);
       if (!inst) {
-        console.warn(`[SpawnManager] boot flush: target ${row.targetId} not in memory, skip`);
+        log.warn({ module: MOD, event: 'boot_flush_target_missing', targetId: row.targetId });
         continue;
       }
       try {
         await QueueDispatcher.onInstanceIdle(inst, { dispatchCb: this._queueDispatchCb });
         flushed++;
       } catch (e) {
-        console.warn(`[SpawnManager] boot flush ${row.targetId} failed:`, e.message);
+        log.warn({ module: MOD, event: 'boot_flush_failed', targetId: row.targetId, error: e.message });
       }
     }
     console.log(`[SpawnManager] boot flush: triggered ${flushed} target(s)`);
@@ -1298,7 +1300,7 @@ class SpawnManager {
     this.stopTtlScanner();
     const live = [...this.instances.values()].filter((i) => i.status !== 'dead');
     console.log(`[SpawnManager] shutting down ${live.length} live instances`);
-    await Promise.all(live.map((i) => i.kill().catch((e) => console.warn('kill err:', e))));
+    await Promise.all(live.map((i) => i.kill().catch((e) => log.warn({ module: MOD, event: 'kill_failed', instanceId: i.id, error: e?.message || String(e) }))));
   }
 
   // [需求@2026-06-12 §8.10 + Phase 2E §13] 全局软上限 cap_warn
@@ -1313,7 +1315,7 @@ class SpawnManager {
       try {
         recordEvent('system.cap_warn', { alive, cap });
       } catch {}
-      console.warn(`[SpawnManager] global cap soft-exceeded: ${alive}/${cap}`);
+      log.warn({ module: MOD, event: 'global_cap_soft_exceeded', alive, cap });
     }
   }
 
@@ -1377,7 +1379,7 @@ class SpawnManager {
             results.perRole[role.name].after++;
             continue;
           } catch (e) {
-            console.warn(`[SpawnManager] preheat resurrect ${role.name}-${slot} failed: ${e.message}`);
+            log.warn({ module: MOD, event: 'preheat_resurrect_failed', roleName: role.name, slot, error: e.message });
             continue;
           }
         }
@@ -1386,7 +1388,7 @@ class SpawnManager {
           (i) => ['idle', 'busy', 'spawning'].includes(i.status)
         ).length;
         if (alive >= config.globalMaxClaudeProcesses) {
-          console.warn(`[SpawnManager] preheat aborted: cap reached (${alive}/${config.globalMaxClaudeProcesses})`);
+          log.warn({ module: MOD, event: 'preheat_aborted_cap', alive, cap: config.globalMaxClaudeProcesses });
           return results;
         }
         try {
@@ -1397,7 +1399,7 @@ class SpawnManager {
           results.spawned++;
           results.perRole[role.name].after++;
         } catch (e) {
-          console.warn(`[SpawnManager] preheat ${role.name}-${slot} failed: ${e.message}`);
+          log.warn({ module: MOD, event: 'preheat_spawn_failed', roleName: role.name, slot, error: e.message });
         }
       }
     }

@@ -10,8 +10,13 @@
 //   1. orphan_pending  — pending_sends 指向不存在的 instance
 //   2. stack_drift     — DB call_stack_json != replayChain(chain) 派生结果(自愈)
 //   3. stuck_queue     — pending_sends status=queued 且 enqueued > 1h(#X4 兜底 24h auto-cancel)
-//   4. stuck_busy      — instance status=busy 且 last_active > 15min
-//   5. chain_crossings — 全库 chain 里 reason/summary 引用别的 thread slug
+//   4. stuck_busy     — instance status=busy 且 last_active > 15min
+//
+// [bug@2026-08-06] Check 5 chain_crossings 已退休 — 原本文本匹配 reason/summary
+//   里出现别的 thread slug,但用户合理跨线索引用(如"参考上一个 thread
+//   t-mrwwnh63-8g3f 里的做法")会一直触发假警。真"走串"信号已被 X2 audit
+//   (debug.instance_threadslug_flip events)覆盖:每次 threadSlug 翻转都有
+//   caller stack。要查手动跨线索文本引用仍可 GET /api/chain-crossings。
 //
 // 公共 API:start() / stop() / runOnce()
 // 允许依赖:db / messageBus / replayChain / ThreadCallStack / PendingSends
@@ -28,6 +33,8 @@ const { db, recordEvent } = require('../db');
 const { replayChain } = require('../threads/replayChain');
 const TCS = require('../threads/ThreadCallStack');
 const PendingSends = require('./PendingSends');
+const log = require('../logger');
+const MOD = 'ConsistencyCheck';
 
 const INTERVAL_MS = 5 * 60 * 1000;              // 5 分钟一扫
 const STUCK_QUEUE_WARN_MS = 60 * 60 * 1000;     // 排队 1h 未处理 → warn
@@ -48,7 +55,7 @@ function _setBaselineTs(ts) {
     db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(BASELINE_META_KEY, String(ts));
     return true;
   } catch (e) {
-    console.warn('[ConsistencyCheck] set baseline failed:', e.message);
+    log.warn({ module: MOD, event: 'baseline_set_failed', error: e.message });
     return false;
   }
 }
@@ -59,12 +66,12 @@ let _lastAlertKey = null;  // 避免重复告警刷屏,同 key 5min 内不 repea
 function start() {
   if (_interval) return;
   _interval = setInterval(() => {
-    runOnce().catch((e) => console.warn('[ConsistencyCheck] runOnce failed:', e.message));
+    runOnce().catch((e) => log.warn({ module: MOD, event: 'run_failed', phase: 'periodic', error: e.message }));
   }, INTERVAL_MS);
-  console.log(`[ConsistencyCheck] started (every ${INTERVAL_MS / 60000}m)`);
+  log.info({ module: MOD, event: 'started', intervalMinutes: INTERVAL_MS / 60000 });
   // 启动时立即跑一次(不等 5 分钟)
   setImmediate(() => {
-    runOnce().catch((e) => console.warn('[ConsistencyCheck] boot runOnce failed:', e.message));
+    runOnce().catch((e) => log.warn({ module: MOD, event: 'run_failed', phase: 'boot', error: e.message }));
   });
 }
 
@@ -93,7 +100,7 @@ async function runOnce() {
     if (orphan.length) {
       inconsistencies.push({ kind: 'orphan_pending', count: orphan.length, items: orphan });
     }
-  } catch (e) { console.warn('[ConsistencyCheck] orphan_pending failed:', e.message); }
+  } catch (e) { log.warn({ module: MOD, event: 'check_failed', check: 'orphan_pending', error: e.message }); }
 
   // ============ Check 2: stack_drift(自愈)============
   try {
@@ -130,14 +137,14 @@ async function runOnce() {
           TCS.save(t.project_id, t.slug, derived.stack);
           selfHealed++;
         } catch (e) {
-          console.warn(`[ConsistencyCheck] self-heal ${t.slug} failed:`, e.message);
+          log.warn({ module: MOD, event: 'self_heal_failed', threadSlug: t.slug, error: e.message });
         }
       }
     }
     if (drifts.length) {
       inconsistencies.push({ kind: 'stack_drift', count: drifts.length, items: drifts, selfHealed: drifts.length });
     }
-  } catch (e) { console.warn('[ConsistencyCheck] stack_drift failed:', e.message); }
+  } catch (e) { log.warn({ module: MOD, event: 'check_failed', check: 'stack_drift', error: e.message }); }
 
   // ============ Check 3: stuck_queue(warn > 1h,auto-flush 尝试,auto-cancel > 24h)============
   // [需求@2026-07-30 #196] 加 auto-flush 尝试 — 补 boot 时错过或从没触发过的 pending
@@ -170,7 +177,7 @@ async function runOnce() {
             pendingSendId: p.id, threadSlug: p.thread_slug, reason: 'stuck_24h', ts: Date.now(),
           });
         } catch (e) {
-          console.warn(`[ConsistencyCheck] auto-cancel ps=${p.id} failed:`, e.message);
+          log.warn({ module: MOD, event: 'auto_cancel_failed', pendingSendId: p.id, error: e.message });
         }
       } else {
         warnItems.push({ ...p, stuckMinutes: Math.round((now - p.enqueued_at) / 60000) });
@@ -203,7 +210,7 @@ async function runOnce() {
         kind: 'stuck_queue_auto_cancelled', count: autoCancelled.length, items: autoCancelled,
       });
     }
-  } catch (e) { console.warn('[ConsistencyCheck] stuck_queue failed:', e.message); }
+  } catch (e) { log.warn({ module: MOD, event: 'check_failed', check: 'stuck_queue', error: e.message }); }
 
   // ============ Check 4: stuck_busy ============
   // [bug@2026-08-02 X1 修复] role_instances.last_active_at 只在 status_change 时持久化
@@ -234,48 +241,11 @@ async function runOnce() {
     if (stuck.length) {
       inconsistencies.push({ kind: 'stuck_busy', count: stuck.length, items: stuck });
     }
-  } catch (e) { console.warn('[ConsistencyCheck] stuck_busy failed:', e.message); }
+  } catch (e) { log.warn({ module: MOD, event: 'check_failed', check: 'stuck_busy', error: e.message }); }
 
-  // ============ Check 5: chain_crossings(取 baseline 与 24h 窗中较近的)============
-  try {
-    // baseline 优先:user 若"确认已知",只报 baseline 之后的
-    // 否则:24h 滑动窗
-    const baselineTs = _getBaselineTs();
-    const sinceMs = Math.max(baselineTs, Date.now() - CHAIN_CROSSING_WINDOW_MS);
-    const rows = db.prepare(`SELECT slug, project_id, metadata_json FROM threads`).all();
-    const crossings = [];
-    for (const r of rows) {
-      let chain;
-      try { chain = JSON.parse(r.metadata_json || '{}').dispatch_chain || []; }
-      catch { continue; }
-      chain.forEach((c, i) => {
-        if (c.ts < sinceMs) return;
-        const text = (c.reason || c.summary || '');
-        const slugRefs = text.match(/t-m[a-z0-9]{7}-[a-z0-9]{4}/g) || [];
-        for (const s of slugRefs) {
-          if (s !== r.slug) {
-            crossings.push({
-              host: r.slug,
-              projectId: r.project_id,
-              idx: i,
-              ts: c.ts,
-              kind: c.kind,
-              otherSlug: s,
-            });
-            break;
-          }
-        }
-      });
-    }
-    if (crossings.length) {
-      inconsistencies.push({
-        kind: 'chain_crossings', count: crossings.length,
-        items: crossings.slice(-10),
-        windowSinceTs: sinceMs,
-        baselineActive: baselineTs > 0,
-      });
-    }
-  } catch (e) { console.warn('[ConsistencyCheck] chain_crossings failed:', e.message); }
+  // [bug@2026-08-06] Check 5 chain_crossings 已退休 — 见文件顶部注释。
+  //   真"走串"信号看 X2 audit:GET /api/audit/threadslug-flips
+  //   文本引用扫描仍在 /api/chain-crossings(dashboard "Chain 自检" tab 手动用)
 
   // ============ 汇总 + 告警 ============
   if (inconsistencies.length) {
@@ -292,12 +262,12 @@ async function runOnce() {
     const isFresh = !_lastAlertKey || _lastAlertKey.key !== alertKey || (now - _lastAlertKey.ts > INTERVAL_MS);
     if (isFresh) {
       _lastAlertKey = { key: alertKey, ts: now };
-      console.warn(`[ConsistencyCheck] ⚠ ${summary.totalItems} 项异常 (${summary.kinds.join(', ')}), 自愈 ${selfHealed}`);
+      log.warn({ module: MOD, event: 'alert', totalItems: summary.totalItems, kinds: summary.kinds, selfHealed });
       try {
         recordEvent('system.consistency_alert', {
           summary, inconsistencies,
         });
-      } catch (e) { console.warn('[ConsistencyCheck] recordEvent failed:', e.message); }
+      } catch (e) { log.warn({ module: MOD, event: 'record_event_failed', error: e.message }); }
     }
     // WS 广播每次都发,UI 显示实时红条
     bus.publish('system.consistency_alert', { summary, inconsistencies });

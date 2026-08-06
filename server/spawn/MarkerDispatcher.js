@@ -28,6 +28,8 @@ const roleCatalog = require('../roles/RoleCatalog');
 const HandoffTracker = require('./HandoffTracker');
 // [Phase 3.2 @2026-06-17] 栈 SSOT — handoff/done/blocked/reject 同步更新栈
 const TCS = require('../threads/ThreadCallStack');
+const log = require('../logger');
+const MOD = 'MarkerDispatcher';
 // [需求@2026-06-19] 派工文件落盘
 const DispatchLogWriter = require('../threads/DispatchLogWriter');
 
@@ -92,7 +94,7 @@ function _updateStack(projectId, threadSlug, _mutatorIgnored) {
         db.prepare(`UPDATE threads SET outcome = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
           .run(outcome, Date.now(), projectId, threadSlug);
       } catch (e) {
-        console.warn(`[MarkerDispatcher] outcome write failed: ${e.message}`);
+        log.warn({ module: MOD, event: 'outcome_write_failed', threadSlug, error: e.message });
       }
     }
 
@@ -103,10 +105,10 @@ function _updateStack(projectId, threadSlug, _mutatorIgnored) {
       db.prepare(`UPDATE threads SET stage = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
         .run(derived, Date.now(), projectId, threadSlug);
     } catch (e) {
-      console.warn(`[MarkerDispatcher] derive stage write failed: ${e.message}`);
+      log.warn({ module: MOD, event: 'derive_stage_write_failed', threadSlug, error: e.message });
     }
   } catch (e) {
-    console.warn(`[MarkerDispatcher] stack update failed for ${threadSlug}: ${e.message}`);
+    log.warn({ module: MOD, event: 'stack_update_failed', threadSlug, error: e.message });
   }
 }
 
@@ -149,25 +151,25 @@ async function handleMarkers(fromInst, markers, { sendToThread }) {
   const reject = markers.find((m) => m.kind === 'reject');
   if (reject) {
     try { _performReject(fromInst, reject.reason, reject.bounceTo, { sendToThread }); }
-    catch (e) { console.warn(`[MarkerDispatcher] reject marker failed (${fromInst.id}):`, e.message); }
+    catch (e) { log.warn({ module: MOD, event: 'reject_marker_failed', instanceId: fromInst.id, error: e.message }); }
     return;
   }
   const done = markers.find((m) => m.kind === 'done');
   if (done) {
     try { _performDone(fromInst, done.summary, { sendToThread }); }
-    catch (e) { console.warn(`[MarkerDispatcher] done marker failed (${fromInst.id}):`, e.message); }
+    catch (e) { log.warn({ module: MOD, event: 'done_marker_failed', instanceId: fromInst.id, error: e.message }); }
     if (markers.length > 1) {
-      console.warn(`[MarkerDispatcher] ignoring ${markers.length - 1} subsequent marker(s) after <mate:done /> from ${fromInst.id}`);
+      log.warn({ module: MOD, event: 'ignoring_markers_after_done', instanceId: fromInst.id, ignoredCount: markers.length - 1 });
     }
     return;
   }
   const blocked = markers.find((m) => m.kind === 'blocked');
   if (blocked) {
     try { _performBlocked(fromInst, blocked.question, blocked.severity); }
-    catch (e) { console.warn(`[MarkerDispatcher] blocked marker failed (${fromInst.id}):`, e.message); }
+    catch (e) { log.warn({ module: MOD, event: 'blocked_marker_failed', instanceId: fromInst.id, error: e.message }); }
     const others = markers.filter((m) => m.kind !== 'blocked');
     if (others.length) {
-      console.warn(`[MarkerDispatcher] ignoring ${others.length} non-blocked marker(s) alongside <mate:blocked /> from ${fromInst.id}`);
+      log.warn({ module: MOD, event: 'ignoring_markers_alongside_blocked', instanceId: fromInst.id, ignoredCount: others.length });
     }
     return;
   }
@@ -178,10 +180,10 @@ async function handleMarkers(fromInst, markers, { sendToThread }) {
     try {
       await _performHandoff(fromInst, 'mate-R', bounce.reason, { sendToThread });
     } catch (e) {
-      console.warn(`[MarkerDispatcher] bounce marker failed (${fromInst.id}):`, e.message);
+      log.warn({ module: MOD, event: 'bounce_marker_failed', instanceId: fromInst.id, error: e.message });
     }
     if (markers.length > 1) {
-      console.warn(`[MarkerDispatcher] ignoring ${markers.length - 1} subsequent marker(s) after <mate:bounce /> from ${fromInst.id}`);
+      log.warn({ module: MOD, event: 'ignoring_markers_after_bounce', instanceId: fromInst.id, ignoredCount: markers.length - 1 });
     }
     return;
   }
@@ -190,7 +192,7 @@ async function handleMarkers(fromInst, markers, { sendToThread }) {
     try {
       await _performHandoff(fromInst, handoff.target, handoff.reason, { sendToThread, taskSlug: handoff.taskSlug });
     } catch (e) {
-      console.warn(`[MarkerDispatcher] handoff marker failed (${fromInst.id}):`, e.message);
+      log.warn({ module: MOD, event: 'handoff_marker_failed', instanceId: fromInst.id, error: e.message });
       // [需求@2026-06-12 Phase 2E §10] 派工失败 → 通知前端红色卡片
       bus.publish('thread.handoff.failed', {
         projectId: fromInst.projectId,
@@ -211,7 +213,7 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread, tas
   const { roleName: targetRoleName, poolSlot: targetSlot } = parseMarkerTarget(targetSpec);
   const targetRole = roleCatalog.get(targetRoleName);
   if (!targetRole) {
-    console.warn(`[MarkerDispatcher] handoff target "${targetSpec}" → role "${targetRoleName}" not found in catalog`);
+    log.warn({ module: MOD, event: 'handoff_target_role_missing', targetSpec, targetRoleName });
     return;
   }
   const project = stmts.getProject.get(fromInst.projectId);
@@ -305,7 +307,7 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread, tas
       chain: updated?.metadata?.dispatch_chain || [],
     });
   } catch (e) {
-    console.warn(`[MarkerDispatcher] dispatch_chain append failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'chain_append_failed', phase: 'handoff', error: e.message });
   }
 
   // [Phase 3.2 @2026-06-17] 栈双写 — handoff = push/pop/bounce 三种语义
@@ -383,7 +385,7 @@ async function _performHandoff(fromInst, targetSpec, reason, { sendToThread, tas
       });
     }
   } catch (e) {
-    console.warn(`[MarkerDispatcher] dispatch log write failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'dispatch_log_write_failed', phase: 'handoff', error: e.message });
   }
 
   // [需求@2026-06-12 Phase 2E §10] 派工进度三阶段
@@ -436,7 +438,7 @@ function _performDone(fromInst, summary, { sendToThread }) {
   //       线索已完成,不应再有 done pop 动作")。这两层都不再 append chain 也
   //       不再发 R-notify/callback,循环被切断。
   if (thread?.outcome === 'verified') {
-    console.warn(`[MarkerDispatcher] _performDone: thread ${threadSlug} already verified — done from ${fromInst.id} ignored (loop guard)`);
+    log.warn({ module: MOD, event: 'done_ignored_already_verified', threadSlug, instanceId: fromInst.id });
     recordEvent('thread.done_ignored_verified', { fromInstanceId: fromInst.id, summary: (summary || '').slice(0, 200) },
       { projectId, threadSlug });
     return;
@@ -447,7 +449,7 @@ function _performDone(fromInst, summary, { sendToThread }) {
       const stackCheck = JSON.parse(stackJson);
       const framesCheck = Array.isArray(stackCheck?.frames) ? stackCheck.frames : [];
       if (framesCheck.length === 0) {
-        console.warn(`[MarkerDispatcher] _performDone: stack empty for ${threadSlug} — done from ${fromInst.id} ignored (loop guard)`);
+        log.warn({ module: MOD, event: 'done_ignored_stack_empty', threadSlug, instanceId: fromInst.id });
         recordEvent('thread.done_ignored_stack_empty', { fromInstanceId: fromInst.id, summary: (summary || '').slice(0, 200) },
           { projectId, threadSlug });
         return;
@@ -455,14 +457,14 @@ function _performDone(fromInst, summary, { sendToThread }) {
       // 栈非空但 fromInst 不在栈里 = stale done(该 inst 早已 pop 出去)
       const inStack = framesCheck.some((f) => f.instanceId === fromInst.id);
       if (!inStack) {
-        console.warn(`[MarkerDispatcher] _performDone: ${fromInst.id} not in stack for ${threadSlug} — stale done ignored (loop guard)`);
+        log.warn({ module: MOD, event: 'done_ignored_not_in_stack', threadSlug, instanceId: fromInst.id });
         recordEvent('thread.done_ignored_not_in_stack', { fromInstanceId: fromInst.id, summary: (summary || '').slice(0, 200) },
           { projectId, threadSlug });
         return;
       }
     }
   } catch (e) {
-    console.warn(`[MarkerDispatcher] _performDone loop-guard stack parse failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'loop_guard_parse_failed', threadSlug, error: e.message });
     // parse 失败 → 保守不 no-op,继续走原逻辑
   }
 
@@ -511,7 +513,7 @@ function _performDone(fromInst, summary, { sendToThread }) {
       }
     }
   } catch (e) {
-    console.warn(`[MarkerDispatcher] stack-lookup caller failed: ${e.message}, fallback to chain reverse-scan`);
+    log.warn({ module: MOD, event: 'stack_lookup_caller_failed', threadSlug, fallback: 'chain_reverse_scan', error: e.message });
   }
 
   // Fallback: 反向扫 chain 跳 callback(770ec88 算法)
@@ -551,7 +553,7 @@ function _performDone(fromInst, summary, { sendToThread }) {
       chain: updated?.metadata?.dispatch_chain || [],
     });
   } catch (e) {
-    console.warn(`[MarkerDispatcher] dispatch_chain done append failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'chain_append_failed', phase: 'done', error: e.message });
   }
 
   // [Phase 3.2 @2026-06-17] 栈双写 — done = pop frame
@@ -591,7 +593,7 @@ function _performDone(fromInst, summary, { sendToThread }) {
       });
     }
   } catch (e) {
-    console.warn(`[MarkerDispatcher] dispatch log onDone failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'dispatch_log_write_failed', phase: 'done', error: e.message });
   }
 
   // 判 terminal 还是 pop:
@@ -603,13 +605,13 @@ function _performDone(fromInst, summary, { sendToThread }) {
   if (isTerminalDone) {
     // R 在 stack 底 emit done(或者根本没 caller)= 真 verified
     try { ThreadStore.setStage(projectId, threadSlug, 'verified'); } catch (e) {
-      console.warn(`[MarkerDispatcher] setStage verified failed:`, e.message);
+      log.warn({ module: MOD, event: 'setstage_verified_failed', threadSlug, error: e.message });
     }
     // [Phase 3.2 @2026-06-17] outcome 字段也写(栈空 + verified)
     try {
       db.prepare(`UPDATE threads SET outcome = 'verified', updated_at = ? WHERE project_id = ? AND slug = ?`)
         .run(Date.now(), projectId, threadSlug);
-    } catch (e) { console.warn(`[MarkerDispatcher] outcome write failed: ${e.message}`); }
+    } catch (e) { log.warn({ module: MOD, event: 'outcome_write_failed', threadSlug, phase: 'done', error: e.message }); }
     // 如果 caller 是 R,把 summary 也送给 R 让它跟 user 翻译(可选,R 可能没 instance 在)
     // [bug@2026-06-19 #162] 原条件只认 'requirements',但 callerRoleType 实际是 'mate-R'
     //   (stack lookup roleMap['R']='mate-R',chain fallback seg.fromRole='mate-R')
@@ -631,7 +633,7 @@ function _performDone(fromInst, summary, { sendToThread }) {
           });
         }
       } catch (e) {
-        console.warn(`[MarkerDispatcher] terminal-done R-notify failed:`, e.message);
+        log.warn({ module: MOD, event: 'r_notify_failed', threadSlug, error: e.message });
       }
     }
     bus.publish('thread.done', {
@@ -670,7 +672,7 @@ function _performDone(fromInst, summary, { sendToThread }) {
         });
       }
     } catch (e) {
-      console.warn(`[MarkerDispatcher] pop callback to ${callerInstId} failed:`, e.message);
+      log.warn({ module: MOD, event: 'pop_callback_failed', callerInstId, error: e.message });
     }
   }
 }
@@ -694,7 +696,7 @@ function _performBlocked(fromInst, question, severity) {
     db.prepare(`UPDATE threads SET metadata_json = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
       .run(JSON.stringify(meta), Date.now(), fromInst.projectId, fromInst.threadSlug);
   } catch (e) {
-    console.warn(`[MarkerDispatcher] blocked metadata persist failed:`, e.message);
+    log.warn({ module: MOD, event: 'blocked_metadata_persist_failed', threadSlug, error: e.message });
     return;
   }
   // [Phase 2G M1.2] append blocked segment to chain
@@ -713,7 +715,7 @@ function _performBlocked(fromInst, question, severity) {
       chain: updated?.metadata?.dispatch_chain || [],
     });
   } catch (e) {
-    console.warn(`[MarkerDispatcher] dispatch_chain blocked append failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'chain_append_failed', phase: 'blocked', error: e.message });
   }
   // [Phase 3.2 @2026-06-17] 栈双写 — blocked = 栈顶 frame 状态 blocked + pending_question
   // [bug@2026-07-28 #186] mutator 兼容留;真正驱动是新追加的 blocked seg,
@@ -742,7 +744,7 @@ function _performBlocked(fromInst, question, severity) {
       });
     }
   } catch (e) {
-    console.warn(`[MarkerDispatcher] dispatch log onBlocked failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'dispatch_log_write_failed', phase: 'blocked', error: e.message });
   }
   bus.publish('thread.blocked', {
     projectId: fromInst.projectId,
@@ -777,7 +779,7 @@ function _performReject(fromInst, reason, bounceTo, { sendToThread } = {}) {
       chain: updated?.metadata?.dispatch_chain || [],
     });
   } catch (e) {
-    console.warn(`[MarkerDispatcher] reject chain append failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'chain_append_failed', phase: 'reject', error: e.message });
     return;
   }
 
@@ -820,7 +822,7 @@ function _performReject(fromInst, reason, bounceTo, { sendToThread } = {}) {
       });
     }
   } catch (e) {
-    console.warn(`[MarkerDispatcher] dispatch log onReject failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'dispatch_log_write_failed', phase: 'reject', error: e.message });
   }
 
   bus.publish('dispatch.rejected', {
@@ -857,7 +859,7 @@ function _performReject(fromInst, reason, bounceTo, { sendToThread } = {}) {
         });
       }
     } catch (e) {
-      console.warn(`[MarkerDispatcher] reject bounce_to ${bounceTo} routing failed:`, e.message);
+      log.warn({ module: MOD, event: 'reject_bounce_routing_failed', bounceTo, error: e.message });
     }
   }
 }

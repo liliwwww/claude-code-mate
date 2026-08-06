@@ -698,9 +698,14 @@ ${text}
   });
 
   // [需求@2026-07-29 #192] chain 走串扫描 — 全库查各 thread chain 里 reason/summary
-  //   引用别的 thread slug 的段(通常是 pool 复用 race 造成的错记)。
+  //   引用别的 thread slug 的段(原设想是识别 pool 复用 race 造成的错记)。
   //   Query: ?since=<ISO time>  → 只返 ts >= since 的走串,默认全部
   //   使用:UI 一键自查 + 命令行 scripts/scan_chain_crossings.js 用同一 endpoint
+  //
+  // [bug@2026-08-06] 语义降级:仅文本引用扫描,不再当"异常"信号
+  //   合理跨线索引用("参考 t-xxx 里的做法")会一直命中假警,导致 baseline
+  //   一直被 ack。真"走串"看 X2 audit /api/audit/threadslug-flips。
+  //   response.advisory=true 提示 client 这只是引用检索,非异常告警。
   // [需求@2026-07-30 X1 #195] 触发一次一致性检查(手动 UI 用) — 返回所有异常
   r.get('/consistency-check', async (req, res) => {
     try {
@@ -807,6 +812,8 @@ ${text}
         since: sinceMs ? new Date(sinceMs).toISOString() : null,
         latest: filtered.length ? new Date(filtered[filtered.length - 1].ts).toISOString() : null,
         crossings: filtered,
+        advisory: true,
+        advisoryNote: '仅文本引用扫描,合理跨线索引用会命中;真"走串"检测请查 /api/audit/threadslug-flips',
       });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -1333,13 +1340,48 @@ ${text}
 
       // ---------------- action=retry ----------------
       if (action === 'retry') {
-        if (!stuckInst) return res.status(404).json({ error: `instance ${stuckId} not in memory (dead?)` });
-        // [bug@2026-07-20] 之前拿"最新 user_to_role",但 B 跑 tool 循环时最新几条全是
-        //   tool_result(content[0].type='tool_result',无 text)→ 提取空串报错。
-        //   真正的 handoff prompt 是 chain 里 handoff seg 之后的第一条 user_to_role,
-        //   用 chain[N].ts 定位就精准。
+        // [bug@2026-08-06 #201] stuckInst 不在 memory / 已 dead 时,不 404 —
+        //   fallback:用 chain 里的 targetSpec + roleName 让 mate 走 pool 分配
+        //   (自动 spawn 一个 fresh 的 role,slot 1)。老 dead 实例不复用。
         if (!lastHandoffToStuck) {
           return res.status(400).json({ error: `no handoff seg found for ${stuckId} in chain — cannot retry` });
+        }
+        // 如果 target 不在 memory 或 dead → 用 role type 派工,让 pool 分配
+        if (!stuckInst || stuckInst.status === 'dead') {
+          const roleName = lastHandoffToStuck.resolvedRole || lastHandoffToStuck.toRole;
+          const roleCatalog = require('../roles/RoleCatalog');
+          const role = roleCatalog.get(roleName);
+          if (!role) return res.status(400).json({ error: `cannot determine role for retry (from chain seg toRole=${roleName})` });
+          const anchorTs = (lastHandoffToStuck.ts || 0) - 5000;
+          const row2 = db.prepare(`
+            SELECT payload_json FROM messages
+            WHERE instance_id = ? AND direction = 'user_to_role' AND thread_slug = ? AND ts >= ?
+            ORDER BY ts ASC LIMIT 1
+          `).get(stuckId, req.params.slug, anchorTs);
+          if (!row2) return res.status(400).json({ error: 'no prior user_to_role prompt to reuse for retry' });
+          let text2;
+          try {
+            const p = JSON.parse(row2.payload_json);
+            const c = p?.message?.content;
+            text2 = Array.isArray(c) ? c.filter((x) => x.type === 'text').map((x) => x.text).join('') : (typeof c === 'string' ? c : '');
+          } catch { return res.status(500).json({ error: 'payload parse failed' }); }
+          if (!text2) return res.status(400).json({ error: 'prior prompt no text' });
+          text2 = text2.replace(/^\[Thread:\s*[^\]]+\]\n\n/, '');
+          // 用 roleType + targetSlot(不指定 targetInstance)让 pool 分配 fresh
+          const targetSlot = lastHandoffToStuck.resolvedSlot || stuckFrame.slot || null;
+          const result2 = spawnManager.sendToThread({
+            projectId: req.project.id,
+            projectRootDir: req.project.root_dir,
+            threadSlug: req.params.slug,
+            text: text2,
+            roleType: role.type,
+            targetSlot,
+            fromMarker: false,
+          });
+          if (result2?.deferred) {
+            return res.json({ ok: true, action, deferred: true, pendingSendId: result2.pendingSendId, target: 'pool-spawned', hint: 'old dead inst replaced' });
+          }
+          return res.json({ ok: true, action, target: 'pool-spawned', displayName: result2?.displayName || 'new pool inst', resent: true, hint: `dead ${stuckId} replaced by fresh pool inst` });
         }
         // 用 chain handoff.ts 作为 anchor,找 ts >= anchor 的最早一条 user_to_role
         // (放宽 -5s 容忍 handoff record 和 message record 之间的微小时间偏差)

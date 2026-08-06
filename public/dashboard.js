@@ -1852,7 +1852,7 @@ function renderChaincheckResults(data) {
     return;
   }
   summary.style.color = 'var(--accent-yellow, #d8a33a)';
-  summary.textContent = `⚠ ${data.total} 走串 across ${data.threads} threads · 最新 ${data.latest}`;
+  summary.textContent = `⚠ ${data.total} 处跨线索文本引用 across ${data.threads} threads · 最新 ${data.latest}`;
   // group by host
   const byHost = {};
   for (const c of data.crossings) {
@@ -1860,6 +1860,15 @@ function renderChaincheckResults(data) {
     byHost[c.host].push(c);
   }
   const rows = [];
+  if (data.advisory) {
+    // [bug@2026-08-06] 文本扫描本身不是"走串"信号,合理引用也命中,加提示
+    rows.push(`
+      <div style="margin:4px 0 10px;padding:8px 10px;background:rgba(216,163,58,0.08);border-left:3px solid var(--accent-yellow, #d8a33a);border-radius:3px;font-size:11px;color:var(--text-secondary);line-height:1.5">
+        ⚠ 这只是<strong>文本引用扫描</strong>(在 chain 段 reason/summary 里搜别的 slug 字符串) —— 用户合理跨线索引用(如"参考 t-xxx 里的做法")也会命中,不代表真"走串"。<br>
+        真跨线索污染诊断请看 <code style="background:var(--bg-elevated);padding:1px 4px;border-radius:2px">/api/audit/threadslug-flips</code>(X2 audit)。
+      </div>
+    `);
+  }
   for (const [host, list] of Object.entries(byHost)) {
     rows.push(`
       <div style="margin:12px 0;padding:10px;background:var(--bg-elevated);border-left:3px solid var(--accent-red, #ff6b6b);border-radius:4px">
