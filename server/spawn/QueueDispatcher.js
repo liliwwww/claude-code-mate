@@ -26,6 +26,8 @@
 
 const bus = require('../messageBus');
 const PendingSends = require('./PendingSends');
+const log = require('../logger');
+const MOD = 'QueueDispatcher';
 
 /**
  * marker handoff 目标 busy 时调用 — 落 DB + 推 busy_prompt。
@@ -220,7 +222,7 @@ async function _tryFlushFor(targetKind, targetId, { dispatchCb }) {
   try {
     await dispatchCb(next);
   } catch (e) {
-    console.error(`[QueueDispatcher] flush failed for ${next.id}:`, e.message);
+    log.error({ module: MOD, event: 'flush_failed', pendingSendId: next.id, error: e.message });
     PendingSends.markCancelled(next.id, `flush-error: ${e.message}`);
     bus.publish('queue.cancelled', {
       pendingSendId: next.id,

@@ -26,6 +26,8 @@
 const Database = require('better-sqlite3');
 const path = require('node:path');
 const config = require('./config');
+const log = require('./logger');
+const MOD = 'db';
 
 const db = new Database(config.paths.sqlite);
 
@@ -208,7 +210,7 @@ if (curVersion < 4) {
       db.prepare(`DELETE FROM threads WHERE project_id = ? AND slug = 'mate-self'`).run(sys.id);
     }
   } catch (e) {
-    console.warn(`[db] v4 mate-self cleanup failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'migration_failed', version: 'v4', op: 'mate_self_cleanup', error: e.message });
   }
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '4');
   curVersion = 4;
@@ -266,7 +268,7 @@ if (curVersion < 6) {
         console.log(`[db v6] renamed ${oldName} → ${newName}: role_instances=${r1.changes}, messages=${r2.changes}`);
       }
     } catch (e) {
-      console.warn(`[db v6] rename ${oldName} → ${newName} failed: ${e.message}`);
+      log.warn({ module: MOD, event: 'migration_failed', version: 'v6', op: 'rename', oldName, newName, error: e.message });
     }
   }
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '6');
@@ -373,7 +375,7 @@ if (curVersion < 8) {
     tx();
     console.log(`[db v8] FTS5 backfill: ${n} indexed, ${skipped} skipped (empty text)`);
   } catch (e) {
-    console.warn(`[db v8] FTS5 setup failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'migration_failed', version: 'v8', op: 'fts5_setup', error: e.message });
   }
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '8');
   curVersion = 8;
@@ -433,7 +435,7 @@ if (curVersion < 9) {
     tx();
     console.log(`[db v9] FTS5 rebuilt: ${n} indexed, ${skipped} skipped`);
   } catch (e) {
-    console.warn(`[db v9] FTS5 rebuild failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'migration_failed', version: 'v9', op: 'fts5_rebuild', error: e.message });
   }
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '9');
   curVersion = 9;
@@ -488,7 +490,7 @@ if (curVersion < 10) {
     tx();
     console.log(`[db v10] FTS5 rebuilt with trigram tokenizer: ${n} indexed, ${skipped} skipped`);
   } catch (e) {
-    console.warn(`[db v10] FTS5 trigram rebuild failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'migration_failed', version: 'v10', op: 'fts5_trigram_rebuild', error: e.message });
   }
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '10');
   curVersion = 10;
@@ -530,7 +532,7 @@ if (curVersion < 12) {
   try {
     db.prepare(`UPDATE projects SET dispatch_log_enabled = 1 WHERE name = 'kb_knowledge'`).run();
   } catch (e) {
-    console.warn(`[db v12] enable kb_knowledge dispatch log failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'migration_failed', version: 'v12', op: 'enable_dispatch_log', error: e.message });
   }
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).run('schema_version', '12');
   curVersion = 12;
@@ -733,7 +735,7 @@ module.exports = {
     } catch (e) {
       // FTS 失败不阻塞主写入
       if (!recordMessage._ftsWarned) {
-        console.warn(`[db] FTS5 insert failed (will only warn once): ${e.message}`);
+        log.warn({ module: MOD, event: 'fts5_insert_failed', note: 'warn_once', error: e.message });
         recordMessage._ftsWarned = true;
       }
     }

@@ -22,6 +22,8 @@ const path = require('node:path');
 const config = require('./config');
 const roleCatalog = require('./roles/RoleCatalog');
 const spawnManager = require('./spawn/SpawnManager');
+const log = require('./logger');
+const MOD = 'boot';
 const { buildRouter } = require('./api/http');
 const { attach: attachWs } = require('./api/ws');
 
@@ -44,7 +46,7 @@ if (config.preheatPoolOnBoot) {
         });
         console.log(`[boot] pool preheat: spawned ${r.spawned}, skipped existing ${r.skipped}`);
       } catch (e) {
-        console.warn('[boot] pool preheat failed:', e.message);
+        log.warn({ module: MOD, event: 'pool_preheat_failed', error: e.message });
       }
     });
   } else {
@@ -65,7 +67,7 @@ ConsistencyCheck.start();
 //   补漏"target disconnected 时 queued busy 项永不 flush"的洞
 setImmediate(() => {
   spawnManager.bootFlushPendingQueue().catch((e) =>
-    console.warn('[boot] bootFlushPendingQueue failed:', e.message)
+    log.warn({ module: MOD, event: 'boot_flush_pending_queue_failed', error: e.message })
   );
 });
 
@@ -106,8 +108,7 @@ attachWs(server);
 server.listen(config.port, '127.0.0.1', () => {
   console.log(`[boot] listening on http://127.0.0.1:${config.port}`);
   if (config.warnings.length) {
-    console.warn('[boot] warnings:');
-    for (const w of config.warnings) console.warn('  -', w);
+    for (const w of config.warnings) log.warn({ module: MOD, event: 'config_warning', warning: w });
   }
 });
 
@@ -119,7 +120,7 @@ async function shutdown(reason) {
     ConsistencyCheck.stop();
     await spawnManager.shutdown();
   } catch (e) {
-    console.error('[shutdown] spawnManager.shutdown error:', e);
+    log.error({ module: 'shutdown', event: 'spawn_manager_shutdown_failed', error: e?.message || String(e) });
   }
   server.close(() => process.exit(0));
   // Hard exit after 5s if server.close hangs
@@ -128,4 +129,4 @@ async function shutdown(reason) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('uncaughtException', (e) => { console.error('uncaught:', e); shutdown('uncaughtException'); });
+process.on('uncaughtException', (e) => { log.error({ module: 'boot', event: 'uncaught_exception', error: e?.message || String(e), stack: e?.stack }); shutdown('uncaughtException'); });

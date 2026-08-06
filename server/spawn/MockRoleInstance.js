@@ -32,6 +32,8 @@
 // 用 crypto.randomUUID(node 内置)替代 uuid 依赖
 const { randomUUID } = require('node:crypto');
 const uuidv4 = () => randomUUID();
+const log = require('../logger');
+const MOD = 'MockRoleInstance';
 
 // 默认脚本:任何输入都简单 ack + emit result(无 marker → mate 不会触发 dispatch)
 const DEFAULT_SCRIPTS = {
@@ -136,7 +138,7 @@ class MockRoleInstance {
     const handlers = this._listeners.get(event);
     if (!handlers) return;
     for (const h of handlers) {
-      try { h(payload); } catch (e) { console.error(`[MockRoleInstance ${this.id}] listener error on ${event}:`, e); }
+      try { h(payload); } catch (e) { log.error({ module: MOD, event: 'listener_error', instanceId: this.id, listenerEvent: event, error: e?.message || String(e) }); }
     }
   }
 
@@ -328,7 +330,7 @@ class MockRoleInstance {
       this._emit('turn_error', resultEvent);
       this._setStatus('idle');
     } else {
-      console.warn(`[MockRoleInstance ${this.id}] unknown script ev type: ${ev.type}`);
+      log.warn({ module: MOD, event: 'unknown_script_ev', instanceId: this.id, evType: ev.type });
     }
   }
 

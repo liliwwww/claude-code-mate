@@ -28,6 +28,9 @@
 //   R 不在池里 — per-thread 独占,无 slot 概念。
 // ============================================================================
 
+const log = require('../logger');
+const MOD = 'SlotPool';
+
 // FIFO queue 工具(简单数组实现 — 队列规模 ≤ 几十 条,无性能问题)
 function newQueue() { return []; }
 function qEnqueue(q, item) { q.push(item); }
@@ -276,8 +279,7 @@ function rebuildFromStacks(stackEntries) {
 
     // 检查:同 slot 最多一个 owner
     if (runningOrActive.length > 1) {
-      console.warn(`[SlotPool rebuild] inconsistency: ${k} has ${runningOrActive.length} active threads:`,
-        runningOrActive.map((e) => e.threadId));
+      log.warn({ module: MOD, event: 'rebuild_inconsistency', poolKey: k, activeCount: runningOrActive.length, threadIds: runningOrActive.map((e) => e.threadId) });
       // 取第一个当 owner,其余忽略(数据已经坏,只能粗暴恢复)
     }
     if (runningOrActive.length >= 1) {

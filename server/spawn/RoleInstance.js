@@ -35,6 +35,8 @@
 const { spawn, execSync } = require('node:child_process');
 const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
+const log = require('../logger');
+const MOD = 'RoleInstance';
 const { StreamParser, isResult, isUserEcho, isSystemInit } = require('./streamParser');
 
 function buildUserMessage(text) {
@@ -166,7 +168,7 @@ class RoleInstance {
     const handlers = this._listeners.get(event);
     if (!handlers) return;
     for (const h of handlers) {
-      try { h(payload); } catch (e) { console.error(`[RoleInstance ${this.id}] listener error on ${event}:`, e); }
+      try { h(payload); } catch (e) { log.error({ module: MOD, event: 'listener_error', instanceId: this.id, listenerEvent: event, error: e?.message || String(e) }); }
     }
   }
 
@@ -241,7 +243,7 @@ class RoleInstance {
       try {
         this._child.stdin.write(JSON.stringify(buildUserMessage(greetingText)) + '\n');
       } catch (e) {
-        console.error(`[RoleInstance ${this.id}] greeting write failed:`, e);
+        log.error({ module: MOD, event: 'greeting_write_failed', instanceId: this.id, error: e?.message || String(e) });
       }
     } else if (this._pendingUserText) {
       // Lazy resurrection path: flush the queued user message as first stdin
@@ -257,17 +259,17 @@ class RoleInstance {
         this._child.stdin.write(JSON.stringify(payload) + '\n');
         this._pendingUserText = null;
       } catch (e) {
-        console.error(`[RoleInstance ${this.id}] pending stdin write failed:`, e);
+        log.error({ module: MOD, event: 'pending_stdin_write_failed', instanceId: this.id, error: e?.message || String(e) });
       }
     }
 
     this._parser = new StreamParser({
       onEvent: ({ eventType, raw }) => this._handleEvent(eventType, raw),
       onParseError: (line, err) => {
-        console.warn(`[RoleInstance ${this.id}] parse error: ${err.message}; line head: ${line.slice(0, 200)}`);
+        log.warn({ module: MOD, event: 'stream_parse_error', instanceId: this.id, error: err.message, lineHead: line.slice(0, 200) });
       },
       onLineOverflow: (size) => {
-        console.warn(`[RoleInstance ${this.id}] dropped oversized line buffer: ${size} bytes`);
+        log.warn({ module: MOD, event: 'dropped_oversized_line', instanceId: this.id, bytes: size });
       },
     });
 
@@ -278,7 +280,7 @@ class RoleInstance {
     });
 
     this._child.on('error', (err) => {
-      console.error(`[RoleInstance ${this.id}] spawn error:`, err);
+      log.error({ module: MOD, event: 'spawn_error', instanceId: this.id, error: err?.message || String(err) });
       this._setStatus('dead');
       this.diedAt = Date.now();
       this._emit('exited', { error: err.message });
@@ -523,11 +525,11 @@ class RoleInstance {
 
     // L3: taskkill /F /T
     try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'pipe' }); } catch (e) {
-      console.warn(`[RoleInstance ${this.id}] taskkill failed: ${e.message}`);
+      log.warn({ module: MOD, event: 'taskkill_failed', instanceId: this.id, error: e.message });
     }
     if (await this._waitExit(child, 2000)) return 'L3';
 
-    console.error(`[RoleInstance ${this.id}] kill escalation exhausted, marking orphan`);
+    log.error({ module: MOD, event: 'kill_escalation_exhausted', instanceId: this.id, note: 'marking_orphan' });
     this._setStatus('dead');
     this.diedAt = Date.now();
     return 'orphan';

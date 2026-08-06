@@ -29,6 +29,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { db } = require('../db');
+const log = require('../logger');
+const MOD = 'DispatchLogWriter';
 
 /**
  * 给定 project, 决定是否开启派工文件写入
@@ -80,11 +82,11 @@ function resolveTaskSlug(projectId, threadSlug, providedSlug = null) {
       db.prepare(`UPDATE threads SET task_slug = ? WHERE project_id = ? AND slug = ?`)
         .run(slug, projectId, threadSlug);
     } catch (e) {
-      console.warn(`[DispatchLogWriter] task_slug persist failed: ${e.message}`);
+      log.warn({ module: MOD, event: 'task_slug_persist_failed', error: e.message });
     }
     return slug;
   } catch (e) {
-    console.warn(`[DispatchLogWriter] resolveTaskSlug error: ${e.message}`);
+    log.warn({ module: MOD, event: 'resolve_task_slug_failed', error: e.message });
     return _slugify(threadSlug);
   }
 }
@@ -158,7 +160,7 @@ function _ensureDispatchDir(projectRootDir) {
   try {
     fs.mkdirSync(dispatchDir, { recursive: true });
   } catch (e) {
-    console.warn(`[DispatchLogWriter] mkdir failed for ${dispatchDir}: ${e.message}`);
+    log.warn({ module: MOD, event: 'mkdir_failed', dispatchDir, error: e.message });
   }
   return dispatchDir;
 }
@@ -235,12 +237,12 @@ function onPushDispatch({
       db.prepare(`UPDATE threads SET metadata_json = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
         .run(JSON.stringify(meta), Date.now(), projectId, threadSlug);
     } catch (e) {
-      console.warn(`[DispatchLogWriter] track dispatch file failed: ${e.message}`);
+      log.warn({ module: MOD, event: 'track_dispatch_file_failed', error: e.message });
     }
 
     return filepath;
   } catch (e) {
-    console.warn(`[DispatchLogWriter] onPushDispatch failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'on_push_dispatch_failed', error: e.message });
     return null;
   }
 }
@@ -281,7 +283,7 @@ function _appendSection({ projectId, projectRootDir, threadSlug, title, body }) 
     fs.appendFileSync(filepath, lines.join('\n'), 'utf8');
     return filepath;
   } catch (e) {
-    console.warn(`[DispatchLogWriter] append failed: ${e.message}`);
+    log.warn({ module: MOD, event: 'append_failed', error: e.message });
     return null;
   }
 }

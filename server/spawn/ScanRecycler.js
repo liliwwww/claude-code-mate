@@ -19,6 +19,8 @@
 
 const bus = require('../messageBus');
 const config = require('../config');
+const log = require('../logger');
+const MOD = 'ScanRecycler';
 
 let _interval = null;
 let _deps = null;  // { instances, getStmts, getRecordEvent }
@@ -59,7 +61,7 @@ function runOnce(deps) {
     // [需求@2026-06-12 Phase 2E §4] 卡死 busy 自动 unstick
     if (inst.status === 'busy' && (now - inst.lastActiveAt) > STUCK_BUSY_THRESHOLD_MS) {
       const stuckMin = Math.round((now - inst.lastActiveAt) / 60000);
-      console.warn(`[ScanRecycler] stuck busy ${inst.id} (idle ${stuckMin}m) → forcing idle`);
+      log.warn({ module: MOD, event: 'stuck_busy_force_idle', instanceId: inst.id, idleMinutes: stuckMin });
       inst._setStatus('idle');
       bus.publish('instance.unstuck', {
         instanceId: inst.id,

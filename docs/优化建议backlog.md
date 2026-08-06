@@ -163,24 +163,17 @@ get threadSlug() { return this._threadSlug; }
 
 ### 加固 X3:结构化 warning
 
-**status**: 🚧 **partial** (2026-08-06,骨架 + 3 核心文件已迁)
+**status**: ✅ **done** (2026-08-06,17 文件 143 处 warn/error 全迁完)
 
 **已完成**:
 - `server/logger.js` 骨架(~70 行,零依赖,pretty + JSON 双模式,MATE_LOG_LEVEL/MATE_LOG_JSON 环境变量控制)
-- `server/spawn/ConsistencyCheck.js` 12/12 warn 迁完
-- `server/spawn/MarkerDispatcher.js` 31/31 warn 迁完
-- `server/spawn/SpawnManager.js` 36/36 warn 迁完
-
-**Followup(64 处 warn/error 剩余 in 14 文件,机械替换,按需分批做)**:
-```
-server/db.js                            server/quota/QuotaState.js
-server/index.js                         server/threads/DispatchLogWriter.js
-server/system-agent/ThreadHooks.js      server/spawn/MockRoleInstance.js
-server/api/http.js                      server/roles/RoleCatalog.js
-server/spawn/PoolAllocator.js           server/spawn/QueueDispatcher.js
-server/spawn/RoleInstance.js            server/spawn/ScanRecycler.js
-server/api/ws.js                        server/spawn/SlotPool.js
-```
+- 全库 `console.warn/error` → `log.warn/error` 迁完 17 文件 143 处:
+  - core: SpawnManager 36 + MarkerDispatcher 31 + ConsistencyCheck 12
+  - infra: db 7 + index 5 + logger 1(logger 内部实现,输出到 stderr)
+  - subsystems: RoleCatalog 13 + RoleInstance 8 + http 7
+    + DispatchLogWriter 6 + ThreadHooks 5 + QuotaState 4
+    + PoolAllocator 2 + MockRoleInstance 2 + QueueDispatcher 1
+    + ScanRecycler 1 + ws 1 + SlotPool 1
 
 **用法**:
 ```javascript
@@ -194,7 +187,15 @@ log.info({ module: 'boot', event: 'ready', port: 8721 });
 [2026-08-06T12:00:00.000Z] [WARN] [SpawnManager] queue_flush_failed pendingSendId=42 error="target dead"
 ```
 
-**收益**:生产可以 grep event 名统计 bug 频率(`grep 'event=queue_flush_failed' logs`)。
+**JSON 模式**(`MATE_LOG_JSON=1`):
+```json
+{"ts":"2026-08-06T12:00:00.000Z","lvl":"warn","module":"SpawnManager","event":"queue_flush_failed","pendingSendId":42,"error":"target dead"}
+```
+
+**收益**:
+- 生产可以 grep event 名统计 bug 频率(`grep 'event=queue_flush_failed' logs`)
+- JSON 模式接 ELK/jq 做趋势分析(`jq 'select(.event=="chain_append_failed")'`)
+- 新写 warn 强制思考 event 分类,不再随手扔字符串
 
 ---
 

@@ -18,6 +18,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const matter = require('gray-matter');
 const config = require('../config');
+const log = require('../logger');
+const MOD = 'RoleCatalog';
 
 // [arch-debt §7 ✅ 2026-06-13] role frontmatter schema
 //   每个字段:type / required / 范围(若适用)/ 默认值
@@ -49,37 +51,37 @@ const REQUIRED_FIELDS = Object.entries(ROLE_SCHEMA).filter(([, s]) => s.required
 function validateField(file, key, value, schema) {
   // type check
   if (schema.type === 'integer' && !(Number.isInteger(value))) {
-    console.warn(`[roles] ${file}: field "${key}" must be integer, got ${typeof value} (${value}) — using default`);
+    log.warn({ module: MOD, event: 'invalid_field_type', file, field: key, expected: 'integer', got: typeof value, value });
     return { ok: false };
   }
   if (schema.type === 'number' && typeof value !== 'number') {
-    console.warn(`[roles] ${file}: field "${key}" must be number, got ${typeof value} — using default`);
+    log.warn({ module: MOD, event: 'invalid_field_type', file, field: key, expected: 'number', got: typeof value });
     return { ok: false };
   }
   if (schema.type === 'string' && typeof value !== 'string') {
-    console.warn(`[roles] ${file}: field "${key}" must be string, got ${typeof value} — using default`);
+    log.warn({ module: MOD, event: 'invalid_field_type', file, field: key, expected: 'string', got: typeof value });
     return { ok: false };
   }
   if (schema.type === 'boolean' && typeof value !== 'boolean') {
-    console.warn(`[roles] ${file}: field "${key}" must be boolean, got ${typeof value} — using default`);
+    log.warn({ module: MOD, event: 'invalid_field_type', file, field: key, expected: 'boolean', got: typeof value });
     return { ok: false };
   }
   if (schema.type === 'array' && !Array.isArray(value)) {
-    console.warn(`[roles] ${file}: field "${key}" must be array, got ${typeof value} — using default`);
+    log.warn({ module: MOD, event: 'invalid_field_type', file, field: key, expected: 'array', got: typeof value });
     return { ok: false };
   }
   // enum
   if (schema.enum && !schema.enum.includes(value)) {
-    console.warn(`[roles] ${file}: field "${key}"="${value}" not in allowed: [${schema.enum.join(', ')}] — using default`);
+    log.warn({ module: MOD, event: 'invalid_field_enum', file, field: key, value, allowed: schema.enum });
     return { ok: false };
   }
   // range
   if (schema.min != null && value < schema.min) {
-    console.warn(`[roles] ${file}: field "${key}"=${value} below min ${schema.min} — using default`);
+    log.warn({ module: MOD, event: 'invalid_field_range', file, field: key, value, min: schema.min, direction: 'below' });
     return { ok: false };
   }
   if (schema.max != null && value > schema.max) {
-    console.warn(`[roles] ${file}: field "${key}"=${value} above max ${schema.max} — using default`);
+    log.warn({ module: MOD, event: 'invalid_field_range', file, field: key, value, max: schema.max, direction: 'above' });
     return { ok: false };
   }
   return { ok: true };
@@ -106,7 +108,7 @@ class RoleCatalog {
       let missing = false;
       for (const r of REQUIRED_FIELDS) {
         if (!(r in fm)) {
-          console.warn(`[roles] ${file}: missing required frontmatter field "${r}", skipping role`);
+          log.warn({ module: MOD, event: 'missing_required_field', file, field: r, action: 'skip_role' });
           missing = true;
           break;
         }
@@ -116,7 +118,7 @@ class RoleCatalog {
       // 2) 未知字段警告(schema 里没有的)
       for (const k of Object.keys(fm)) {
         if (!(k in ROLE_SCHEMA)) {
-          console.warn(`[roles] ${file}: unknown frontmatter field "${k}" — ignored. (Check spelling? Or update ROLE_SCHEMA in RoleCatalog.js)`);
+          log.warn({ module: MOD, event: 'unknown_frontmatter_field', file, field: k, note: 'check_spelling_or_update_ROLE_SCHEMA' });
         }
       }
 
@@ -131,7 +133,7 @@ class RoleCatalog {
 
       // required 已通过,直接 throw 不该再发生 — 但加 defensive 检查
       if (!validated.name || !validated.type || validated.parallelism_limit == null) {
-        console.warn(`[roles] ${file}: required field invalid after validation, skipping role`);
+        log.warn({ module: MOD, event: 'required_field_invalid', file, action: 'skip_role' });
         continue;
       }
 
@@ -158,9 +160,9 @@ class RoleCatalog {
     // Validate exactly one central role
     const centrals = [...this.roles.values()].filter((r) => r.isCentral);
     if (centrals.length === 0) {
-      console.warn('[roles] no role marked is_central: true');
+      log.warn({ module: MOD, event: 'no_central_role' });
     } else if (centrals.length > 1) {
-      console.warn(`[roles] multiple central roles: ${centrals.map((r) => r.name).join(', ')}`);
+      log.warn({ module: MOD, event: 'multiple_central_roles', roles: centrals.map((r) => r.name) });
     }
   }
 

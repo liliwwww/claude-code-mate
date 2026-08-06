@@ -25,6 +25,8 @@ const SystemAgent = require('./SystemAgent');
 const ThreadStore = require('../threads/ThreadStore');
 const bus = require('../messageBus');
 const { db } = require('../db');
+const log = require('../logger');
+const MOD = 'ThreadHooks';
 
 const TITLE_REFRESH_INTERVAL = 5;  // 首轮 + 每 5 轮 refresh
 
@@ -45,7 +47,7 @@ const ThreadHooks = {
       db.prepare(`UPDATE threads SET metadata_json = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
         .run(JSON.stringify(merged), Date.now(), projectId, threadSlug);
     } catch (e) {
-      console.warn(`[ThreadHooks] turn_count update failed: ${e.message}`);
+      log.warn({ module: MOD, event: 'turn_count_update_failed', error: e.message });
     }
 
     // 取最近一轮 user+assistant 文本(用于 title 摘要 + reply 模板)
@@ -54,14 +56,14 @@ const ThreadHooks = {
     // [§1.4] 首轮 / 每 5 轮触发 title 摘要 — 异步,不阻塞
     if (newCount === 1 || (newCount > 1 && (newCount - 1) % TITLE_REFRESH_INTERVAL === 0)) {
       this._summarizeTitleAsync(projectId, threadSlug, exchange).catch((e) => {
-        console.warn(`[ThreadHooks] title summary failed (${threadSlug}):`, e.message);
+        log.warn({ module: MOD, event: 'title_summary_failed', threadSlug, error: e.message });
       });
     }
 
     // [§1.6] 总是触发 reply-template — 异步
     if (exchange.lastAssistantText) {
       this._generateReplyTemplateAsync(projectId, threadSlug, exchange.lastAssistantText).catch((e) => {
-        console.warn(`[ThreadHooks] reply template failed (${threadSlug}):`, e.message);
+        log.warn({ module: MOD, event: 'reply_template_failed', threadSlug, error: e.message });
       });
     }
   },
@@ -115,7 +117,7 @@ const ThreadHooks = {
     try {
       ThreadStore.setTitle(projectId, threadSlug, title, { fromUser: false });
     } catch (e) {
-      console.warn(`[ThreadHooks] setTitle failed:`, e.message);
+      log.warn({ module: MOD, event: 'set_title_failed', error: e.message });
       return;
     }
 
@@ -161,7 +163,7 @@ const ThreadHooks = {
           db.prepare(`UPDATE threads SET metadata_json = ?, updated_at = ? WHERE project_id = ? AND slug = ?`)
             .run(JSON.stringify(meta), Date.now(), projectId, threadSlug);
         } catch (e) {
-          console.warn(`[ThreadHooks] pending_question persist failed: ${e.message}`);
+          log.warn({ module: MOD, event: 'pending_question_persist_failed', error: e.message });
         }
         // Publish updated thread so front-end recomputes state light
         bus.publish('thread.metadata_updated', {

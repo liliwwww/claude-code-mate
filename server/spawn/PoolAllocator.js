@@ -28,6 +28,8 @@ const { MockRoleInstance } = require('./MockRoleInstance');
 const RoleInstance = process.env.MATE_MOCK_TERMS === '1' ? MockRoleInstance : RealRoleInstance;
 const bus = require('../messageBus');
 const { recordEvent } = require('../db');
+const log = require('../logger');
+const MOD = 'PoolAllocator';
 
 /**
  * 在 instances Map 中查找指定 (project, role, slot) 的 instance(status != dead)
@@ -180,10 +182,10 @@ function backfillFromDisk({ instances, roleCatalog, stmts, db }) {
           db.prepare(`UPDATE role_instances SET pool_slot = ? WHERE id = ?`).run(assigned, inst.id);
           backfilled++;
         } catch (e) {
-          console.warn(`[PoolAllocator] backfill pool_slot for ${inst.id} failed:`, e.message);
+          log.warn({ module: MOD, event: 'backfill_pool_slot_failed', instanceId: inst.id, error: e.message });
         }
       } else {
-        console.warn(`[PoolAllocator] excess ${roleName} instance ${inst.id} — no free slot (pool ${role.parallelismLimit} full), marking dead`);
+        log.warn({ module: MOD, event: 'excess_instance_dead', roleName, instanceId: inst.id, poolLimit: role.parallelismLimit });
         inst._setStatus('dead');
         inst.diedAt = Date.now();
         try { stmts.setInstanceDied.run(Date.now(), inst.id); } catch {}

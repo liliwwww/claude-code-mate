@@ -16,6 +16,8 @@
 
 const { WebSocketServer } = require('ws');
 const bus = require('../messageBus');
+const log = require('../logger');
+const MOD = 'ws';
 
 function attach(httpServer) {
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
@@ -25,7 +27,7 @@ function attach(httpServer) {
     try {
       ws.send(JSON.stringify({ type, payload, ts: Date.now() }));
     } catch (e) {
-      console.warn('[ws] send failed:', e.message);
+      log.warn({ module: MOD, event: 'send_failed', error: e.message });
     }
   };
 

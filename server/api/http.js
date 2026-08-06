@@ -19,6 +19,8 @@
 const express = require('express');
 const roleCatalog = require('../roles/RoleCatalog');
 const spawnManager = require('../spawn/SpawnManager');
+const log = require('../logger');
+const MOD = 'http';
 const ProjectStore = require('../projects/ProjectStore');
 const ThreadStore = require('../threads/ThreadStore');
 const envCheck = require('../system-agent/envCheck');
@@ -49,7 +51,7 @@ function buildRouter() {
   } catch (e) {
     // testApi 可选 — 不存在不影响生产
     if (process.env.MATE_MOCK_TERMS === '1') {
-      console.error('[buildRouter] testApi mount failed:', e.message);
+      log.error({ module: MOD, event: 'test_api_mount_failed', error: e.message });
     }
   }
 
@@ -309,7 +311,7 @@ function buildRouter() {
       }));
       res.json({ ok: true, count: after.length, before, after });
     } catch (e) {
-      console.error('[roles reload] failed:', e);
+      log.error({ module: MOD, event: 'roles_reload_failed', error: e?.message || String(e) });
       res.status(500).json({ error: e.message });
     }
   });
@@ -996,7 +998,7 @@ ${text}
           fs.writeFileSync(fp, body, 'utf8');
           savedTo = fp;
         } catch (e) {
-          console.warn('[export] saveToProject failed:', e.message);
+          log.warn({ module: MOD, event: 'export_save_to_project_failed', error: e.message });
         }
       }
 
@@ -1011,7 +1013,7 @@ ${text}
       if (savedTo) res.set('X-Mate-Saved-To', encodeURIComponent(savedTo));
       res.send(body);
     } catch (e) {
-      console.error('[export] failed:', e);
+      log.error({ module: MOD, event: 'export_failed', error: e?.message || String(e) });
       res.status(500).json({ error: e.message });
     }
   });
@@ -1314,7 +1316,7 @@ ${text}
       };
       const replayed = replayChain(thread.metadata?.dispatch_chain || [], { lookupSessionId: sessionLookup });
       try { TCS.save(req.project.id, req.params.slug, replayed.stack); } catch (e) {
-        console.warn(`[unstick] stack self-heal save failed: ${e.message}`);
+        log.warn({ module: MOD, event: 'unstick_stack_self_heal_failed', error: e.message });
       }
       const frames = replayed.stack.frames;
       if (!frames.length) return res.status(400).json({ error: 'stack empty — nothing to unstick' });
@@ -1494,7 +1496,7 @@ ${injectText}
             chain: updated?.metadata?.dispatch_chain || [],
           });
         } catch (e) {
-          console.warn(`[unstick force_pop] append chain failed: ${e.message}`);
+          log.warn({ module: MOD, event: 'unstick_force_pop_chain_append_failed', error: e.message });
         }
         // 3. 若栈非空且顶层是 role != R 的 caller,注入通知让它决策
         let notifiedCaller = null;
@@ -1521,7 +1523,7 @@ ${injectText}
               });
               notifiedCaller = callerFrame.instanceId;
             } catch (e) {
-              console.warn(`[unstick force_pop] notify caller failed: ${e.message}`);
+              log.warn({ module: MOD, event: 'unstick_force_pop_notify_caller_failed', error: e.message });
             }
           }
         }

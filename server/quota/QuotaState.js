@@ -47,6 +47,8 @@
 
 const bus = require('../messageBus');
 const { db, stmts } = require('../db');
+const log = require('../logger');
+const MOD = 'QuotaState';
 
 const PAUSE_UTIL_THRESHOLD = 0.95;
 const CRON_INTERVAL_MS = 30 * 1000;
@@ -116,7 +118,7 @@ class QuotaState {
     }
 
     if (type !== 'five_hour' && type !== 'seven_day') {
-      console.warn(`[QuotaState] unknown rateLimitType: ${type}`);
+      log.warn({ module: MOD, event: 'unknown_rate_limit_type', rateLimitType: type });
       return;
     }
     const resetsAtMs = (info.resetsAt || 0) * 1000;  // 秒 → ms
@@ -145,7 +147,7 @@ class QuotaState {
         manual_override: 0,
       });
     } catch (e) {
-      console.warn(`[QuotaState] persist ${type} failed: ${e.message}`);
+      log.warn({ module: MOD, event: 'persist_failed', rateLimitType: type, error: e.message });
     }
 
     // 触发 PAUSED 判断
@@ -192,7 +194,7 @@ class QuotaState {
         manual_override: 0,
       });
     } catch (e) {
-      console.warn(`[QuotaState] persist server_reject failed: ${e.message}`);
+      log.warn({ module: MOD, event: 'persist_server_reject_failed', error: e.message });
     }
 
     const wasPaused = prev ? this._shouldPause(prev) : false;
@@ -242,7 +244,7 @@ class QuotaState {
           manual_override: 0,
         });
       } catch (e) {
-        console.warn(`[QuotaState] resume persist failed: ${e.message}`);
+        log.warn({ module: MOD, event: 'resume_persist_failed', error: e.message });
       }
     }
     console.log(`[QuotaState] RESUMED ${type} (reason=${reason})`);
