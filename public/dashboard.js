@@ -1869,6 +1869,9 @@ function renderChaincheckResults(data) {
       </div>
     `);
   }
+  // [需求@2026-08-07 UI6] 时间趋势 — 按 hour bucket 分桶,SVG 柱状图
+  //   顺便告诉用户"什么时间段密集",找模式(比如"每天某点批量跑任务时集中出问题")
+  rows.push(renderCrossingsTrend(data.crossings));
   for (const [host, list] of Object.entries(byHost)) {
     rows.push(`
       <div style="margin:12px 0;padding:10px;background:var(--bg-elevated);border-left:3px solid var(--accent-red, #ff6b6b);border-radius:4px">
@@ -1900,4 +1903,70 @@ function renderChaincheckResults(data) {
 
 function escapeHtmlChaincheck(s) {
   return String(s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+
+// [需求@2026-08-07 UI6] Chain crossings 时间趋势(SVG 柱状图)
+//   自适应窗口宽度:窗口 ≤ 6h → per-15min bucket,≤ 24h → per-hour bucket,≤ 7d → per-6h bucket
+//   0 桶数据也画,让 user 看到分布形状(是集中还是均匀)
+function renderCrossingsTrend(crossings) {
+  if (!crossings || !crossings.length) return '';
+  const now = Date.now();
+  const minTs = Math.min(...crossings.map((c) => c.ts));
+  const spanMs = now - minTs;
+  let bucketMs, fmtBucket;
+  if (spanMs <= 6 * 3600 * 1000) {
+    bucketMs = 15 * 60 * 1000;
+    fmtBucket = (t) => new Date(t).toISOString().slice(11, 16);
+  } else if (spanMs <= 24 * 3600 * 1000) {
+    bucketMs = 60 * 60 * 1000;
+    fmtBucket = (t) => new Date(t).toISOString().slice(11, 13) + ':00';
+  } else {
+    bucketMs = 6 * 3600 * 1000;
+    fmtBucket = (t) => {
+      const d = new Date(t);
+      return d.toISOString().slice(5, 10) + ' ' + d.toISOString().slice(11, 13) + 'h';
+    };
+  }
+  const startBucket = Math.floor(minTs / bucketMs) * bucketMs;
+  const endBucket = Math.ceil(now / bucketMs) * bucketMs;
+  const buckets = [];
+  for (let t = startBucket; t < endBucket; t += bucketMs) {
+    buckets.push({ ts: t, count: 0 });
+  }
+  for (const c of crossings) {
+    const idx = Math.floor((c.ts - startBucket) / bucketMs);
+    if (idx >= 0 && idx < buckets.length) buckets[idx].count++;
+  }
+  const maxCount = Math.max(...buckets.map((b) => b.count), 1);
+  // SVG dims — 全宽自适应,固定高度
+  const barW = Math.max(6, Math.floor(600 / buckets.length));
+  const w = buckets.length * barW;
+  const h = 80;
+  const bars = buckets.map((b, i) => {
+    const barH = b.count > 0 ? Math.max(2, Math.round((b.count / maxCount) * (h - 20))) : 0;
+    const x = i * barW;
+    const y = h - barH - 15;
+    const color = b.count > 0 ? 'var(--accent-yellow, #d8a33a)' : 'transparent';
+    const title = `${fmtBucket(b.ts)} — ${b.count} 处`;
+    return `<rect x="${x}" y="${y}" width="${barW - 1}" height="${barH}" fill="${color}"><title>${title}</title></rect>`;
+  }).join('');
+  const firstLbl = fmtBucket(buckets[0].ts);
+  const lastLbl = fmtBucket(buckets[buckets.length - 1].ts);
+  const midLbl = fmtBucket(buckets[Math.floor(buckets.length / 2)].ts);
+  return `
+    <div style="margin:12px 0;padding:10px;background:var(--bg-elevated);border-radius:4px">
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">
+        📈 时间趋势 <span style="color:var(--text-secondary)">(bucket=${bucketMs/60000}min · max=${maxCount} · 悬停 bar 看具体数)</span>
+      </div>
+      <div style="overflow-x:auto">
+        <svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg" style="display:block">
+          <line x1="0" y1="${h - 15}" x2="${w}" y2="${h - 15}" stroke="var(--border, #444)" stroke-width="1"/>
+          ${bars}
+          <text x="0" y="${h - 3}" font-size="9" fill="var(--text-muted)" font-family="monospace">${firstLbl}</text>
+          <text x="${w / 2}" y="${h - 3}" font-size="9" fill="var(--text-muted)" font-family="monospace" text-anchor="middle">${midLbl}</text>
+          <text x="${w}" y="${h - 3}" font-size="9" fill="var(--text-muted)" font-family="monospace" text-anchor="end">${lastLbl}</text>
+        </svg>
+      </div>
+    </div>
+  `;
 }

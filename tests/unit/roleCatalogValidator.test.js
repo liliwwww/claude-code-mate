@@ -44,7 +44,8 @@ describe('validateField type checks', () => {
     reset();
     const r = validateField('test.md', 'name', 42, ROLE_SCHEMA.name);
     expect(r.ok).toBe(false);
-    expect(captured.some((s) => s.includes('must be string'))).toBe(true);
+    // [logger 迁移后] 结构化字段:event=invalid_field_type expected=string
+    expect(captured.some((s) => s.includes('expected=string'))).toBe(true);
   });
 
   it('integer accepts integer', () => {
@@ -57,7 +58,7 @@ describe('validateField type checks', () => {
     reset();
     const r = validateField('test.md', 'parallelism_limit', 5.5, ROLE_SCHEMA.parallelism_limit);
     expect(r.ok).toBe(false);
-    expect(captured.some((s) => s.includes('must be integer'))).toBe(true);
+    expect(captured.some((s) => s.includes('expected=integer'))).toBe(true);
   });
 
   it('boolean accepts boolean', () => {
@@ -96,7 +97,8 @@ describe('validateField enum checks', () => {
     reset();
     const r = validateField('test.md', 'type', 'wizard', ROLE_SCHEMA.type);
     expect(r.ok).toBe(false);
-    expect(captured.some((s) => s.includes('not in allowed'))).toBe(true);
+    // [logger 迁移后] event=invalid_field_enum + allowed=[...]
+    expect(captured.some((s) => s.includes('invalid_field_enum'))).toBe(true);
   });
 
   it('valid permission_mode enum', () => {
@@ -127,14 +129,15 @@ describe('validateField range checks', () => {
     reset();
     const r = validateField('test.md', 'parallelism_limit', 0, ROLE_SCHEMA.parallelism_limit);
     expect(r.ok).toBe(false);
-    expect(captured.some((s) => s.includes('below min'))).toBe(true);
+    // [logger 迁移后] event=invalid_field_range direction=below
+    expect(captured.some((s) => s.includes('direction=below'))).toBe(true);
   });
 
   it('parallelism_limit=51 above max', () => {
     reset();
     const r = validateField('test.md', 'parallelism_limit', 51, ROLE_SCHEMA.parallelism_limit);
     expect(r.ok).toBe(false);
-    expect(captured.some((s) => s.includes('above max'))).toBe(true);
+    expect(captured.some((s) => s.includes('direction=above'))).toBe(true);
   });
 
   it('session_ttl_hours=24 within range', () => {

@@ -99,6 +99,32 @@ async function api(path, opts = {}) {
   return res.status === 204 ? null : res.json();
 }
 
+// [需求@2026-08-07 UI5] XHR 变体 — 拿 upload.progress event 显示进度
+//   仅用于带附件的 send-message 路径,fetch 拿不到 upload 进度
+function apiWithProgress(path, opts = {}, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(opts.method || 'POST', '/api' + path, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
+    });
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(xhr.status === 204 ? null : JSON.parse(xhr.responseText)); }
+        catch (e) { reject(new Error('bad json response: ' + e.message)); }
+      } else {
+        let msg = xhr.statusText;
+        try { const j = JSON.parse(xhr.responseText); msg = j.error || msg; } catch {}
+        reject(new Error(msg));
+      }
+    };
+    xhr.onerror = () => reject(new Error('network error'));
+    xhr.ontimeout = () => reject(new Error('timeout'));
+    xhr.send(opts.body ? JSON.stringify(opts.body) : undefined);
+  });
+}
+
 // ---------------- Theme management (§1.3) ----------------
 function initTheme() {
   const saved = localStorage.getItem(LS_THEME);
@@ -1184,6 +1210,16 @@ function handleWsMsg({ type, payload }) {
         streamAutoScroll();
       }
     }
+  } else if (type === 'instance.session_lost_recovered') {
+    // [需求@2026-08-07 UI3] session-lost 自动恢复 — ticker + 焦点线索 stream 提示
+    const lostSessShort = String(payload.lostSessionId || '').slice(0, 8);
+    pushTickerEvent('handoff', t('ticker.sessionLost', { name: payload.displayName, ps: payload.pendingSendId }));
+    if (payload.projectId === state.activeProjectId && payload.threadSlug === state.focusedSlug) {
+      const node = makeMsg('system', t('stream.sessionLostTitle'),
+        t('stream.sessionLostBody', { name: payload.displayName, lostSess: lostSessShort, ps: payload.pendingSendId }));
+      els.stream.appendChild(node);
+      streamAutoScroll();
+    }
   } else if (type === 'instance.aged_out') {
     // [需求@2026-06-12 Phase 2E §13] disconnected 老化:超过保留数 → 标 dead
     pushTickerEvent('kill', t('ticker.agedOut', { name: payload.displayName, days: payload.ageDays }));
@@ -1496,7 +1532,9 @@ function renderBreadcrumb() {
     return `${sep}<span class="${cls}" data-inst-id="${escapeHtml(frame.instanceId || '')}" title="${escapeHtml(frame.instanceId || '')} (stack depth ${i}) · 右键 or 长按注入系统消息">${escapeHtml(frame.label)}</span>`;
   }).join('');
 
-  host.innerHTML = `<span class="bc-label">${t('breadcrumb.label')}:</span>${depthBadge}${stackHtml}${completeBadge}${eventBadge}`;
+  // [需求@2026-08-07 UI7] 面包屑加 📊 诊断按钮 — 一键 dump 当前线索状态到 markdown
+  const diagBtn = `<button class="bc-diag" title="${t('diag.btnTip')}">📊</button>`;
+  host.innerHTML = `<span class="bc-label">${t('breadcrumb.label')}:</span>${depthBadge}${stackHtml}${completeBadge}${eventBadge}${diagBtn}`;
   host.hidden = false;
 
   // [需求@2026-07-20 #176 Layer 3] 每个 frame chip 右键 / 长按弹注入菜单
@@ -1509,8 +1547,103 @@ function renderBreadcrumb() {
     });
   });
 
+  // [需求@2026-08-07 UI7] 诊断按钮 → 弹 markdown dump
+  const dbtn = host.querySelector('.bc-diag');
+  if (dbtn) dbtn.addEventListener('click', () => showDiagModal(t('diag.threadTitle'), buildThreadDiag(t2, stack)));
+
   // [需求@2026-07-20 #176 Layer 2] 卡死检测 + 三键面板
   renderUnstickPanel(t2, stack);
+}
+
+// [需求@2026-08-07 UI7] 诊断信息 dump — 生成 markdown 便于粘贴到 issue / chat
+function buildThreadDiag(thread, stack) {
+  if (!thread) return '(no focused thread)';
+  const chain = thread.metadata?.dispatch_chain || [];
+  const bounds = thread.metadata?.current_role_instances || {};
+  const lines = [];
+  lines.push(`# 线索诊断: ${thread.slug}`);
+  lines.push('');
+  lines.push(`- **stage**: \`${thread.stage}\` · **outcome**: \`${thread.outcome || '-'}\``);
+  lines.push(`- **projectId**: ${thread.projectId} · **title**: ${thread.title || '(no title)'}`);
+  lines.push(`- **chain len**: ${chain.length} · **stack depth**: ${stack.length}`);
+  lines.push(`- **UI ts**: ${new Date().toISOString()}`);
+  lines.push('');
+  lines.push('## 当前栈(UI 视角,chain 派生)');
+  if (!stack.length) lines.push('- (empty)');
+  else stack.forEach((f, i) => lines.push(`- [${i}] ${f.label} \`${f.instanceId || '-'}\` (${f.roleType || '-'})`));
+  lines.push('');
+  lines.push('## metadata.current_role_instances');
+  if (!Object.keys(bounds).length) lines.push('- (empty)');
+  else for (const [role, id] of Object.entries(bounds)) lines.push(`- ${role} → \`${id}\``);
+  lines.push('');
+  lines.push('## chain 末 5 段');
+  chain.slice(-5).forEach((c, i) => {
+    const idx = chain.length - 5 + i;
+    lines.push(`- [${idx}] \`${new Date(c.ts).toISOString()}\` ${c.kind} \`${c.fromRole || '-'}\`(\`${c.fromInstanceId || '-'}\`) → \`${c.toRole || c.toDisplayName || '-'}\`(\`${c.toInstanceId || '-'}\`)`);
+    const r = (c.reason || c.summary || '').replace(/\n/g, ' ').slice(0, 100);
+    if (r) lines.push(`      · ${r}${r.length >= 100 ? '…' : ''}`);
+  });
+  lines.push('');
+  const q = queueByThread.get(thread.slug) || [];
+  lines.push(`## 相关队列: ${q.length} 项`);
+  q.forEach((it) => lines.push(`- ps#${it.id} \`${it.status}\` → \`${it.targetId}\` (from \`${it.fromInstanceId || '-'}\`)`));
+  lines.push('');
+  lines.push('## UI busy 状态');
+  lines.push(`- isFocusedThreadBusy: **${isFocusedThreadBusy()}**`);
+  return lines.join('\n');
+}
+
+function buildQueueDiag(items) {
+  const lines = [];
+  lines.push(`# 队列诊断 (线索 ${state.focusedSlug || '-'})`);
+  lines.push('');
+  lines.push(`- **UI ts**: ${new Date().toISOString()}`);
+  lines.push(`- **总数**: ${items.length}`);
+  const byStatus = {};
+  for (const it of items) (byStatus[it.status] = byStatus[it.status] || []).push(it);
+  lines.push('');
+  for (const [st, list] of Object.entries(byStatus)) {
+    lines.push(`## ${st} (${list.length})`);
+    for (const it of list) {
+      const targetInst = state.instances.get(it.targetId);
+      const targetStatus = targetInst ? targetInst.status : '(not in memory)';
+      const ageMin = it.enqueuedAt ? Math.round((Date.now() - it.enqueuedAt) / 60000) : '-';
+      lines.push(`- **ps#${it.id}** → \`${it.targetId}\` (target 状态: \`${targetStatus}\`) · from \`${it.fromInstanceId || '-'}\` · 排队 ${ageMin}min · kind=${it.kind}/reason=${it.reason || '-'}`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function showDiagModal(title, markdown) {
+  const existing = document.querySelector('#diag-modal');
+  if (existing) existing.remove();
+  const dlg = document.createElement('div');
+  dlg.id = 'diag-modal';
+  dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  dlg.innerHTML = `
+    <div style="background:var(--bg-elevated,#222);border:1px solid var(--border,#444);border-radius:6px;max-width:800px;width:100%;max-height:85vh;display:flex;flex-direction:column">
+      <div style="padding:10px 14px;border-bottom:1px solid var(--border,#444);display:flex;align-items:center;gap:10px">
+        <strong style="flex:1;font-size:13px">${escapeHtml(title)}</strong>
+        <button class="diag-copy" style="font-size:11px;padding:3px 10px;background:#333;color:#eee;border:1px solid #666;border-radius:3px;cursor:pointer">${t('diag.copy')}</button>
+        <button class="diag-close" style="font-size:14px;padding:0 8px;background:transparent;color:#999;border:none;cursor:pointer">×</button>
+      </div>
+      <textarea readonly style="flex:1;padding:12px;background:var(--bg-input,#1a1a1a);color:var(--text-primary,#ddd);border:none;font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.5;resize:none;min-height:400px;outline:none">${escapeHtml(markdown)}</textarea>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+  const ta = dlg.querySelector('textarea');
+  ta.focus(); ta.select();
+  dlg.querySelector('.diag-close').addEventListener('click', () => dlg.remove());
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.remove(); });
+  dlg.querySelector('.diag-copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(markdown);
+      const btn = dlg.querySelector('.diag-copy');
+      const orig = btn.textContent; btn.textContent = t('diag.copied');
+      setTimeout(() => { btn.textContent = orig; }, 1200);
+    } catch (e) { alert('copy failed: ' + e.message); }
+  });
 }
 
 // [需求@2026-07-20 #176 Layer 2] 卡死检测规则(v2):
@@ -1701,10 +1834,14 @@ function renderQueueAndBacklog() {
   const groups = { queued: [], backlog: [], waiting_user: [], processing: [] };
   for (const it of items) (groups[it.status] || (groups[it.status] = [])).push(it);
   const rows = [];
+  // [需求@2026-08-07 UI7] 队列面板加诊断按钮
+  rows.push(`<div style="display:flex;justify-content:flex-end;margin-bottom:4px"><button class="qb-diag" style="font-size:10px;padding:1px 8px;background:#2a2a2a;color:#bbb;border:1px solid #555;border-radius:3px;cursor:pointer" title="${t('diag.btnTip')}">📊 ${t('diag.btnLabel')}</button></div>`);
   for (const it of groups.queued) {
+    // [需求@2026-08-07 UI1] queued 也加"立即派发"按钮 — stuck 太久时手动 kick
     rows.push(`<div class="qb-row qb-queued">
       <span class="qb-state">⏸ ${t('queue.statusQueued')}</span>
       <span class="qb-target">→ ${escapeHtml(it.targetId)}</span>
+      <button class="qb-force-dispatch" data-id="${it.id}" title="${t('queue.dispatchNowTitle')}">${t('queue.dispatchNow')}</button>
       <button class="qb-cancel" data-id="${it.id}">${t('queue.cancel')}</button>
     </div>`);
   }
@@ -1736,6 +1873,22 @@ function renderQueueAndBacklog() {
       catch (e) { alert('dispatch failed: ' + e.message); }
     });
   });
+  // [需求@2026-08-07 UI1] queued 强制 flush 按钮
+  host.querySelectorAll('.qb-force-dispatch').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm(t('queue.forceDispatchConfirm'))) return;
+      btn.disabled = true;
+      try {
+        await api(`/queue/${btn.dataset.id}/dispatch`, { method: 'POST', body: {} });
+      } catch (e) {
+        btn.disabled = false;
+        alert('force dispatch failed: ' + e.message);
+      }
+    });
+  });
+  // [需求@2026-08-07 UI7] 队列诊断按钮
+  const qDiag = host.querySelector('.qb-diag');
+  if (qDiag) qDiag.addEventListener('click', () => showDiagModal(t('diag.queueTitle'), buildQueueDiag(items)));
 }
 
 // [需求@2026-06-12 §8.10] 顶栏粘性 system banner(cap warn 用)
@@ -2246,9 +2399,26 @@ function wireInputs() {
     try {
       const body = { text: sentText, clientMessageId };
       if (sentAttachments.length) body.attachments = sentAttachments;
-      const resp = await api(`/threads/${encodeURIComponent(state.focusedSlug)}/message?projectId=${state.activeProjectId}`, {
-        method: 'POST', body,
-      });
+      // [需求@2026-08-07 UI5] 带附件时用 XHR 显进度条,不带附件走普通 fetch
+      const endpoint = `/threads/${encodeURIComponent(state.focusedSlug)}/message?projectId=${state.activeProjectId}`;
+      let progNode = null;
+      if (sentAttachments.length) {
+        progNode = document.createElement('span');
+        progNode.className = 'msg-upload-progress';
+        progNode.style.cssText = 'display:inline-block;margin-left:8px;padding:1px 6px;font-size:10px;background:rgba(88,204,255,0.15);border:1px solid rgba(88,204,255,0.4);border-radius:3px;color:var(--accent-blue,#58ccff);vertical-align:middle';
+        progNode.textContent = t('send.uploadStart');
+        bubble.appendChild(progNode);
+      }
+      const resp = sentAttachments.length
+        ? await apiWithProgress(endpoint, { method: 'POST', body }, (loaded, total) => {
+            if (!progNode) return;
+            const pct = Math.round((loaded / total) * 100);
+            const mb = (loaded / 1024 / 1024).toFixed(1);
+            const totalMb = (total / 1024 / 1024).toFixed(1);
+            progNode.textContent = t('send.uploadProgress', { pct, mb, totalMb });
+          })
+        : await api(endpoint, { method: 'POST', body });
+      if (progNode) progNode.remove();
       bubble.classList.remove('msg-sending');
       if (resp?.savedPaths?.length) {
         // 提示大附件落盘路径
@@ -2273,6 +2443,9 @@ function wireInputs() {
       renderThreads();
       applyBusyUiState();
     } catch (e) {
+      // [需求@2026-08-07 UI5] 失败时清进度条,不留残节点
+      const pn = bubble.querySelector('.msg-upload-progress');
+      if (pn) pn.remove();
       bubble.classList.remove('msg-sending');
       bubble.classList.add('msg-failed');
       bubble.title = t('send.failedTip', { error: e.message });

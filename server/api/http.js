@@ -1677,6 +1677,21 @@ ${injectText}
     }
   });
 
+  // [需求@2026-08-07 UI1] POST /api/queue/:id/dispatch — queued 状态强制 flush 该条(跳队)
+  //   用途:ps stuck queued 太久(idle 事件没触发 / race 漏),用户手动 kick
+  r.post('/queue/:id/dispatch', async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid pending send id' });
+    try {
+      const row = await QueueDispatcher.forceDispatch(id, {
+        dispatchCb: spawnManager._queueDispatchCb,
+      });
+      res.json({ ok: true, dispatched: true, pendingSendId: id, targetId: row.targetId });
+    } catch (e) {
+      res.status(e.message.includes('not found') ? 404 : 400).json({ error: e.message });
+    }
+  });
+
   // POST /api/backlog/:id/dispatch — backlog → queued + 立即 flush
   r.post('/backlog/:id/dispatch', async (req, res) => {
     const id = parseInt(req.params.id, 10);

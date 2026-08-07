@@ -8,13 +8,13 @@ describe('MarkerDetector.detect', () => {
   it('handoff with target + reason', () => {
     const out = M.detect('queue 已 ready。\n<mate:handoff target="mate-H" reason="需求 queued" />');
     expect(out).toHaveLength(1);
-    expect(out[0]).toEqual({ kind: 'handoff', target: 'mate-H', reason: '需求 queued' });
+    expect(out[0]).toEqual({ kind: 'handoff', target: 'mate-H', reason: '需求 queued', taskSlug: null });
   });
 
   it('handoff with target only (no reason)', () => {
     const out = M.detect('<mate:handoff target="mate-B" />');
     expect(out).toHaveLength(1);
-    expect(out[0]).toEqual({ kind: 'handoff', target: 'mate-B', reason: '' });
+    expect(out[0]).toEqual({ kind: 'handoff', target: 'mate-B', reason: '', taskSlug: null });
   });
 
   it('done with summary', () => {

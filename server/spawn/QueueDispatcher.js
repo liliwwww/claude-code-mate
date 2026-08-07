@@ -277,6 +277,68 @@ function cancelQueued(id, reason = 'user-cancel') {
 }
 
 /**
+ * [需求@2026-08-07 UI1] queued → 强制立即 flush 该条 — 跳过 FIFO 顺序
+ *
+ * 用途:ps 长时间 stuck queued(idle 事件没触发/race 漏了)时用户手动 kick。
+ *   `_tryFlushFor` 会 flush 该 target 的最早 queued,不保证是你点的这条;
+ *   本函数直接对指定行 markProcessing + dispatchCb,给 UX"让这一条走"语义。
+ *
+ * 使用者要自行判断这一条应该跳队(通常适用于长期 stuck 场景)。
+ *
+ * @param {number} id
+ * @param {Object} opts
+ * @param {Function} opts.dispatchCb
+ * @returns {Promise<PendingRow>}
+ */
+async function forceDispatch(id, { dispatchCb }) {
+  const row = PendingSends.getById(id);
+  if (!row) throw new Error(`pending send ${id} not found`);
+  if (row.status !== 'queued') {
+    throw new Error(`pending send ${id} is not in queued (status=${row.status})`);
+  }
+  PendingSends.markProcessing(id);
+  bus.publish('queue.claimed', {
+    pendingSendId: id,
+    threadSlug: row.threadSlug,
+    toInstanceId: row.targetId,
+    fromInstanceId: row.fromInstanceId,
+    projectId: row.projectId,
+    forced: true,
+  });
+  try {
+    await dispatchCb(row);
+  } catch (e) {
+    log.error({ module: MOD, event: 'force_dispatch_failed', pendingSendId: id, error: e.message });
+    PendingSends.markCancelled(id, `force-flush-error: ${e.message}`);
+    bus.publish('queue.cancelled', {
+      pendingSendId: id,
+      threadSlug: row.threadSlug,
+      error: e.message,
+      projectId: row.projectId,
+    });
+    PendingSends.remove(id);
+    throw e;
+  }
+  const waitMs = Date.now() - row.enqueuedAt;
+  bus.publish('dispatch.started', {
+    pendingSendId: id,
+    direction: row.payload?.direction || 'unknown',
+    fromInstanceId: row.fromInstanceId,
+    fromRoleType: row.payload?.fromRoleType,
+    fromDisplayName: row.payload?.fromDisplayName,
+    toInstanceId: row.targetId,
+    toRoleType: row.payload?.toRoleType,
+    toDisplayName: row.payload?.toDisplayName,
+    threadSlug: row.threadSlug,
+    projectId: row.projectId,
+    waitMs,
+    forced: true,
+    ts: Date.now(),
+  });
+  return row;
+}
+
+/**
  * backlog → queued + 尝试立即 flush
  */
 async function dispatchBacklog(id, { dispatchCb }) {
@@ -302,5 +364,6 @@ module.exports = {
   onInstanceIdle,
   cancelQueued,
   dispatchBacklog,
+  forceDispatch,    // [UI1] queued → 强制 flush 指定行
   _tryFlushFor,     // export 给 dispatch.completed 后手动触发下一项
 };

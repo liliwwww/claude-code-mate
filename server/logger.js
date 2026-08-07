@@ -60,11 +60,10 @@ function _fmt(lvl, ctx, msg) {
 function _log(lvl, ctx, msg) {
   if ((LEVELS[lvl] || 0) < LEVEL) return;
   const line = _fmt(lvl, ctx || {}, msg || '');
-  if (lvl === 'warn' || lvl === 'error') {
-    console.error(line);
-  } else {
-    console.log(line);
-  }
+  // 走 node 原生对应 console 方法(warn→console.warn, error→console.error,...)
+  // 这样测试 stub 单个 console 方法能拿到,也符合 node 惯例
+  const fn = console[lvl] || console.log;
+  fn(line);
 }
 
 module.exports = {

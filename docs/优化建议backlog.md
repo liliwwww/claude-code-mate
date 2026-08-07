@@ -225,13 +225,26 @@ for (const p of stuckPending) {
 
 ### 加固 X5:并发单测最小起步
 
-**status**: ⬜ pending
+**status**: ✅ **done** (2026-08-07,4 大场景 6 个 test case 全绿)
 
-至少写 1 个:"两线索并行不走串"。基于 mock,内存跑,10 秒能过。
+**已完成**(追加到 `tests/unit/queueDispatcher.test.js`,共享 mock 基础设施):
+- Scenario 1: 两线索不同 target 并发 idle 不交叉(2 case:2 线索 + 4 线索)
+- Scenario 2: 同 target 两线索 FIFO 严格保序(并发 3 次 idle)
+- Scenario 3: forceDispatch(UI1)跳队 — 只 flush 该条,其他 status 不变
+- Scenario 4: 并发 flush 同 target 不重派(markProcessing 原子性)
 
-以后每次改 SpawnManager 的 async 路径必须过。**规则:改代码之前先扩测试**。
+**顺带修**:
+- `tests/unit/roleCatalogValidator.test.js` — 5 处期望文本更新到 logger 结构化格式
+- `tests/unit/markerDetector.test.js` — 2 处补 taskSlug 字段
+- `server/logger.js` — warn 从 console.error 改回 console.warn(测试 stub 友好,符合 node 惯例)
 
-**预估工作量**:1 天
+**规则**(以后必须遵守):
+- 改 SpawnManager / QueueDispatcher async 路径 → 先扩此文件测试再 merge
+- 全 unit suite:`node tests/runner.js`(2 秒),必须 all pass
+
+**未做的深化**(可按需扩展):
+- SpawnManager `_wireListeners` 里 status_change/result event 流的 mock(需大改 SpawnManager 让它可 mock)
+- MockRoleInstance 双实例并发场景(需引入 real event loop simulation)
 
 ---
 
@@ -249,13 +262,20 @@ for (const p of stuckPending) {
 
 ### 加固 UI2:Chain 走串历史迁移工具
 
-**status**: ⬜ pending
+**status**: ⏸ **rethink** (2026-08-07,前提已变)
 
-t-mrwwnh63-8g3f 上还有 6 段老走串脏数据,视觉上误导 R 判断。
+原议:识别走串 seg → 生成迁移计划 → 迁移。
 
-加 SQL 工具:识别走串 seg → 生成迁移计划(用户手动 confirm 后执行 SQL move)。保留原 seg 添加 `deleted: true` 标记,或直接删。
+**为什么先不做**:
+- 2026-08-06 已把 chain-crossings scanner(文本匹配)降级为 advisory,
+  真"走串"信号只有 X2 audit(未来 flip 才有 caller stack 证据)
+- 老历史脏数据(如 t-mrwwnh63-8g3f 上 2026-07-x 的 seg)**没有** X2 evidence,
+  只能靠人肉判断哪段是真走串,不能自动识别
+- 用文本扫描作为"走串"identifier 会误标合理跨线索引用为脏数据
 
-**预估工作量**:1 天
+**如果要做**:改设计为"手动 seg 编辑器"—— dispatch 面包屑给每段加右键
+菜单"标记为脏(视觉隐藏)"或"重定向到其它 thread",走独立 audit table。
+不再自动扫描。等未来真有大量脏数据需要清理时启动。
 
 ---
 

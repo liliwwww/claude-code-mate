@@ -291,3 +291,163 @@ describe('QueueDispatcher.onInstanceIdle', () => {
     expect(flushed).toBe(null);
   });
 });
+
+// ============================================================================
+// [需求@2026-08-07 X5] 并发/多线索场景 — 两线索并行不走串,FIFO 严格保序
+// ============================================================================
+describe('X5 · 两线索不同 target 并发不交叉', () => {
+  it('threadA→H1 + threadB→H2 各自 flush 到正确 target', async () => {
+    reset();
+    const idA = PendingSends.enqueue({
+      kind: 'handoff_marker', targetKind: 'instance', targetId: 'mate-H1',
+      projectId: 1, payload: { text: 'from-A' }, reason: 'busy',
+      status: 'queued', threadSlug: 't-A', fromInstanceId: 'mate-R.a',
+    });
+    const idB = PendingSends.enqueue({
+      kind: 'handoff_marker', targetKind: 'instance', targetId: 'mate-H2',
+      projectId: 1, payload: { text: 'from-B' }, reason: 'busy',
+      status: 'queued', threadSlug: 't-B', fromInstanceId: 'mate-R.b',
+    });
+    const results = [];
+    const cb = async (row) => { results.push({ id: row.id, threadSlug: row.threadSlug, targetId: row.targetId, text: row.payload.text }); };
+    await Promise.all([
+      QD.onInstanceIdle({ id: 'mate-H1' }, { dispatchCb: cb }),
+      QD.onInstanceIdle({ id: 'mate-H2' }, { dispatchCb: cb }),
+    ]);
+    expect(results).toHaveLength(2);
+    const forH1 = results.find((r) => r.targetId === 'mate-H1');
+    const forH2 = results.find((r) => r.targetId === 'mate-H2');
+    expect(forH1?.threadSlug).toBe('t-A');
+    expect(forH1?.text).toBe('from-A');
+    expect(forH1?.id).toBe(idA);
+    expect(forH2?.threadSlug).toBe('t-B');
+    expect(forH2?.text).toBe('from-B');
+    expect(forH2?.id).toBe(idB);
+  });
+
+  it('4 线索 × 4 target 完全独立 — 全并发 flush 不错位', async () => {
+    reset();
+    const enqueued = [];
+    for (let i = 1; i <= 4; i++) {
+      const id = PendingSends.enqueue({
+        kind: 'handoff_marker', targetKind: 'instance', targetId: `mate-H${i}`,
+        projectId: 1, payload: { text: `text-${i}` }, reason: 'busy',
+        status: 'queued', threadSlug: `t-${i}`,
+      });
+      enqueued.push({ id, thread: `t-${i}`, target: `mate-H${i}` });
+    }
+    const results = [];
+    const cb = async (row) => { results.push(row); };
+    await Promise.all(enqueued.map((e) =>
+      QD.onInstanceIdle({ id: e.target }, { dispatchCb: cb })
+    ));
+    expect(results).toHaveLength(4);
+    for (const r of results) {
+      const mapping = enqueued.find((e) => e.target === r.targetId);
+      expect(r.threadSlug).toBe(mapping.thread);
+    }
+  });
+});
+
+describe('X5 · 同 target 两线索 FIFO 严格保序', () => {
+  it('并发 3 次 idle 触发 — dispatchCb 首个跑的一定是 enqueue 最早的', async () => {
+    reset();
+    const id1 = PendingSends.enqueue({
+      kind: 'handoff_marker', targetKind: 'instance', targetId: 'mate-H1',
+      projectId: 1, payload: { text: 'first-from-A' }, reason: 'busy',
+      status: 'queued', threadSlug: 't-A',
+    });
+    const id2 = PendingSends.enqueue({
+      kind: 'handoff_marker', targetKind: 'instance', targetId: 'mate-H1',
+      projectId: 1, payload: { text: 'second-from-B' }, reason: 'busy',
+      status: 'queued', threadSlug: 't-B',
+    });
+    const dispatched = [];
+    const cb = async (row) => { dispatched.push(row.id); };
+    const flushes = await Promise.all([
+      QD.onInstanceIdle({ id: 'mate-H1' }, { dispatchCb: cb }),
+      QD.onInstanceIdle({ id: 'mate-H1' }, { dispatchCb: cb }),
+      QD.onInstanceIdle({ id: 'mate-H1' }, { dispatchCb: cb }),
+    ]);
+    const flushedIds = flushes.filter(Boolean).map((r) => r.id);
+    expect(flushedIds).toContain(id1);
+    if (flushedIds.length === 2) {
+      expect(flushedIds[0]).toBe(id1);
+      expect(flushedIds[1]).toBe(id2);
+    }
+    expect(dispatched[0]).toBe(id1);
+  });
+});
+
+describe('X5 · forceDispatch(UI1)跳队隔离', () => {
+  it('4 条 queued,forceDispatch 第 3 条 — 只 flush 那一条,其他保持 queued', async () => {
+    reset();
+    const ids = [];
+    for (let i = 0; i < 4; i++) {
+      ids.push(PendingSends.enqueue({
+        kind: 'handoff_marker', targetKind: 'instance', targetId: 'mate-H1',
+        projectId: 1, payload: { text: 'x' + i }, reason: 'busy',
+        status: 'queued', threadSlug: `t-${i}`,
+      }));
+    }
+    let flushed = null;
+    await QD.forceDispatch(ids[2], {
+      dispatchCb: async (row) => { flushed = row; },
+    });
+    expect(flushed?.id).toBe(ids[2]);
+    expect(flushed?.payload?.text).toBe('x2');
+    expect(PendingSends.getById(ids[0])?.status).toBe('queued');
+    expect(PendingSends.getById(ids[1])?.status).toBe('queued');
+    expect(PendingSends.getById(ids[2])?.status).toBe('processing');
+    expect(PendingSends.getById(ids[3])?.status).toBe('queued');
+    const claimed = publishedEvents.find((e) => e.topic === 'queue.claimed' && e.payload.pendingSendId === ids[2]);
+    expect(claimed?.payload?.forced).toBe(true);
+  });
+
+  it('forceDispatch 非 queued 状态应拒绝', async () => {
+    reset();
+    const id = PendingSends.enqueue({
+      kind: 'handoff_marker', targetKind: 'instance', targetId: 'mate-H1',
+      projectId: 1, payload: { text: 'x' }, reason: 'busy',
+      status: 'queued', threadSlug: 't-x',
+    });
+    PendingSends.markBacklog(id);
+    let threw = false;
+    try {
+      await QD.forceDispatch(id, { dispatchCb: async () => {} });
+    } catch (e) {
+      threw = true;
+      expect(e.message).toContain('not in queued');
+    }
+    expect(threw).toBe(true);
+  });
+});
+
+describe('X5 · 并发 flush 同 target 不重派', () => {
+  it('1 条 queued 到 X5-only-target,3 个 concurrent flusher 抢 — dispatchCb 只跑 1 次', async () => {
+    reset();
+    // 用独特 target id,避免跟同文件里其它 test 的残留 target 冲突
+    //   (跨文件 require.cache 覆盖导致 PendingSends 可能 bind 到别的 tdb,reset() 未必清干净)
+    const TARGET = 'mate-H-x5-race-' + Date.now();
+    // 保险清除:该 target 若有残留(极小概率),PendingSends.remove 一次
+    for (const r of PendingSends.listByStatus('queued')) {
+      if (r.targetId === TARGET) PendingSends.remove(r.id);
+    }
+    const id = PendingSends.enqueue({
+      kind: 'handoff_marker', targetKind: 'instance', targetId: TARGET,
+      projectId: 1, payload: { text: 'only-one' }, reason: 'busy',
+      status: 'queued', threadSlug: 't-x5-race',
+    });
+    let dispatchCalls = 0;
+    const cb = async () => { dispatchCalls++; };
+    await Promise.all([
+      QD.onInstanceIdle({ id: TARGET }, { dispatchCb: cb }),
+      QD.onInstanceIdle({ id: TARGET }, { dispatchCb: cb }),
+      QD.onInstanceIdle({ id: TARGET }, { dispatchCb: cb }),
+    ]);
+    // 关键 invariant:markProcessing 是 better-sqlite3 sync,后续 flusher findOldest
+    //   filter WHERE status='queued' 应该返 null,不该重派同一条
+    expect(dispatchCalls).toBe(1);
+    expect(PendingSends.getById(id)?.status).toBe('processing');
+  });
+});
