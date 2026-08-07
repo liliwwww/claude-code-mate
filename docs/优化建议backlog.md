@@ -421,6 +421,32 @@ deny_rules:
   隐患 → A1 根治 threadSlug mutable 时一起处理
 - 定位:grep PoolAllocator.js 里 `threadSlug` 的 create 路径
 
+**新 R spawn 时应注入线索历史 briefing**(2026-08-07 新发现,优先级中)
+- 现象:mate 重启同时 kill R.uubiza + H.41bggs → user 立即发消息 → mate spawn
+  全新 R.5uow14(新 session,不是 resume 旧 session) → R.5uow14 只收到裸的
+  user 文本"还需要怎么验收?"没任何 chain 上下文 → 只能诚实反问"哪项工作"
+- 根因:mate spawn 新 R(pool empty)时,给 R 的第一条 user_to_role 消息**没
+  注入线索历史 briefing**(chain 摘要 / 最近对话 / handoff brief)
+- 期望:类似 role prompt 里"你的第一条 user 消息会告诉你线索"的承诺,mate
+  应该在首条消息前注入类似:
+  ```
+  [Thread: t-mrwwnh63-8g3f | Project: 6]
+  该线索之前 chain 简要(最近 5 段 handoff reason 摘要):
+    [441] H→R: test_agent 完工验收通过...
+    [442] R→H: score agentic 模式新需求...
+    ...
+  你是接手的新 R(mate 重启导致换实例)。请先 curl mate API 核实状态再回复。
+  ```
+- 影响:mate 重启 / role dead → 用户体验断层。今天(2026-08-07 15:54)真实
+  发生,user 被迫手动补 context 才能推进
+- 定位:找 `_bootstrapNewRoleForThread` / `sendToThread` 里 spawn 新 R 后
+  首次注入 payload 的路径。可能是 SpawnManager._sendToPooledRole 或
+  RoleInstance.sendUserText 之前该有个 briefing prepend
+- 关联:类似"session-lost 恢复"路径(#180 已实现的 respawn+retry)—— 那个
+  重发的是最后一次 handoff 消息,不是 fresh spawn 的首消息路径。需要区分两条路
+- 优先级:中(用户会看到"我是谁?" 类响应,信任度受影响,但可通过手动补
+  context 绕过)
+
 **chain-crossings scanner 只该扫路由字段,别扫 reason/summary 文本** ✅ done (2026-08-06 #202)
 - 决策:文本匹配没有可靠路由字段可依赖(chain 段本身没有 targetThread 字段),
   真"走串"信号已被 X2 audit(`debug.instance_threadslug_flip`)完全覆盖 —
