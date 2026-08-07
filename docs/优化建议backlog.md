@@ -421,6 +421,31 @@ deny_rules:
   隐患 → A1 根治 threadSlug mutable 时一起处理
 - 定位:grep PoolAllocator.js 里 `threadSlug` 的 create 路径
 
+**"重启前自检"按钮 — 帮 user 判断"是否可以安全重启 mate"**(2026-08-07,优先级高)
+- 现象:mate 长 turn(claude 连续 tool_use 几分钟无 assistant final)从 UI 看像
+  "日志不刷",user 误以为卡了 → kill port 8721 → 打断 in-progress task →
+  R 换新实例丢 context(见下条 "新 R spawn 应注入 briefing")
+- 本质:用户遵循 memory 里 `feedback_dont_kill_mid_task` 规则,但**没法一眼
+  看出"是否真忙"** —— busy chip 看不出"最近是不是有 tool_use event"
+- 根因:静默指标缺失 + kill 是外部动作(mate 没机会拦)
+- 方案 A(最小,推荐):**咨询式**按钮
+  - 顶栏加 🚦 图标"重启前检查"
+  - 点击弹 modal,3 段:
+    - 🔴 硬阻塞:`role_instances.status='busy'` × 每个显示 threadSlug + 已工作时长 + 最新 tool_use ts + `mate_pending_sends.status='processing'`
+    - 🟡 静默但可能在跑:busy 但 > 60s 无 event → "可能卡了" · busy 有近期 event → "别打断"
+    - 🟢 安全:disc/idle 数
+  - 综合裁决:🟢 随便重启 · 🟡 有 busy 可能长 turn · 🔴 有 processing / 近期活跃 busy
+  - backend:`GET /api/system/restart-safety` 返 verdict + details
+  - frontend:顶栏图标 + modal,数据源 role_instances × messages(MAX(ts)
+    WHERE instance_id=? — 学 #199 教训用最鲜活数据源)+ mate_pending_sends
+- 方案 B(重):**阻拦式** — SIGTERM handler 检查 busy,如果有,拒绝 exit
+  并输出"以下 role busy, resend SIGTERM 强制退出" —— 但 port kill 时 mate
+  拿不到信号,只对 Ctrl-C shutdown 有效
+- 方案 C(最重):**graceful shutdown** — 等 in-progress task 自然完成再 exit,
+  设 timeout(e.g. 5min)后强制。工作量大 + 语义边界复杂(handoff 中?callback 中?)
+- 推荐先做 A(1-2h),验证信噪比后再决定要不要 B/C
+- 优先级:**高**(每次 mate 需要重启都有踩坑风险,加了这个按钮直接消除)
+
 **新 R spawn 时应注入线索历史 briefing**(2026-08-07 新发现,优先级中)
 - 现象:mate 重启同时 kill R.uubiza + H.41bggs → user 立即发消息 → mate spawn
   全新 R.5uow14(新 session,不是 resume 旧 session) → R.5uow14 只收到裸的
