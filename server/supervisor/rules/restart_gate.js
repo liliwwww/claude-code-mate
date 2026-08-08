@@ -23,6 +23,12 @@ function _lastEventTs(instanceId) {
 }
 
 async function check() {
+  // [bug@2026-08-08] restart_gate 是"当前状态快照",不是"持久问题",
+  //   每次 check 前先清所有旧 restart_gate finding — 否则历史 busy inst 转 idle 后
+  //   store 里还留着,导致 state 说 error 但 restart-check 说 ok(实时查 DB)
+  const store = require('../store');
+  store.markResolvedByPredicate((f) => f.ruleId === RULE_ID);
+
   const findings = [];
   const now = Date.now();
 
