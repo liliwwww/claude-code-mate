@@ -27,6 +27,7 @@ const state = {
 const el = (sel) => document.querySelector(sel);
 const els = {
   banners: el('#banners'),
+  svLight: el('#supervisor-light'),
   projectPicker: el('#project-picker'),
   addProjectBtn: el('#add-project-btn'),
   addProjectDialog: el('#add-project-dialog'),
@@ -1190,6 +1191,13 @@ function handleWsMsg({ type, payload }) {
     // 清红条
     const node = document.getElementById('sys-banner-consistency');
     if (node) node.remove();
+  } else if (type === 'supervisor.finding') {
+    // [需求@2026-08-08 supervisor] 每条新 finding 都更新灯 + 提示
+    refreshSupervisorLight();
+    if (payload.severity === 'error' || payload.severity === 'warn') {
+      pushTickerEvent(payload.severity === 'error' ? 'blocked' : 'handoff',
+        `🛡 ${payload.message}`);
+    }
   } else if (type === 'instance.ttl_soon') {
     // [需求@2026-06-12 §8.10] 黄色提示:即将到期
     pushTickerEvent('handoff', t('ticker.ttlSoon', { name: payload.displayName, minutes: payload.minutesUntilExpiry }));
@@ -2614,6 +2622,159 @@ function renderSearchResults(rows, q) {
       }
     });
   });
+}
+
+// ============================================================================
+// [需求@2026-08-08 supervisor] 顶栏值班灯 + 检查 modal + 门控重启
+// ============================================================================
+
+async function refreshSupervisorLight() {
+  if (!els.svLight) return;
+  try {
+    const s = await api('/supervisor/state');
+    els.svLight.classList.remove('sv-ok', 'sv-warn', 'sv-error');
+    if (s.verdict === 'error') {
+      els.svLight.classList.add('sv-error');
+      els.svLight.textContent = `🔴 ${s.byServerity?.error || 0}`;
+      els.svLight.title = `Supervisor · ${s.byServerity?.error || 0} 项阻塞, ${s.byServerity?.warn || 0} 警告`;
+    } else if (s.verdict === 'warn') {
+      els.svLight.classList.add('sv-warn');
+      els.svLight.textContent = `🟡 ${s.byServerity?.warn || 0}`;
+      els.svLight.title = `Supervisor · ${s.byServerity?.warn || 0} 警告, ${s.byServerity?.info || 0} 提示`;
+    } else {
+      els.svLight.classList.add('sv-ok');
+      els.svLight.textContent = '🟢';
+      els.svLight.title = 'Supervisor · 全部正常';
+    }
+  } catch (e) {
+    els.svLight.classList.remove('sv-ok', 'sv-warn', 'sv-error');
+    els.svLight.textContent = '⚫';
+    els.svLight.title = 'Supervisor · 查询失败: ' + e.message;
+  }
+}
+
+async function openSupervisorModal() {
+  const existing = document.querySelector('#sv-modal');
+  if (existing) existing.remove();
+
+  let findings = [];
+  let restartCheck = { verdict: 'ok', verdictText: '🟢 安全', blockers: [], warnings: [] };
+  try {
+    const [fr, rc] = await Promise.all([
+      api('/supervisor/findings'),
+      api('/supervisor/restart-check'),
+    ]);
+    findings = fr.findings || [];
+    restartCheck = rc;
+  } catch (e) {
+    alert('查询失败: ' + e.message);
+    return;
+  }
+
+  const dlg = document.createElement('div');
+  dlg.id = 'sv-modal';
+  dlg.innerHTML = `
+    <div class="sv-box">
+      <div class="sv-header">
+        <strong>🛡 Mate 健康检查</strong>
+        <span style="font-size:11px;color:var(--text-muted)">${new Date().toISOString().replace('T',' ').slice(0,19)}</span>
+        <button class="sv-close" style="background:transparent;border:none;color:#999;font-size:16px;cursor:pointer">×</button>
+      </div>
+      <div class="sv-verdict ${restartCheck.verdict}">
+        <strong>重启建议:</strong> ${escapeHtml(restartCheck.verdictText)}
+        ${restartCheck.blockers?.length ? `<div style="margin-top:4px;font-size:11px">阻塞原因: ${restartCheck.blockers.length} 项</div>` : ''}
+      </div>
+      <div class="sv-findings">
+        ${findings.length === 0
+          ? '<div style="padding:20px;text-align:center;color:var(--text-muted)">✓ 目前无异常</div>'
+          : findings.map(_renderFinding).join('')}
+      </div>
+      <div class="sv-actions">
+        <button class="sv-close-btn">关闭</button>
+        <button class="sv-restart" ${restartCheck.verdict === 'block' ? 'disabled' : ''}
+                title="${restartCheck.verdict === 'block' ? '有 in-progress task,不建议重启' : 'MVP:仍需手动 taskkill(未来加优雅 shutdown)'}">
+          🔄 我要重启 mate
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.remove(); });
+  dlg.querySelector('.sv-close').addEventListener('click', () => dlg.remove());
+  dlg.querySelector('.sv-close-btn').addEventListener('click', () => dlg.remove());
+
+  // 一键 apply(向 backend 请动作描述,然后跳去对应 endpoint)
+  dlg.querySelectorAll('.sv-apply-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.findingId;
+      btn.disabled = true;
+      try {
+        const r = await api(`/supervisor/apply/${id}`, { method: 'POST', body: {} });
+        const action = r.action;
+        if (!confirm(`即将执行:\n${action.label}\n\nendpoint: ${action.endpoint}\n\n确认?`)) {
+          btn.disabled = false;
+          return;
+        }
+        const path = action.endpoint.replace(/^\/api/, '');
+        await api(path, { method: 'POST', body: action.body || {} });
+        pushTickerEvent('handoff', `✓ ${action.label}`);
+        setTimeout(() => { dlg.remove(); refreshSupervisorLight(); }, 800);
+      } catch (e) {
+        alert('执行失败: ' + e.message);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  dlg.querySelectorAll('.sv-dismiss-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.findingId;
+      try {
+        await api(`/supervisor/dismiss/${id}`, { method: 'POST', body: {} });
+        btn.closest('.sv-finding').style.opacity = '0.3';
+        refreshSupervisorLight();
+      } catch (e) { alert('dismiss 失败: ' + e.message); }
+    });
+  });
+
+  // 重启按钮 MVP: 只显示指令(不真跑,graceful shutdown 是 Phase 2)
+  dlg.querySelector('.sv-restart').addEventListener('click', () => {
+    if (restartCheck.verdict === 'block') return;
+    alert('MVP 版:请手动执行\n\n  taskkill /f /im node.exe\n  然后重启 mate\n\n(优雅 shutdown 后续版本支持)');
+  });
+}
+
+function _renderFinding(f) {
+  const cls = 'sv-f-' + f.severity;
+  const time = new Date(f.detectedAt).toISOString().slice(11, 19);
+  const meta = [
+    `[${f.ruleId}]`,
+    f.threadSlug ? `thread=${f.threadSlug}` : '',
+    f.instanceId ? `inst=${f.instanceId}` : '',
+    `@${time}`,
+  ].filter(Boolean).join(' · ');
+  const actionBtn = f.suggestedAction
+    ? `<button class="sv-apply-btn" data-finding-id="${f.id}">✓ ${escapeHtml(f.suggestedAction.label)}</button>`
+    : '';
+  return `
+    <div class="sv-finding ${cls}">
+      <div class="sv-finding-head">${escapeHtml(f.message)}</div>
+      <div class="sv-finding-meta">${meta}</div>
+      <div class="sv-finding-action">
+        ${actionBtn}
+        <button class="sv-dismiss-btn" data-finding-id="${f.id}">✕ 忽略</button>
+      </div>
+    </div>
+  `;
+}
+
+// 初始化 supervisor 灯 + 点击 + 定时轮询兜底
+if (els.svLight) {
+  els.svLight.addEventListener('click', openSupervisorModal);
+  // 首次拉一下,之后靠 supervisor.finding WS 事件驱动 + 60s 定时兜底(防 WS 断)
+  setTimeout(refreshSupervisorLight, 500);
+  setInterval(refreshSupervisorLight, 60_000);
 }
 
 init().then(() => wireSearch()).catch((e) => {

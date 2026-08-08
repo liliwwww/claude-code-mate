@@ -762,6 +762,70 @@ ${text}
     }
   });
 
+  // [需求@2026-08-08 supervisor] 主动值班组件 API
+  //   /state       — 当前状态灯 + 各 severity 计数(轻量,UI 顶栏轮询)
+  //   /findings    — 详细 findings(可 filter by severity/ruleId/threadSlug)
+  //   /log         — 决策日志时间线(自 sinceTs)
+  //   /restart-check — 重启门控专用(返 verdict + block reasons)
+  //   /dismiss/:id / /apply/:id — 用户交互
+  r.get('/supervisor/state', (req, res) => {
+    try {
+      const Supervisor = require('../supervisor');
+      res.json(Supervisor.getState());
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  r.get('/supervisor/findings', (req, res) => {
+    try {
+      const Supervisor = require('../supervisor');
+      const filter = {
+        severity: req.query.severity,
+        ruleId: req.query.ruleId,
+        threadSlug: req.query.threadSlug,
+      };
+      res.json({ findings: Supervisor.getFindings(filter) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  r.get('/supervisor/log', (req, res) => {
+    try {
+      const Supervisor = require('../supervisor');
+      const sinceTs = req.query.since ? parseInt(req.query.since, 10) : 0;
+      res.json({ log: Supervisor.getLog(sinceTs) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  r.get('/supervisor/restart-check', async (req, res) => {
+    try {
+      const Supervisor = require('../supervisor');
+      const verdict = await Supervisor.getRestartVerdict();
+      res.json(verdict);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  r.post('/supervisor/dismiss/:id', (req, res) => {
+    try {
+      const Supervisor = require('../supervisor');
+      const ok = Supervisor.dismissFinding(req.params.id);
+      res.json({ ok, findingId: req.params.id });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  r.post('/supervisor/apply/:id', async (req, res) => {
+    try {
+      const Supervisor = require('../supervisor');
+      const result = await Supervisor.applyFinding(req.params.id);
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(e.message.includes('not found') ? 404 : 400).json({ error: e.message });
+    }
+  });
+
   // [X1] 确认已知 chain crossings — 设 baseline,之后只报新走串
   r.post('/consistency-check/acknowledge', (req, res) => {
     try {

@@ -63,6 +63,11 @@ QuotaState.start();
 const ConsistencyCheck = require('./spawn/ConsistencyCheck');
 ConsistencyCheck.start();
 
+// [需求@2026-08-08 supervisor] 主动值班监督组件 — event-driven + 30s cron 兜底
+//   规则:漏 marker 检测 / 长 turn 心跳 / 重启前门控
+const Supervisor = require('./supervisor');
+Supervisor.start();
+
 // [需求@2026-07-30 #196] boot 时 flush queued pending sends 一次,
 //   补漏"target disconnected 时 queued busy 项永不 flush"的洞
 setImmediate(() => {
@@ -118,6 +123,7 @@ async function shutdown(reason) {
   try {
     QuotaState.stop();
     ConsistencyCheck.stop();
+    Supervisor.stop();
     await spawnManager.shutdown();
   } catch (e) {
     log.error({ module: 'shutdown', event: 'spawn_manager_shutdown_failed', error: e?.message || String(e) });

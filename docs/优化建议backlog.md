@@ -421,6 +421,24 @@ deny_rules:
   隐患 → A1 根治 threadSlug mutable 时一起处理
 - 定位:grep PoolAllocator.js 里 `threadSlug` 的 create 路径
 
+**UI inject dialog 传错 instId** (2026-08-07 现场撞)
+- 现象:面包屑 chip 右键弹 inject dialog,提交后 backend 返 "instance not found",
+  但被 inject 的 instance(如 mate-C.jhkfgv)明明在 memory + DB 里 status=idle
+- 假设:chip 的 `data-inst-id` 绑到了老的/dead 实例 id,或者 UI 从某个 stale
+  cache(state.instances)里读的 displayName → id 映射错位
+- 复现:user 说 "面包屑 3 个选项" 但实际是 ticker 事件流(非可右键 chip),
+  真面包屑因 stage=verified 收敛只显 R chip,那 chip 被右键后传的 instId
+  可能是某个 replaced R 实例
+- 定位:app.js 1774 `openInjectDialog(instId)` 的 caller,验证 `data-inst-id`
+  值 → 对照 `spawnManager.getInstance(id)` 返 null 的条件(inst.id 拼写
+  完全一致才命中 Map key)
+- 影响:用户走不通 UI inject 路径,只能 curl 兜底
+- 相关:stage=verified 面包屑收敛(#198)副作用 — H/C chip 消失,只能操作 R,
+  但 R 不是真正要 inject 的目标
+- 建议:面包屑加"栈虽被 clear 但 chain 有后续 push"的白名单,让 C chip
+  仍可见可点(同时修 dialog 显示的 title 明确是哪个 inst id)
+- 优先级:中(有 curl 兜底,但用户不该被迫走 curl)
+
 **"重启前自检"按钮 — 帮 user 判断"是否可以安全重启 mate"**(2026-08-07,优先级高)
 - 现象:mate 长 turn(claude 连续 tool_use 几分钟无 assistant final)从 UI 看像
   "日志不刷",user 误以为卡了 → kill port 8721 → 打断 in-progress task →

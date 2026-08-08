@@ -242,6 +242,38 @@ dialog #ap-submit, dialog #nt-submit, dialog #hc-run { background: var(--accent-
 
 .banners { flex: 1; }
 .banner { background: var(--bg-msg-error); color: var(--accent-red); padding: 4px 8px; border-radius: 4px; margin: 0 8px; font-size: 12px; display: inline-block; }
+
+/* [需求@2026-08-08 supervisor] 值班灯 + 检查 modal */
+.sv-light { background: transparent; border: 1px solid var(--border, #444); border-radius: 12px; padding: 2px 8px; cursor: pointer; font-size: 12px; margin: 0 6px; }
+.sv-light:hover { border-color: var(--accent-blue, #58ccff); }
+.sv-light.sv-ok { border-color: rgba(60, 180, 60, 0.4); }
+.sv-light.sv-warn { border-color: rgba(216, 163, 58, 0.5); background: rgba(216, 163, 58, 0.06); }
+.sv-light.sv-error { border-color: rgba(255, 107, 107, 0.6); background: rgba(255, 107, 107, 0.08); animation: sv-pulse 1.4s infinite; }
+@keyframes sv-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+#sv-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 20px; }
+#sv-modal .sv-box { background: var(--bg-elevated, #222); border: 1px solid var(--border, #444); border-radius: 6px; max-width: 780px; width: 100%; max-height: 85vh; display: flex; flex-direction: column; }
+#sv-modal .sv-header { padding: 10px 14px; border-bottom: 1px solid var(--border, #444); display: flex; align-items: center; gap: 10px; }
+#sv-modal .sv-header strong { flex: 1; font-size: 13px; }
+#sv-modal .sv-verdict { padding: 10px 14px; font-size: 12px; border-bottom: 1px solid var(--border, #444); }
+#sv-modal .sv-verdict.ok { color: var(--accent-green, #88dd88); }
+#sv-modal .sv-verdict.caution { color: var(--accent-yellow, #d8a33a); }
+#sv-modal .sv-verdict.block { color: var(--accent-red, #ff6b6b); }
+#sv-modal .sv-findings { flex: 1; padding: 8px 14px; overflow-y: auto; font-size: 12px; }
+#sv-modal .sv-finding { padding: 8px 10px; margin: 6px 0; border-radius: 4px; border-left: 3px solid var(--border, #444); background: var(--bg-input, #1a1a1a); }
+#sv-modal .sv-finding.sv-f-error { border-left-color: var(--accent-red, #ff6b6b); }
+#sv-modal .sv-finding.sv-f-warn { border-left-color: var(--accent-yellow, #d8a33a); }
+#sv-modal .sv-finding.sv-f-info { border-left-color: var(--accent-blue, #58ccff); opacity: 0.75; }
+#sv-modal .sv-finding-head { font-weight: 500; color: var(--text-primary, #ddd); }
+#sv-modal .sv-finding-meta { color: var(--text-muted); font-size: 10px; margin-top: 2px; font-family: ui-monospace, Consolas, monospace; }
+#sv-modal .sv-finding-action { margin-top: 6px; }
+#sv-modal .sv-finding-action button { font-size: 11px; padding: 2px 10px; background: #2a2a2a; color: #ddd; border: 1px solid #555; border-radius: 3px; cursor: pointer; margin-right: 6px; }
+#sv-modal .sv-finding-action button:hover { border-color: var(--accent-blue, #58ccff); }
+#sv-modal .sv-actions { padding: 10px 14px; border-top: 1px solid var(--border, #444); display: flex; gap: 8px; justify-content: flex-end; }
+#sv-modal .sv-actions button { font-size: 12px; padding: 4px 14px; background: #2a2a2a; color: #eee; border: 1px solid #666; border-radius: 3px; cursor: pointer; }
+#sv-modal .sv-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+#sv-modal .sv-actions button.sv-restart { background: rgba(255, 107, 107, 0.15); border-color: var(--accent-red, #ff6b6b); color: var(--accent-red, #ff6b6b); }
+#sv-modal .sv-actions button.sv-restart:disabled { background: transparent; color: var(--text-muted); border-color: var(--border, #444); }
 .banner.warn { background: var(--bg-msg-ok); color: var(--accent-green); }
 .actions { display: flex; gap: 8px; align-items: center; }
 .actions button { padding: 6px 12px; background: var(--accent-green); color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
