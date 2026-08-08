@@ -17,19 +17,26 @@
 const { db } = require('../../db');
 
 const RULE_ID = 'blocked_question';
+// [bug@2026-08-08] 只报最近 7 天内触发的 blocked。老 blocked(几天/几十天前)
+//   通常 user 早忘了 archive,反复提示只会污染顶栏。真需要处理会自己再问。
+const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function _fetchBlockedThreads() {
   // 全库 threads,metadata_json 里带 has_pending_question=true 的
+  // [bug@2026-08-08] threads 表没 archived_at 列(是 role_instances 有 died_at 而已),
+  //   之前 SELECT ... WHERE archived_at IS NULL 每次 throw → 规则静默失败
   const rows = db.prepare(`
     SELECT slug, project_id, title, metadata_json, updated_at
     FROM threads
-    WHERE archived_at IS NULL
   `).all();
   const blocked = [];
   for (const r of rows) {
     try {
       const meta = JSON.parse(r.metadata_json || '{}');
       if (meta.has_pending_question && meta.blocked) {
+        // 只报 MAX_AGE_MS 内的 blocked
+        const blockedTs = meta.blocked.ts || r.updated_at;
+        if (Date.now() - blockedTs > MAX_AGE_MS) continue;
         blocked.push({
           slug: r.slug,
           projectId: r.project_id,
@@ -37,7 +44,7 @@ function _fetchBlockedThreads() {
           question: meta.blocked.question,
           severity: meta.blocked.severity || 'mid',
           raisedBy: meta.blocked.raisedBy,
-          blockedTs: meta.blocked.ts,
+          blockedTs: blockedTs,
           updatedAt: r.updated_at,
         });
       }
