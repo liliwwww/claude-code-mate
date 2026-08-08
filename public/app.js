@@ -1412,6 +1412,31 @@ function renderBreadcrumb() {
   }
   const chain = t2?.metadata?.dispatch_chain || [];
   if (!chain.length) { host.innerHTML = ''; host.hidden = true; return; }
+
+  // [bug@2026-08-08] 优先用 backend replayChain 派生的 derivedStack(canonical + 已修 R 换实例 bug)
+  //   前端自派逻辑保留作 fallback(旧 endpoint 或 derivation 失败时)
+  let stack = null;
+  let maxDepth = 0;
+  let lastEvent = null;
+  let isComplete = false;
+  if (t2?.derivedStack?.frames) {
+    stack = t2.derivedStack.frames.map((f) => {
+      // backend role 是 'R'/'H'/'B'/'C',前端历史用 'requirements'/'orchestrator'/'executor'/'validator'
+      const roleTypeMap = { R: 'requirements', H: 'orchestrator', B: 'executor', C: 'validator' };
+      return {
+        label: f.displayName || f.instanceId || f.role,
+        instanceId: f.instanceId,
+        roleType: roleTypeMap[f.role] || null,
+      };
+    });
+    maxDepth = stack.length;
+    // 末段事件(blocked/reject)从 chain 末尾看一眼
+    const lastSeg = chain[chain.length - 1];
+    if (lastSeg?.kind === 'blocked') lastEvent = { kind: 'blocked' };
+    else if (lastSeg?.kind === 'reject') lastEvent = { kind: 'reject' };
+    // isComplete 仍由下方 stage 判定
+  }
+
   // [Phase 2I 真正实现] **call stack 视图** — 不再是 append-only 历史日志,
   //   而是模拟真实 LIFO stack:push 加 frame,callback/done 真弹 frame。
   //   任何时刻显示 = 当前栈状态(不是 timeline)
@@ -1432,10 +1457,9 @@ function renderBreadcrumb() {
     if (n.includes('mate-c') || n.includes('validator')) return 'validator';
     return null;
   }
-  let stack = [];   // [{label, instanceId, roleType}, ...]  栈底是 R(stack[0]),栈顶是当前活跃
-  let maxDepth = 0;
-  let lastEvent = null;  // 末尾事件(blocked/reject)用于显示警告
-  let isComplete = false;  // terminal done?
+  // Fallback:如果 backend 没返 derivedStack(旧 mate 版本 or 派生失败),用前端老派生逻辑
+  if (stack === null) {
+    stack = [];   // [{label, instanceId, roleType}, ...]  栈底是 R(stack[0]),栈顶是当前活跃
 
   for (const seg of chain) {
     if (seg.kind === 'handoff') {
@@ -1506,6 +1530,8 @@ function renderBreadcrumb() {
       lastEvent = { kind: 'reject' };
     }
   }
+
+  }  // end fallback block(前端派生)
 
   // [bug@2026-06-16] stage 是 SSOT — 决定 🎉 的唯一标准
   //   verified 一定 done;其它 stage(executing/discussing/...)一定不 done

@@ -977,6 +977,36 @@ ${text}
   r.get('/threads/:slug', requireProjectId, (req, res) => {
     const t = ThreadStore.get(req.project.id, req.params.slug);
     if (!t) return res.status(404).json({ error: 'thread not found' });
+    // [bug@2026-08-08] 加 derivedStack 供前端 breadcrumb 用
+    //   前端自派栈把每个 R→H 当 push 导致 H 层无限累积(chain 越长栈越深)。
+    //   backend 用 replayChain 是 canonical 派生逻辑,已处理:
+    //     - R↔H 反复 handoff → 沿栈 pop 找 fromInstanceId(不重复 push H)
+    //     - H→R bounce → pop H + 替换栈底 R
+    //     - B/C→H callback → pop B/C
+    try {
+      const { replayChain } = require('../threads/replayChain');
+      const chain = t.metadata?.dispatch_chain || [];
+      const { stack, outcome } = replayChain(chain);
+      const _findDisplay = (instId) => {
+        if (!instId) return null;
+        for (let i = chain.length - 1; i >= 0; i--) {
+          if (chain[i].toInstanceId === instId) return chain[i].toDisplayName || chain[i].toRole;
+          if (chain[i].fromInstanceId === instId) return chain[i].fromRole;
+        }
+        return null;
+      };
+      t.derivedStack = {
+        frames: stack.frames.map((f) => ({
+          role: f.role,                   // 'R' | 'H' | 'B' | 'C'
+          instanceId: f.instanceId,
+          status: f.status,
+          displayName: _findDisplay(f.instanceId) || f.instanceId || f.role,
+        })),
+        outcome,
+      };
+    } catch (e) {
+      t.derivedStack = null;  // 派生失败不阻塞,前端 fallback 自派
+    }
     res.json(t);
   });
 

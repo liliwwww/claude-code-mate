@@ -222,9 +222,21 @@ function _applyHandoff(stack, seg, lookup, warnings, idx) {
       status: TCS.FrameStatus.AWAITING_CALLEE,
       pushedAt: (seg.ts || Date.now()) - 1,
     });
-    TCS.push(stack, fromFrame);
-    if (topInstId !== undefined && topInstId !== seg.fromInstanceId) {
-      warnings.push(`seg[${idx}] push: self-healed missing from frame (top was ${topInstId}, expected ${seg.fromInstanceId})`);
+    // [bug@2026-08-08] R 换实例场景兜底:from 是 R 且栈底已是 R(不同实例)
+    //   → 替换栈底不 push,否则栈上会有 2 个 R(表现为面包屑 "R.hquz2p → R.9iluef → H-1")
+    //   典型触发:mate 重启后 R 换新实例,同线索继续派工;chain[N] fromInstanceId
+    //   是新 R,栈上还是老 R。
+    if (fromType === TCS.RoleType.R
+        && !TCS.isEmpty(stack)
+        && stack.frames[0].role === TCS.RoleType.R
+        && stack.frames[0].instanceId !== seg.fromInstanceId) {
+      stack.frames[0] = fromFrame;
+      warnings.push(`seg[${idx}] push: R instance changed (was ${stack.frames[0]?.instanceId} now ${seg.fromInstanceId}), replaced bottom R instead of pushing`);
+    } else {
+      TCS.push(stack, fromFrame);
+      if (topInstId !== undefined && topInstId !== seg.fromInstanceId) {
+        warnings.push(`seg[${idx}] push: self-healed missing from frame (top was ${topInstId}, expected ${seg.fromInstanceId})`);
+      }
     }
   }
   const toFrame = TCS.createFrame({
