@@ -2704,7 +2704,9 @@ async function openSupervisorModal() {
   dlg.querySelector('.sv-close').addEventListener('click', () => dlg.remove());
   dlg.querySelector('.sv-close-btn').addEventListener('click', () => dlg.remove());
 
-  // 一键 apply(向 backend 请动作描述,然后跳去对应 endpoint)
+  // 一键 apply — 支持多种 action kind:
+  //   endpoint(inject/unstick 等)→ 前端 curl 对应 API
+  //   focus_thread(跳到某线索)→ 前端直接 focusThread
   dlg.querySelectorAll('.sv-apply-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.findingId;
@@ -2712,6 +2714,22 @@ async function openSupervisorModal() {
       try {
         const r = await api(`/supervisor/apply/${id}`, { method: 'POST', body: {} });
         const action = r.action;
+        // kind=focus_thread:切 project + 切 thread(前端本地动作,不调 endpoint)
+        if (action.kind === 'focus_thread') {
+          const { projectId, threadSlug } = action.body || {};
+          if (projectId && projectId !== state.activeProjectId) {
+            state.activeProjectId = projectId;
+            localStorage.setItem(LS_KEY, String(projectId));
+            els.projectPicker.value = String(projectId);
+            await reloadProjectScopedData();
+          }
+          if (threadSlug) focusThread(threadSlug);
+          pushTickerEvent('handoff', `→ 跳到 ${threadSlug}`);
+          dlg.remove();
+          refreshSupervisorLight();
+          return;
+        }
+        // 默认:endpoint 调用
         if (!confirm(`即将执行:\n${action.label}\n\nendpoint: ${action.endpoint}\n\n确认?`)) {
           btn.disabled = false;
           return;

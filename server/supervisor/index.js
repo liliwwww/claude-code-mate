@@ -43,6 +43,7 @@ const rules = [
   require('./rules/missing_marker'),
   require('./rules/long_turn'),
   require('./rules/restart_gate'),
+  require('./rules/blocked_marker'),
 ];
 
 const CRON_INTERVAL_MS = 30 * 1000;    // 30s 兜底扫全库
