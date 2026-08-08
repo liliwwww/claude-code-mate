@@ -987,11 +987,12 @@ async function refreshActiveTab() {
   else if (currentTab === 'logs') await refreshLogStream();
   else if (currentTab === 'graph') await refreshGraph();
   else if (currentTab === 'chaincheck') { /* 手动触发,不 auto */ }
+  else if (currentTab === 'supervisor') await refreshSupervisorPanel();
   updateLastRefresh();
 }
 
 function switchTab(target) {
-  if (!['terminals', 'queue', 'dispatch', 'control', 'logs', 'graph', 'chaincheck'].includes(target)) target = 'terminals';
+  if (!['terminals', 'queue', 'dispatch', 'control', 'logs', 'graph', 'chaincheck', 'supervisor'].includes(target)) target = 'terminals';
   const isEnteringControl = currentTab !== 'control' && target === 'control';
   const isEnteringLogs = currentTab !== 'logs' && target === 'logs';
   const isEnteringGraph = currentTab !== 'graph' && target === 'graph';
@@ -1720,7 +1721,146 @@ function drawEdge(fromId, toId, nodePos, cls) {
   if (currentTab === 'graph') initGraphTab();
   // 首次 tab=chaincheck 时挂事件
   initChaincheckTab();
+  // [Phase 2a] supervisor tab 挂事件
+  initSupervisorPanelTab();
 })();
+
+// ============================== [Phase 2a] Supervisor 日志面板 ==============================
+let _svAutoRefreshTimer = null;
+
+function initSupervisorPanelTab() {
+  const refresh = document.querySelector('#sv-refresh');
+  const auto = document.querySelector('#sv-auto-refresh');
+  const rule = document.querySelector('#sv-filter-rule');
+  const sev = document.querySelector('#sv-filter-severity');
+  if (refresh) refresh.addEventListener('click', () => refreshSupervisorPanel());
+  if (rule) rule.addEventListener('change', () => refreshSupervisorPanel());
+  if (sev) sev.addEventListener('change', () => refreshSupervisorPanel());
+  if (auto) {
+    auto.addEventListener('change', () => {
+      if (auto.checked) _startSvAutoRefresh();
+      else _stopSvAutoRefresh();
+    });
+    if (auto.checked) _startSvAutoRefresh();
+  }
+  if (currentTab === 'supervisor') refreshSupervisorPanel();
+}
+
+function _startSvAutoRefresh() {
+  if (_svAutoRefreshTimer) return;
+  _svAutoRefreshTimer = setInterval(() => {
+    if (currentTab === 'supervisor') refreshSupervisorPanel();
+  }, 10_000);
+}
+
+function _stopSvAutoRefresh() {
+  if (_svAutoRefreshTimer) { clearInterval(_svAutoRefreshTimer); _svAutoRefreshTimer = null; }
+}
+
+async function refreshSupervisorPanel() {
+  const stateEl = document.querySelector('#sv-panel-state');
+  const findingsEl = document.querySelector('#sv-panel-findings');
+  const logEl = document.querySelector('#sv-panel-log');
+  if (!stateEl || !findingsEl || !logEl) return;
+  const rule = document.querySelector('#sv-filter-rule')?.value || '';
+  const sev = document.querySelector('#sv-filter-severity')?.value || '';
+  try {
+    const q = new URLSearchParams();
+    if (rule) q.set('ruleId', rule);
+    if (sev) q.set('severity', sev);
+    const [stateResp, findingsResp, logResp] = await Promise.all([
+      fetch('/api/supervisor/state').then((r) => r.json()),
+      fetch('/api/supervisor/findings' + (q.toString() ? '?' + q.toString() : '')).then((r) => r.json()),
+      fetch('/api/supervisor/log').then((r) => r.json()),
+    ]);
+    // 顶部 state badge
+    const color = stateResp.verdict === 'error' ? 'rgba(255,107,107,0.15);border-color:var(--accent-red,#ff6b6b);color:var(--accent-red,#ff6b6b)'
+                : stateResp.verdict === 'warn' ? 'rgba(216,163,58,0.15);border-color:var(--accent-yellow,#d8a33a);color:var(--accent-yellow,#d8a33a)'
+                : 'rgba(60,180,60,0.15);border-color:var(--accent-green,#88dd88);color:var(--accent-green,#88dd88)';
+    stateEl.style.cssText = 'font-size:12px;padding:2px 10px;border-radius:12px;border:1px solid;background:' + color;
+    stateEl.textContent = `verdict: ${stateResp.verdict} · ${stateResp.total} findings (error ${stateResp.byServerity?.error || 0} · warn ${stateResp.byServerity?.warn || 0} · info ${stateResp.byServerity?.info || 0}) · ${stateResp.ruleCount} rules loaded`;
+    // findings
+    const findings = findingsResp.findings || [];
+    if (!findings.length) {
+      findingsEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;background:var(--bg-elevated);border-radius:4px">✓ 没有活跃 findings</div>';
+    } else {
+      findingsEl.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border,#444)">
+            <th style="padding:6px 8px">severity</th>
+            <th style="padding:6px 8px">rule</th>
+            <th style="padding:6px 8px">thread / inst</th>
+            <th style="padding:6px 8px">时间</th>
+            <th style="padding:6px 8px">消息</th>
+            <th style="padding:6px 8px">建议</th>
+          </tr></thead>
+          <tbody>
+            ${findings.map((f) => `
+              <tr style="border-bottom:1px solid var(--border,#444)">
+                <td style="padding:6px 8px"><span style="color:${_svSevColor(f.severity)};font-weight:600">${f.severity}</span></td>
+                <td style="padding:6px 8px;font-family:monospace">${_svEsc(f.ruleId)}</td>
+                <td style="padding:6px 8px;font-family:monospace;font-size:10px">
+                  ${f.threadSlug ? _svEsc(f.threadSlug) + '<br>' : ''}
+                  ${f.instanceId ? '<span style="color:var(--text-muted)">' + _svEsc(f.instanceId) + '</span>' : ''}
+                </td>
+                <td style="padding:6px 8px;font-family:monospace;font-size:10px;color:var(--text-muted)">${new Date(f.detectedAt).toISOString().slice(11,19)}</td>
+                <td style="padding:6px 8px;max-width:400px">${_svEsc(f.message)}</td>
+                <td style="padding:6px 8px;font-size:10px;color:var(--text-secondary)">${f.suggestedAction ? _svEsc(f.suggestedAction.label) : '(无)'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+    // log 时间线(最新 50 条,倒序)
+    const logs = (logResp.log || []).slice(-50).reverse();
+    if (!logs.length) {
+      logEl.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:11px">(空)</div>';
+    } else {
+      logEl.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border,#444)">
+            <th style="padding:4px 8px">时间</th>
+            <th style="padding:4px 8px">事件</th>
+            <th style="padding:4px 8px">规则</th>
+            <th style="padding:4px 8px">目标</th>
+            <th style="padding:4px 8px">备注</th>
+          </tr></thead>
+          <tbody>
+            ${logs.map((l) => {
+              const kindLabel = { finding_created: '+ 新 finding', finding_dismissed: '✕ 忽略', finding_resolved: '✓ resolved' }[l.kind] || l.kind;
+              const kindColor = l.kind === 'finding_created' ? 'var(--accent-yellow,#d8a33a)'
+                             : l.kind === 'finding_dismissed' ? 'var(--text-muted)'
+                             : 'var(--accent-green,#88dd88)';
+              return `<tr style="border-bottom:1px solid var(--border-subtle,#333)">
+                <td style="padding:4px 8px;font-family:monospace;color:var(--text-muted);font-size:10px">${new Date(l.ts).toISOString().slice(11,19)}</td>
+                <td style="padding:4px 8px;color:${kindColor}">${kindLabel}</td>
+                <td style="padding:4px 8px;font-family:monospace">${_svEsc(l.ruleId || '-')}</td>
+                <td style="padding:4px 8px;font-family:monospace;font-size:10px">
+                  ${l.threadSlug ? _svEsc(l.threadSlug) : ''}
+                  ${l.instanceId ? '<br><span style="color:var(--text-muted)">' + _svEsc(l.instanceId) + '</span>' : ''}
+                </td>
+                <td style="padding:4px 8px;color:var(--text-secondary);max-width:400px">${_svEsc(l.message || '')}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+  } catch (e) {
+    stateEl.textContent = '查询失败: ' + e.message;
+    stateEl.style.cssText = 'font-size:12px;color:var(--accent-red,#ff6b6b);padding:2px 10px';
+  }
+}
+
+function _svSevColor(s) {
+  return s === 'error' ? 'var(--accent-red,#ff6b6b)'
+       : s === 'warn'  ? 'var(--accent-yellow,#d8a33a)'
+       : 'var(--accent-blue,#58ccff)';
+}
+function _svEsc(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
 
 // ============================== #192 Chain 自检 tab ==============================
 let _lastChaincheckData = null;  // 缓存最后一次扫描结果给 copy 用

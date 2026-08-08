@@ -382,6 +382,7 @@
     // ---------------- Phase 2G M2: 状态图 tab ----------------
     'dashboard.tabs.graph': '状态图',
     'dashboard.tabs.chaincheck': '🔍 Chain 自检',
+    'dashboard.tabs.supervisor': '🛡 Supervisor',
     'dashboard.chaincheck.windowLabel': '时间窗:',
     'dashboard.chaincheck.win.1h': '最近 1h',
     'dashboard.chaincheck.win.6h': '最近 6h',
@@ -811,6 +812,7 @@
     // ---------------- Phase 2G M2: State graph tab ----------------
     'dashboard.tabs.graph': 'State Graph',
     'dashboard.tabs.chaincheck': '🔍 Chain Check',
+    'dashboard.tabs.supervisor': '🛡 Supervisor',
     'dashboard.chaincheck.windowLabel': 'Window:',
     'dashboard.chaincheck.win.1h': 'last 1h',
     'dashboard.chaincheck.win.6h': 'last 6h',

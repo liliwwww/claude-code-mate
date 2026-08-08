@@ -40,6 +40,8 @@
       <button type="button" class="tab-btn" data-tab="graph" data-i18n="dashboard.tabs.graph">状态图</button>
       <!-- [需求@2026-07-29 #192] tab 7:chain 自检 —— 扫走串 -->
       <button type="button" class="tab-btn" data-tab="chaincheck" data-i18n="dashboard.tabs.chaincheck">🔍 Chain 自检</button>
+      <!-- [Phase 2a @2026-08-08] supervisor 日志面板 -->
+      <button type="button" class="tab-btn" data-tab="supervisor" data-i18n="dashboard.tabs.supervisor">🛡 Supervisor</button>
     </div>
 
     <div class="tab-content" data-tab="terminals">
@@ -160,6 +162,50 @@
         </div>
       </div>
       <div id="chaincheck-results"></div>
+    </div>
+
+    <!-- [Phase 2a @2026-08-08] Supervisor 日志面板 -->
+    <div class="tab-content" data-tab="supervisor" hidden>
+      <div class="sv-panel-toolbar" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:6px 0">
+        <span id="sv-panel-state" style="font-size:12px;padding:2px 10px;border-radius:12px;border:1px solid var(--border,#444)">加载中...</span>
+        <label style="font-size:11px">规则:
+          <select id="sv-filter-rule">
+            <option value="">全部</option>
+            <option value="missing_marker">missing_marker</option>
+            <option value="long_turn">long_turn</option>
+            <option value="restart_gate">restart_gate</option>
+            <option value="blocked_question">blocked_question</option>
+            <option value="chain_stalled">chain_stalled</option>
+            <option value="target_dead">target_dead</option>
+            <option value="queue_stuck">queue_stuck</option>
+          </select>
+        </label>
+        <label style="font-size:11px">Severity:
+          <select id="sv-filter-severity">
+            <option value="">全部</option>
+            <option value="error">error</option>
+            <option value="warn">warn</option>
+            <option value="info">info</option>
+          </select>
+        </label>
+        <button type="button" id="sv-refresh" style="font-size:11px;padding:2px 10px">🔄 刷新</button>
+        <label style="font-size:11px;color:var(--text-muted)"><input type="checkbox" id="sv-auto-refresh" checked /> 自动刷新(10s)</label>
+      </div>
+
+      <div class="sv-panel-hint" style="margin:8px 0;padding:8px 12px;background:var(--bg-elevated);border-left:3px solid var(--accent-blue,#58ccff);font-size:11px;color:var(--text-secondary);line-height:1.6">
+        <div>
+          <b>当前 findings</b> = supervisor 实时监控发现的问题(活跃)· <b>决策日志</b> = 历史时间线(finding 创建/被 dismiss/被 resolve 全记)。
+        </div>
+        <div style="margin-top:4px">
+          <b>Supervisor 规则</b>:漏 marker · 长 turn · 重启门控 · blocked 长时间无处理 · chain 悬空 · target dead · 队列 stuck
+        </div>
+      </div>
+
+      <h3 style="margin:16px 0 8px;font-size:13px">当前 findings(活跃)</h3>
+      <div id="sv-panel-findings"></div>
+
+      <h3 style="margin:20px 0 8px;font-size:13px">决策日志(时间线)</h3>
+      <div id="sv-panel-log"></div>
     </div>
 
     <!-- [需求@2026-06-15 Phase 2G M2] tab 6 — 状态图(SVG 节点-边图) -->
