@@ -117,22 +117,13 @@ server.listen(config.port, '127.0.0.1', () => {
   }
 });
 
-// Graceful shutdown
-async function shutdown(reason) {
-  console.log(`[shutdown] reason: ${reason}`);
-  try {
-    QuotaState.stop();
-    ConsistencyCheck.stop();
-    Supervisor.stop();
-    await spawnManager.shutdown();
-  } catch (e) {
-    log.error({ module: 'shutdown', event: 'spawn_manager_shutdown_failed', error: e?.message || String(e) });
-  }
-  server.close(() => process.exit(0));
-  // Hard exit after 5s if server.close hangs
-  setTimeout(() => process.exit(1), 5000).unref();
-}
+// [Phase 2b @2026-08-08] shutdown 逻辑迁到 server/lifecycle.js,index.js 只做 wiring
+const lifecycle = require('./lifecycle');
+lifecycle.registerServer(server);
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('uncaughtException', (e) => { log.error({ module: 'boot', event: 'uncaught_exception', error: e?.message || String(e), stack: e?.stack }); shutdown('uncaughtException'); });
+process.on('SIGINT', () => lifecycle.shutdown('SIGINT'));
+process.on('SIGTERM', () => lifecycle.shutdown('SIGTERM'));
+process.on('uncaughtException', (e) => {
+  log.error({ module: 'boot', event: 'uncaught_exception', error: e?.message || String(e), stack: e?.stack });
+  lifecycle.shutdown('uncaughtException');
+});

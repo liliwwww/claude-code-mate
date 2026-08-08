@@ -826,6 +826,43 @@ ${text}
     }
   });
 
+  // [Phase 2b @2026-08-08] Graceful shutdown — UI"我要重启"按钮触发
+  //   1. 先查 restart-check,有 blocker 直接拒
+  //   2. 立即返回 202(shutdown 异步进行),前端根据 WS system.graceful_shutdown_progress 追踪
+  //   3. lifecycle.gracefulShutdown 后台等 busy → idle → 硬关(超时兜底 30s)
+  //   4. process 退出后前端 WS 断连,重启 mate 由 user 自己触发(mate 无自启机制)
+  r.post('/system/graceful-shutdown', async (req, res) => {
+    try {
+      const Supervisor = require('../supervisor');
+      const verdict = await Supervisor.getRestartVerdict();
+      if (verdict.verdict === 'block') {
+        return res.status(409).json({
+          error: 'restart blocked by supervisor',
+          verdict: verdict.verdict,
+          verdictText: verdict.verdictText,
+          blockers: verdict.blockers,
+        });
+      }
+      const lifecycle = require('../lifecycle');
+      if (lifecycle.isShuttingDown()) {
+        return res.status(409).json({ error: 'already shutting down' });
+      }
+      // 立即返回 — shutdown 异步在后台跑
+      res.status(202).json({
+        ok: true,
+        message: 'graceful shutdown initiated, watch WS system.graceful_shutdown_progress for progress',
+        timeoutMs: 30_000,
+      });
+      // fire and forget(errors log 里)
+      setImmediate(() => {
+        lifecycle.gracefulShutdown({ reason: 'ui_graceful_restart', timeoutMs: 30_000 })
+          .catch((e) => log.error({ module: 'http', event: 'graceful_shutdown_failed', error: e?.message || String(e) }));
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // [X1] 确认已知 chain crossings — 设 baseline,之后只报新走串
   r.post('/consistency-check/acknowledge', (req, res) => {
     try {

@@ -2756,10 +2756,40 @@ async function openSupervisorModal() {
     });
   });
 
-  // 重启按钮 MVP: 只显示指令(不真跑,graceful shutdown 是 Phase 2)
-  dlg.querySelector('.sv-restart').addEventListener('click', () => {
+  // [Phase 2b @2026-08-08] 真"我要重启"— 触发 graceful shutdown
+  //   backend 等 busy → idle 再 exit(超时 30s 兜底)
+  //   前端根据 system.graceful_shutdown_progress WS 事件跟进度,进程退出 → WS 断连 → 用户手动重启
+  dlg.querySelector('.sv-restart').addEventListener('click', async () => {
     if (restartCheck.verdict === 'block') return;
-    alert('MVP 版:请手动执行\n\n  taskkill /f /im node.exe\n  然后重启 mate\n\n(优雅 shutdown 后续版本支持)');
+    if (!confirm('触发优雅 shutdown:\n\n1. mate 等所有 busy role 完成\n2. 超时 30s 兜底硬关\n3. 进程退出后需手动重启 mate\n\n继续?')) return;
+    const btn = dlg.querySelector('.sv-restart');
+    btn.disabled = true;
+    btn.textContent = '⏳ 正在关服...';
+    try {
+      const r = await api('/system/graceful-shutdown', { method: 'POST', body: {} });
+      if (r?.ok) {
+        pushTickerEvent('kill', `🔄 graceful shutdown started (timeout ${Math.round(r.timeoutMs/1000)}s)`);
+        // 显示等待进度(简单版:每秒更新 button 文案)
+        let sec = 0;
+        const timer = setInterval(() => {
+          sec++;
+          btn.textContent = `⏳ 等 busy 完成... ${sec}s`;
+          if (sec >= 35) {  // 略超 backend 30s timeout
+            clearInterval(timer);
+            btn.textContent = '❌ 未收到关服确认';
+          }
+        }, 1000);
+        // 进程退出会导致 WS 断,前端会自动重连失败;不 close modal 让 user 看进度
+      }
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '🔄 我要重启 mate';
+      if (e.message.includes('blocked')) {
+        alert('supervisor 拒绝:\n' + e.message + '\n\n请先处理 blocker(顶栏灯变红)再试。');
+      } else {
+        alert('shutdown 失败: ' + e.message);
+      }
+    }
   });
 }
 
