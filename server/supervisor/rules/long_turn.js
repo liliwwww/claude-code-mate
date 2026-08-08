@@ -113,13 +113,16 @@ async function check() {
 
 // 事件驱动:instance.status_change to='busy' 时不立即报(要等 > TURN_MIN_MS),
 // 让 cron 每 30s 兜底。这里只处理 to='idle' 清理:turn 结束了,mark 相关 long_turn resolved
+// [bug@2026-08-08] payload 是 {instance: inst.snapshot(), from, to},之前用
+//   payload.instanceId 拿不到 → auto-resolve 没触发 → long_turn info 残留
 function subscribe(bus, dispatch) {
   const handler = (payload) => {
     if (payload.to !== 'idle') return;
-    // turn 结束 → 该 inst 的 long_turn finding 自动 resolve(靠 store predicate)
+    const instId = payload.instance?.id;
+    if (!instId) return;
     const store = require('../store');
     store.markResolvedByPredicate((f) =>
-      f.ruleId === RULE_ID && f.instanceId === payload.instanceId
+      f.ruleId === RULE_ID && f.instanceId === instId
     );
   };
   const unsub = bus.subscribe('instance.status_change', handler);

@@ -16,17 +16,36 @@ const { db } = require('../../db');
 const RULE_ID = 'missing_marker';
 
 // handoff-like 关键字(中英文)—— 触发疑似漏 marker 检测
+// [bug@2026-08-08] 之前"上报"/"完工"/"完成"太泛,会把描述性文字(如"上报错误"/"完成 N 项")误判
+//   收紧策略:只保留强意图信号(直接说"交给你/请你 XX"),不含描述性的"完成"/"完工"
 const HANDOFF_LIKE_KEYWORDS = [
-  // 中文
+  // 中文强意图
   '交你决定', '请裁决', '请复核', '请你决定', '请你裁决', '请审核', '请验收',
-  '上报', '汇报', '交给你', '给你处理', '请处理',
-  '完工', '完成', '搞定', '已完成', '实施完成',
-  '按 STOP 条件', '请你裁定', '交由你', '你决定',
-  // 英文
-  'handoff', 'over to', 'passing to', 'please review', 'please verify',
-  'please decide', 'ready for', 'awaiting your', 'submit to',
-  'complete', 'finished', 'done with', 'implemented',
+  '交给你', '给你处理', '请处理', '交由你', '你决定', '请你决策',
+  '请 H 决策', '请H决策', '请 H 处理', '交由 H', '交 H',
+  // 英文强意图
+  'handoff to', 'over to you', 'passing to you', 'please review', 'please verify',
+  'please decide', 'awaiting your', 'submit for your',
 ];
+
+// 白名单:如果消息里出现这些"继续/分段"信号,说明 role 是主动 pause 等下文,不是漏 marker
+const CONTINUATION_SIGNALS = [
+  // 分段传输
+  'part 1/', 'part 2/', 'part 3/', 'part 4/', 'part 5/',
+  'Part 1/', 'Part 2/', 'Part 3/', 'Part 4/', 'Part 5/',
+  '分段', '分部分', '分 3 段', '分3段', '分 N 段',
+  '第 1 段', '第 2 段', '第 3 段',
+  // 待续
+  '先 standby', '先standby', 'standby', '待续', '未完待续',
+  '接下来', '下一段', '接着发', '继续发',
+  '勿现在写', '勿现在动',
+  '收全后', '收齐后', '拼接',
+];
+
+function _hasContinuationSignal(text) {
+  const lower = String(text || '').toLowerCase();
+  return CONTINUATION_SIGNALS.some((s) => lower.includes(s.toLowerCase()));
+}
 
 // marker 正则(简版,匹配 <mate:xxx/> 或 <mate:xxx>...</mate:xxx>)
 const MARKER_RE = /<mate:(handoff|done|blocked|reject|bounce)\b[^>]*\/?>/i;
@@ -84,6 +103,8 @@ function _checkOne(instanceId, threadSlug, roleName) {
   if (!hits.length) return null;
   // 忽略太老的消息(> 24h,可能是 stale idle)
   if (Date.now() - msg.ts > 24 * 3600 * 1000) return null;
+  // [bug@2026-08-08] 白名单:分段传输 / standby / 待续场景 role 主动 pause,不是漏 marker
+  if (_hasContinuationSignal(msg.text)) return null;
 
   const target = _inferHandoffTarget(threadSlug);
   const targetRole = target?.role || 'mate-H';  // fallback: 大概率 handoff 回 H
@@ -135,12 +156,16 @@ async function check() {
 }
 
 // 事件驱动:role 转 idle 5s 后跑一次(给它时间完成最后 message)
+// [bug@2026-08-08] payload 是 {instance: inst.snapshot(), from, to},字段在 payload.instance 里
 function subscribe(bus, dispatch) {
   const handler = (payload) => {
     if (payload.to !== 'idle' || payload.from === 'idle') return;
-    if (!payload.instanceId || !payload.threadSlug) return;
+    const instId = payload.instance?.id;
+    const threadSlug = payload.instance?.threadSlug;
+    const roleName = payload.instance?.roleName;
+    if (!instId || !threadSlug) return;
     setTimeout(() => {
-      const f = _checkOne(payload.instanceId, payload.threadSlug, payload.roleName);
+      const f = _checkOne(instId, threadSlug, roleName);
       if (f) dispatch(f);
     }, 5000);  // 5s 缓冲
   };
