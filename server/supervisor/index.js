@@ -44,6 +44,10 @@ const rules = [
   require('./rules/long_turn'),
   require('./rules/restart_gate'),
   require('./rules/blocked_marker'),
+  // [Phase 2c @2026-08-08]
+  require('./rules/chain_stalled'),
+  require('./rules/target_dead'),
+  require('./rules/queue_stuck'),
 ];
 
 const CRON_INTERVAL_MS = 30 * 1000;    // 30s 兜底扫全库
