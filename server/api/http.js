@@ -826,6 +826,32 @@ ${text}
     }
   });
 
+  // [Phase 3 @2026-08-10] Reset H session with handover memo
+  //   触发路径:supervisor h_session_bloat 规则 apply → 前端 POST 这里
+  //   行为:kill 老 H → 起新 H · 首消息 = mate 生成的 memo(project active threads 摘要)
+  //   拒绝条件:老 H busy(会打断 in-progress task)
+  r.post('/system/reset-h-session', async (req, res) => {
+    const projectId = parseInt(req.body?.projectId, 10);
+    if (!Number.isFinite(projectId)) {
+      return res.status(400).json({ error: 'projectId (number) required in body' });
+    }
+    try {
+      const { resetHSession } = require('../system/hSessionReset');
+      const result = await resetHSession(projectId, spawnManager);
+      res.json({
+        ok: true,
+        oldInstanceIds: result.oldInstanceIds,
+        newInstanceId: result.newInstanceId,
+        memoLength: result.memo.length,
+        memoPreview: result.memoPreview,
+      });
+    } catch (e) {
+      const code = /in-progress|busy/i.test(e.message) ? 409
+                 : /not found/i.test(e.message) ? 404 : 500;
+      res.status(code).json({ error: e.message });
+    }
+  });
+
   // [Phase 2b @2026-08-08] Graceful shutdown — UI"我要重启"按钮触发
   //   1. 先查 restart-check,有 blocker 直接拒
   //   2. 立即返回 202(shutdown 异步进行),前端根据 WS system.graceful_shutdown_progress 追踪

@@ -48,6 +48,8 @@ const rules = [
   require('./rules/chain_stalled'),
   require('./rules/target_dead'),
   require('./rules/queue_stuck'),
+  // [Phase 3 @2026-08-10] H session bloat 消除 8-10 事故
+  require('./rules/h_session_bloat'),
 ];
 
 const CRON_INTERVAL_MS = 30 * 1000;    // 30s 兜底扫全库
