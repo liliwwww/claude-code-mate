@@ -74,7 +74,7 @@ async function check() {
       severity,
       threadSlug: null,
       instanceId: h.id,
-      message: `⚠ H session 累积过大 · ${h.id} · ${reason} · 建议 reset 避免撞 Claude API socket close`,
+      message: `⚠ H session 累积过大 · ${h.id}(${h.status}) · ${reason} · 建议 reset 避免撞 Claude API socket close`,
       detectedAt: Date.now(),
       dedupKey: `${RULE_ID}:${h.id}`,
       evidence: {

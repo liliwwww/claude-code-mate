@@ -25,9 +25,12 @@ function _fetchBlockedThreads() {
   // 全库 threads,metadata_json 里带 has_pending_question=true 的
   // [bug@2026-08-08] threads 表没 archived_at 列(是 role_instances 有 died_at 而已),
   //   之前 SELECT ... WHERE archived_at IS NULL 每次 throw → 规则静默失败
+  // [bug@2026-08-10] 只查未终态线索 — stage=verified/aborted 意味着线索已关闭,
+  //   metadata.blocked 是陈迹脏数据(done 处理逻辑没清)
   const rows = db.prepare(`
-    SELECT slug, project_id, title, metadata_json, updated_at
+    SELECT slug, project_id, title, metadata_json, updated_at, stage
     FROM threads
+    WHERE stage NOT IN ('verified', 'aborted')
   `).all();
   const blocked = [];
   for (const r of rows) {
